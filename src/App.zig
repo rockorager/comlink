@@ -2,9 +2,11 @@ const std = @import("std");
 const vaxis = @import("vaxis");
 const ziglua = @import("ziglua");
 
+const assert = std.debug.assert;
 const base64 = std.base64.standard.Encoder;
 const mem = std.mem;
 
+const irc = @import("irc.zig");
 const lua = @import("lua.zig");
 
 // data structures
@@ -232,6 +234,44 @@ pub fn run(self: *App) !void {
                     .RPL_ISUPPORT => {},
                     .RPL_LOGGEDIN => {},
                     .RPL_SASLSUCCESS => {},
+                    .RPL_NAMREPLY => {
+                        // syntax: <client> <symbol> <channel> :<nicks>
+                        var iter = msg.paramIterator();
+                        _ = iter.next() orelse continue :loop; // client ("*")
+                        _ = iter.next() orelse continue :loop; // symbol ("=", "@", "*")
+                        const channel_name = iter.next() orelse continue :loop; // channel
+
+                        for (msg.client.channels.items, 0..) |chan, i| {
+                            if (mem.eql(u8, chan.name, channel_name)) {
+                                var channel = msg.client.channels.swapRemove(i);
+                                channel.deinit(self.alloc);
+                                break;
+                            }
+                        }
+                        var channel: irc.Channel = .{
+                            .name = try self.alloc.dupe(u8, channel_name),
+                            .members = std.ArrayList(*irc.User).init(self.alloc),
+                        };
+
+                        const nick_list = iter.next() orelse continue :loop; // member list
+                        var nick_iter = std.mem.splitScalar(u8, nick_list, ' ');
+                        var users = &msg.client.users;
+                        var members = &channel.members;
+                        while (nick_iter.next()) |nick| {
+                            const user_ptr: *irc.User = users.getPtr(nick) orelse blk: {
+                                const user: irc.User = .{
+                                    .nick = try self.alloc.dupe(u8, nick),
+                                };
+                                try users.put(user.nick, user);
+
+                                break :blk users.getPtr(nick) orelse unreachable;
+                            };
+                            try members.append(user_ptr);
+                        }
+                        try msg.client.channels.append(channel);
+
+                        std.sort.insertion(irc.Channel, msg.client.channels.items, {}, irc.Channel.compare);
+                    },
                     .BOUNCER => {
                         var iter = msg.paramIterator();
                         while (iter.next()) |param| {
@@ -273,14 +313,48 @@ pub fn run(self: *App) !void {
 
         const win = self.vx.window();
         win.clear();
-        for (self.clients.items, 0..) |client, i| {
+        var row: usize = 0;
+
+        const channel_list_width = 16;
+
+        // draw the channel list
+        const channel_list_win = win.initChild(
+            0,
+            0,
+            .{ .limit = channel_list_width },
+            .expand,
+        );
+        for (self.clients.items) |client| {
             var segs = [_]vaxis.Segment{
                 .{ .text = client.config.name orelse client.config.server },
             };
-            _ = try win.print(
+            _ = try channel_list_win.print(
                 &segs,
-                .{ .row_offset = i },
+                .{ .row_offset = row },
             );
+            row += 1;
+
+            for (client.channels.items) |channel| {
+                defer row += 1;
+                var chan_seg = [_]vaxis.Segment{
+                    .{ .text = "  " },
+                    .{ .text = channel.name },
+                };
+                const overflow = try channel_list_win.print(
+                    &chan_seg,
+                    .{
+                        .row_offset = row,
+                        .wrap = .none,
+                    },
+                );
+                if (overflow)
+                    channel_list_win.writeCell(channel_list_width - 1, row, .{
+                        .char = .{
+                            .grapheme = "…",
+                            .width = 1,
+                        },
+                    });
+            }
         }
         try self.vx.render();
     }

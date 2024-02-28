@@ -1,5 +1,6 @@
 const std = @import("std");
 const tls = std.crypto.tls;
+const irc = @import("irc.zig");
 
 const App = @import("App.zig");
 const Message = @import("Message.zig");
@@ -24,6 +25,9 @@ client: tls.Client,
 stream: std.net.Stream,
 config: Config,
 
+channels: std.ArrayList(irc.Channel),
+users: std.StringHashMap(irc.User),
+
 pub fn init(alloc: std.mem.Allocator, app: *App, cfg: Config) !Client {
     const stream = try std.net.tcpConnectToHost(alloc, "chat.sr.ht", 6697);
 
@@ -34,6 +38,8 @@ pub fn init(alloc: std.mem.Allocator, app: *App, cfg: Config) !Client {
         .client = client,
         .stream = stream,
         .config = cfg,
+        .channels = std.ArrayList(irc.Channel).init(alloc),
+        .users = std.StringHashMap(irc.User).init(alloc),
     };
 }
 
@@ -46,6 +52,17 @@ pub fn deinit(self: *Client) void {
     // we have one
     if (self.config.network_id) |id| self.alloc.free(id);
     if (self.config.name) |name| self.alloc.free(name);
+
+    for (self.channels.items) |channel| {
+        channel.deinit(self.alloc);
+    }
+    self.channels.deinit();
+
+    var user_iter = self.users.valueIterator();
+    while (user_iter.next()) |user| {
+        user.deinit(self.alloc);
+    }
+    self.users.deinit();
 }
 
 pub fn readLoop(self: *Client) !void {
