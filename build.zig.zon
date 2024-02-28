@@ -1,0 +1,14 @@
+.{
+    .name = "zirconium",
+    .version = "0.0.0",
+    .dependencies = .{
+        .ziglua = .{
+            .url = "https://github.com/natecraddock/ziglua/archive/2ced05013e7a87fa8546f920b756441840e1aa0b.tar.gz",
+            .hash = "1220bc58b81db27e4a04f61703e0929fa3ec780a24698483aee1b349dee2cf9dd96a",
+        },
+        .vaxis = .{
+            .path = "../libvaxis",
+        },
+    },
+    .paths = .{""},
+}
