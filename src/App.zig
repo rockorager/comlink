@@ -111,7 +111,7 @@ pub fn queueWrite(self: *App, client: *Client, msg: []const u8) !void {
 /// this loop is run in a separate thread and handles writes to all clients.
 /// Message content is deallocated when the write request is completed
 fn writeLoop(self: *App) !void {
-    log.info("starting write thread", .{});
+    log.debug("starting write thread", .{});
     while (true) {
         var req = self.write_queue.pop();
         try req.client.write(req.msg);
