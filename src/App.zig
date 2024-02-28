@@ -88,6 +88,13 @@ pub fn deinit(self: *App) void {
 
     self.lua.deinit();
     self.bundle.deinit(self.alloc);
+    // drain the queue
+    while (self.vx.queue.tryPop()) |event| {
+        switch (event) {
+            .message => |msg| msg.deinit(self.alloc),
+            else => {},
+        }
+    }
 }
 
 /// push a write request into the queue. The request should include the trailing
