@@ -72,11 +72,6 @@ pub fn init(alloc: std.mem.Allocator) !App {
 pub fn deinit(self: *App) void {
     if (self.deinited) return;
     self.deinited = true;
-    // close vaxis
-    {
-        self.vx.stopReadThread();
-        self.vx.deinit(self.alloc);
-    }
 
     // clean up clients
     {
@@ -86,6 +81,12 @@ pub fn deinit(self: *App) void {
             self.alloc.destroy(client);
         }
         self.clients.deinit();
+    }
+
+    // close vaxis
+    {
+        self.vx.stopReadThread();
+        self.vx.deinit(self.alloc);
     }
 
     self.lua.deinit();
@@ -154,6 +155,9 @@ pub fn run(self: *App) !void {
         self.lua.doFile("/home/tim/.config/zirconium/init.lua") catch return error.LuaError;
     }
 
+    var input = vaxis.widgets.TextInput.init(self.alloc);
+    defer input.deinit();
+
     loop: while (true) {
         const event = self.vx.nextEvent();
         switch (event) {
@@ -161,6 +165,7 @@ pub fn run(self: *App) !void {
                 if (key.matches('c', .{ .ctrl = true })) {
                     return;
                 }
+                try input.update(.{ .key_press = key });
             },
             .winsize => |ws| try self.vx.resize(self.alloc, ws),
             .connect => |cfg| {
@@ -316,14 +321,17 @@ pub fn run(self: *App) !void {
         var row: usize = 0;
 
         const channel_list_width = 16;
+        const member_list_width = 16;
+        const message_list_width = win.width - channel_list_width - member_list_width;
 
-        // draw the channel list
-        const channel_list_win = win.initChild(
+        // draw the channel list (left sidebar)
+        var channel_list_win = win.initChild(
             0,
             0,
-            .{ .limit = channel_list_width },
+            .{ .limit = channel_list_width + 1 },
             .expand,
         );
+        channel_list_win = vaxis.widgets.border.right(channel_list_win, .{});
         for (self.clients.items) |client| {
             var segs = [_]vaxis.Segment{
                 .{ .text = client.config.name orelse client.config.server },
@@ -356,6 +364,38 @@ pub fn run(self: *App) !void {
                     });
             }
         }
+
+        // draw the member list (right sidebar)
+        const member_list_win = win.initChild(channel_list_width + message_list_width, 0, .expand, .expand);
+        member_list_win.fill(.{
+            .style = .{
+                .bg = .{ .index = 2 },
+            },
+        });
+
+        // draw the message list
+        var message_list_win = win.initChild(channel_list_width + 1, 0, .{ .limit = message_list_width - 1 }, .expand);
+        message_list_win = vaxis.widgets.border.right(message_list_win, .{});
+        message_list_win.fill(.{
+            .style = .{
+                .bg = .{ .index = 1 },
+            },
+        });
+
+        var topic_win = message_list_win.initChild(0, 0, .expand, .{ .limit = 1 });
+        topic_win.fill(.{
+            .style = .{
+                .bg = .{ .index = 4 },
+            },
+        });
+        var input_win = message_list_win.initChild(0, win.height - 1, .expand, .{ .limit = 1 });
+        input_win.fill(.{
+            .style = .{
+                .bg = .{ .index = 3 },
+            },
+        });
+        input.draw(input_win);
+
         try self.vx.render();
     }
 }
