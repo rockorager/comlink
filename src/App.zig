@@ -424,7 +424,8 @@ pub fn run(self: *App) !void {
                             .{
                                 .text = member.nick,
                                 .style = .{
-                                    .fg = if (member.away) .{ .index = 0 } else member.color,
+                                    .fg = member.color,
+                                    .dim = member.away,
                                 },
                             },
                         };
