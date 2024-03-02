@@ -11,8 +11,6 @@ const log = std.log.scoped(.client);
 
 const Client = @This();
 
-var randGen = std.rand.DefaultPrng.init(0);
-
 pub const Config = struct {
     user: []const u8,
     nick: []const u8,
@@ -155,13 +153,16 @@ pub fn getOrCreateChannel(self: *Client, name: []const u8) !*irc.Channel {
     return self.getOrCreateChannel(name);
 }
 
+var color_indices = [_]u8{ 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14 };
+
 pub fn getOrCreateUser(self: *Client, nick: []const u8) !*irc.User {
     return self.users.get(nick) orelse {
-        const r = randGen.random().int(u8);
-        const g = randGen.random().int(u8);
-        const b = randGen.random().int(u8);
+        const color_u32 = std.hash.Fnv1a_32.hash(nick);
+        const index = color_u32 % color_indices.len;
+        const color_index = color_indices[index];
+
         const color: vaxis.Color = .{
-            .rgb = [_]u8{ r, g, b },
+            .index = color_index,
         };
         const user = try self.alloc.create(irc.User);
         user.* = .{
