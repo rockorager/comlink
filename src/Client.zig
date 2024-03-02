@@ -26,7 +26,7 @@ stream: std.net.Stream,
 config: Config,
 
 channels: std.ArrayList(irc.Channel),
-users: std.StringHashMap(irc.User),
+users: std.StringHashMap(*irc.User),
 
 pub fn init(alloc: std.mem.Allocator, app: *App, cfg: Config) !Client {
     const stream = try std.net.tcpConnectToHost(alloc, "chat.sr.ht", 6697);
@@ -39,7 +39,7 @@ pub fn init(alloc: std.mem.Allocator, app: *App, cfg: Config) !Client {
         .stream = stream,
         .config = cfg,
         .channels = std.ArrayList(irc.Channel).init(alloc),
-        .users = std.StringHashMap(irc.User).init(alloc),
+        .users = std.StringHashMap(*irc.User).init(alloc),
     };
 }
 
@@ -60,7 +60,8 @@ pub fn deinit(self: *Client) void {
 
     var user_iter = self.users.valueIterator();
     while (user_iter.next()) |user| {
-        user.deinit(self.alloc);
+        user.*.deinit(self.alloc);
+        self.alloc.destroy(user.*);
     }
     self.users.deinit();
 }
@@ -131,4 +132,31 @@ pub fn connect(self: *Client) !void {
         .{ self.config.user, self.config.real_name },
     );
     try self.app.queueWrite(self, user);
+}
+
+pub fn getOrCreateChannel(self: *Client, name: []const u8) !*irc.Channel {
+    for (self.channels.items) |*channel| {
+        if (std.mem.eql(u8, name, channel.name)) {
+            return channel;
+        }
+    }
+    const channel: irc.Channel = .{
+        .name = try self.alloc.dupe(u8, name),
+        .members = std.ArrayList(*irc.User).init(self.alloc),
+    };
+    try self.channels.append(channel);
+
+    std.sort.insertion(irc.Channel, self.channels.items, {}, irc.Channel.compare);
+    return self.getOrCreateChannel(name);
+}
+
+pub fn getOrCreateUser(self: *Client, nick: []const u8) !*irc.User {
+    return self.users.get(nick) orelse {
+        const user = try self.alloc.create(irc.User);
+        user.* = .{
+            .nick = try self.alloc.dupe(u8, nick),
+        };
+        try self.users.put(user.nick, user);
+        return user;
+    };
 }

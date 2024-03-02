@@ -52,6 +52,8 @@ vx: vaxis.Vaxis(Event),
 /// our queue of writes
 write_queue: vaxis.Queue(WriteRequest, 128) = .{},
 
+selected_channel_index: usize = 0,
+
 /// initialize vaxis, lua state
 pub fn init(alloc: std.mem.Allocator) !App {
     var app: App = .{
@@ -238,6 +240,19 @@ pub fn run(self: *App) !void {
                     .RPL_MYINFO => {},
                     .RPL_ISUPPORT => {},
                     .RPL_LOGGEDIN => {},
+                    .RPL_TOPIC => {
+                        // syntax: <client> <channel> :<topic>
+                        var iter = msg.paramIterator();
+                        _ = iter.next() orelse continue :loop; // client ("*")
+                        const channel_name = iter.next() orelse continue :loop; // channel
+                        const topic = iter.next() orelse continue :loop; // topic
+
+                        var channel = try msg.client.getOrCreateChannel(channel_name);
+                        if (channel.topic) |old_topic| {
+                            self.alloc.free(old_topic);
+                        }
+                        channel.topic = try self.alloc.dupe(u8, topic);
+                    },
                     .RPL_SASLSUCCESS => {},
                     .RPL_NAMREPLY => {
                         // syntax: <client> <symbol> <channel> :<nicks>
@@ -245,37 +260,15 @@ pub fn run(self: *App) !void {
                         _ = iter.next() orelse continue :loop; // client ("*")
                         _ = iter.next() orelse continue :loop; // symbol ("=", "@", "*")
                         const channel_name = iter.next() orelse continue :loop; // channel
-
-                        for (msg.client.channels.items, 0..) |chan, i| {
-                            if (mem.eql(u8, chan.name, channel_name)) {
-                                var channel = msg.client.channels.swapRemove(i);
-                                channel.deinit(self.alloc);
-                                break;
-                            }
-                        }
-                        var channel: irc.Channel = .{
-                            .name = try self.alloc.dupe(u8, channel_name),
-                            .members = std.ArrayList(*irc.User).init(self.alloc),
-                        };
-
                         const nick_list = iter.next() orelse continue :loop; // member list
+
+                        var channel = try msg.client.getOrCreateChannel(channel_name);
                         var nick_iter = std.mem.splitScalar(u8, nick_list, ' ');
-                        var users = &msg.client.users;
-                        var members = &channel.members;
                         while (nick_iter.next()) |nick| {
-                            const user_ptr: *irc.User = users.getPtr(nick) orelse blk: {
-                                const user: irc.User = .{
-                                    .nick = try self.alloc.dupe(u8, nick),
-                                };
-                                try users.put(user.nick, user);
-
-                                break :blk users.getPtr(nick) orelse unreachable;
-                            };
-                            try members.append(user_ptr);
+                            const user_ptr = try msg.client.getOrCreateUser(nick);
+                            try channel.members.append(user_ptr);
                         }
-                        try msg.client.channels.append(channel);
-
-                        std.sort.insertion(irc.Channel, msg.client.channels.items, {}, irc.Channel.compare);
+                        channel.sortMembers();
                     },
                     .BOUNCER => {
                         var iter = msg.paramIterator();
@@ -374,7 +367,12 @@ pub fn run(self: *App) !void {
         });
 
         // draw the message list
-        var message_list_win = win.initChild(channel_list_width + 1, 0, .{ .limit = message_list_width - 1 }, .expand);
+        var message_list_win = win.initChild(
+            channel_list_width + 1,
+            0,
+            .{ .limit = message_list_width - 1 },
+            .expand,
+        );
         message_list_win = vaxis.widgets.border.right(message_list_win, .{});
         message_list_win.fill(.{
             .style = .{
@@ -388,12 +386,8 @@ pub fn run(self: *App) !void {
                 .bg = .{ .index = 4 },
             },
         });
-        var input_win = message_list_win.initChild(0, win.height - 1, .expand, .{ .limit = 1 });
-        input_win.fill(.{
-            .style = .{
-                .bg = .{ .index = 3 },
-            },
-        });
+        const input_win = message_list_win.initChild(0, win.height - 1, .expand, .{ .limit = 1 });
+        input_win.clear();
         input.draw(input_win);
 
         try self.vx.render();
