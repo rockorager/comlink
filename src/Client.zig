@@ -2,12 +2,16 @@ const std = @import("std");
 const tls = std.crypto.tls;
 const irc = @import("irc.zig");
 
+const vaxis = @import("vaxis");
+
 const App = @import("App.zig");
 const Message = @import("Message.zig");
 
 const log = std.log.scoped(.client);
 
 const Client = @This();
+
+var randGen = std.rand.DefaultPrng.init(0);
 
 pub const Config = struct {
     user: []const u8,
@@ -29,14 +33,11 @@ channels: std.ArrayList(irc.Channel),
 users: std.StringHashMap(*irc.User),
 
 pub fn init(alloc: std.mem.Allocator, app: *App, cfg: Config) !Client {
-    const stream = try std.net.tcpConnectToHost(alloc, "chat.sr.ht", 6697);
-
-    const client = try tls.Client.init(stream, app.bundle, "chat.sr.ht");
     return .{
         .alloc = alloc,
         .app = app,
-        .client = client,
-        .stream = stream,
+        .client = undefined,
+        .stream = undefined,
         .config = cfg,
         .channels = std.ArrayList(irc.Channel).init(alloc),
         .users = std.StringHashMap(*irc.User).init(alloc),
@@ -67,6 +68,7 @@ pub fn deinit(self: *Client) void {
 }
 
 pub fn readLoop(self: *Client) !void {
+    try self.connect();
     // We should be able to read 512 + 8191 = 8703 bytes. Round up to
     // nearest power of 2
     var buf: [10_000]u8 = undefined;
@@ -94,6 +96,9 @@ pub fn write(self: *Client, buf: []const u8) !void {
 }
 
 pub fn connect(self: *Client) !void {
+    self.stream = try std.net.tcpConnectToHost(self.alloc, "chat.sr.ht", 6697);
+    self.client = try tls.Client.init(self.stream, self.app.bundle, "chat.sr.ht");
+
     var buf: [4096]u8 = undefined;
 
     try self.app.queueWrite(self, "CAP LS 302\r\n");
@@ -152,9 +157,16 @@ pub fn getOrCreateChannel(self: *Client, name: []const u8) !*irc.Channel {
 
 pub fn getOrCreateUser(self: *Client, nick: []const u8) !*irc.User {
     return self.users.get(nick) orelse {
+        const r = randGen.random().int(u8);
+        const g = randGen.random().int(u8);
+        const b = randGen.random().int(u8);
+        const color: vaxis.Color = .{
+            .rgb = [_]u8{ r, g, b },
+        };
         const user = try self.alloc.create(irc.User);
         user.* = .{
             .nick = try self.alloc.dupe(u8, nick),
+            .color = color,
         };
         try self.users.put(user.nick, user);
         return user;

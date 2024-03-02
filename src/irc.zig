@@ -1,6 +1,9 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
+const vaxis = @import("vaxis");
+const ziglyph = vaxis.ziglyph;
+
 const log = std.log.scoped(.irc);
 
 pub const Command = enum {
@@ -17,9 +20,10 @@ pub const Command = enum {
     RPL_SASLSUCCESS, // 903
 
     // Named commands
-    CAP,
     AUTHENTICATE,
+    AWAY,
     BOUNCER,
+    CAP,
 
     unknown,
 
@@ -35,9 +39,10 @@ pub const Command = enum {
         .{ "900", .RPL_LOGGEDIN },
         .{ "903", .RPL_SASLSUCCESS },
 
-        .{ "CAP", .CAP },
         .{ "AUTHENTICATE", .AUTHENTICATE },
+        .{ "AWAY", .AWAY },
         .{ "BOUNCER", .BOUNCER },
+        .{ "CAP", .CAP },
     });
 
     pub fn parse(cmd: []const u8) Command {
@@ -62,7 +67,7 @@ pub const Channel = struct {
         return std.mem.order(u8, lhs.name, rhs.name).compare(std.math.CompareOperator.lt);
     }
 
-    pub fn sortMembers(self: *Channel) void {
+    pub fn sortMembers(self: *Channel) !void {
         std.sort.insertion(*User, self.members.items, {}, User.compare);
     }
 };
@@ -70,12 +75,23 @@ pub const Channel = struct {
 pub const User = struct {
     nick: []const u8,
     away: bool = false,
+    color: vaxis.Color = .default,
 
     pub fn deinit(self: *const User, alloc: std.mem.Allocator) void {
         alloc.free(self.nick);
     }
 
     pub fn compare(_: void, lhs: *User, rhs: *User) bool {
-        return std.mem.order(u8, lhs.nick, rhs.nick).compare(std.math.CompareOperator.lt);
+        var lhs_iter: ziglyph.CodePointIterator = .{ .bytes = lhs.nick };
+        var rhs_iter: ziglyph.CodePointIterator = .{ .bytes = rhs.nick };
+        while (lhs_iter.next()) |lhs_cp| {
+            const rhs_cp = rhs_iter.next() orelse return false;
+            const lhs_lower = ziglyph.toLower(lhs_cp.code);
+            const rhs_lower = ziglyph.toLower(rhs_cp.code);
+            if (lhs_lower != rhs_lower) {
+                return lhs_lower < rhs_lower;
+            }
+        }
+        return false;
     }
 };

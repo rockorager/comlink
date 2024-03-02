@@ -1,6 +1,7 @@
 const std = @import("std");
 const vaxis = @import("vaxis");
 const ziglua = @import("ziglua");
+const ziglyph = vaxis.ziglyph;
 
 const assert = std.debug.assert;
 const base64 = std.base64.standard.Encoder;
@@ -164,18 +165,20 @@ pub fn run(self: *App) !void {
         const event = self.vx.nextEvent();
         switch (event) {
             .key_press => |key| {
-                if (key.matches('c', .{ .ctrl = true })) {
+                if (key.matches('c', .{ .ctrl = true }))
                     return;
-                }
+                if (key.matches(vaxis.Key.down, .{ .alt = true }))
+                    self.selected_channel_index +|= 1;
+                if (key.matches(vaxis.Key.up, .{ .alt = true }))
+                    self.selected_channel_index -|= 1;
                 try input.update(.{ .key_press = key });
             },
             .winsize => |ws| try self.vx.resize(self.alloc, ws),
             .connect => |cfg| {
-                var client = try self.alloc.create(Client);
+                const client = try self.alloc.create(Client);
                 client.* = try Client.init(self.alloc, self, cfg);
                 const client_read_thread = try std.Thread.spawn(.{}, Client.readLoop, .{client});
                 client_read_thread.detach();
-                try client.connect();
                 try self.clients.append(client);
             },
             .message => |msg| {
@@ -268,7 +271,7 @@ pub fn run(self: *App) !void {
                             const user_ptr = try msg.client.getOrCreateUser(nick);
                             try channel.members.append(user_ptr);
                         }
-                        channel.sortMembers();
+                        try channel.sortMembers();
                     },
                     .BOUNCER => {
                         var iter = msg.paramIterator();
@@ -305,19 +308,27 @@ pub fn run(self: *App) !void {
                             }
                         }
                     },
+                    .AWAY => {
+                        const src = msg.source orelse continue :loop;
+                        var iter = msg.paramIterator();
+                        const n = std.mem.indexOfScalar(u8, src, '!') orelse src.len;
+                        const user = try msg.client.getOrCreateUser(src[0..n]);
+                        // If there are any params, the user is away. Otherwise
+                        // they are back.
+                        user.away = if (iter.next()) |_| true else false;
+                    },
                 }
             },
         }
 
         const win = self.vx.window();
         win.clear();
-        var row: usize = 0;
 
         const channel_list_width = 16;
         const member_list_width = 16;
         const message_list_width = win.width - channel_list_width - member_list_width;
 
-        // draw the channel list (left sidebar)
+        // channel list
         var channel_list_win = win.initChild(
             0,
             0,
@@ -325,9 +336,37 @@ pub fn run(self: *App) !void {
             .expand,
         );
         channel_list_win = vaxis.widgets.border.right(channel_list_win, .{});
+
+        // member list
+        const member_list_win = win.initChild(
+            channel_list_width + message_list_width,
+            0,
+            .expand,
+            .expand,
+        );
+
+        // message list
+        var message_list_win = win.initChild(
+            channel_list_width + 1,
+            0,
+            .{ .limit = message_list_width - 1 },
+            .expand,
+        );
+        message_list_win = vaxis.widgets.border.right(message_list_win, .{});
+
+        var topic_win = message_list_win.initChild(0, 0, .expand, .{ .limit = 1 });
+
+        var row: usize = 0;
         for (self.clients.items) |client| {
+            const style: vaxis.Style = if (row == self.selected_channel_index)
+                .{ .reverse = true }
+            else
+                .{};
             var segs = [_]vaxis.Segment{
-                .{ .text = client.config.name orelse client.config.server },
+                .{
+                    .text = client.config.name orelse client.config.server,
+                    .style = style,
+                },
             };
             _ = try channel_list_win.print(
                 &segs,
@@ -336,10 +375,19 @@ pub fn run(self: *App) !void {
             row += 1;
 
             for (client.channels.items) |channel| {
+                const chan_style: vaxis.Style = if (row == self.selected_channel_index)
+                    .{ .reverse = true }
+                else
+                    .{};
                 defer row += 1;
                 var chan_seg = [_]vaxis.Segment{
-                    .{ .text = "  " },
-                    .{ .text = channel.name },
+                    .{
+                        .text = "  ",
+                    },
+                    .{
+                        .text = channel.name,
+                        .style = chan_style,
+                    },
                 };
                 const overflow = try channel_list_win.print(
                     &chan_seg,
@@ -349,43 +397,48 @@ pub fn run(self: *App) !void {
                     },
                 );
                 if (overflow)
-                    channel_list_win.writeCell(channel_list_width - 1, row, .{
-                        .char = .{
-                            .grapheme = "…",
-                            .width = 1,
+                    channel_list_win.writeCell(
+                        channel_list_width - 1,
+                        row,
+                        .{
+                            .char = .{
+                                .grapheme = "…",
+                                .width = 1,
+                            },
                         },
-                    });
+                    );
+                if (row == self.selected_channel_index) {
+                    var topic_seg = [_]vaxis.Segment{
+                        .{
+                            .text = channel.topic orelse "",
+                        },
+                    };
+                    _ = try topic_win.print(&topic_seg, .{ .wrap = .none });
+                    var member_row: usize = 0;
+                    for (channel.members.items) |member| {
+                        defer member_row += 1;
+                        var member_seg = [_]vaxis.Segment{
+                            .{
+                                .text = " ",
+                            },
+                            .{
+                                .text = member.nick,
+                                .style = .{
+                                    .fg = if (member.away) .{ .index = 0 } else member.color,
+                                },
+                            },
+                        };
+                        _ = try member_list_win.print(
+                            &member_seg,
+                            .{
+                                .row_offset = member_row,
+                            },
+                        );
+                    }
+                }
             }
         }
 
-        // draw the member list (right sidebar)
-        const member_list_win = win.initChild(channel_list_width + message_list_width, 0, .expand, .expand);
-        member_list_win.fill(.{
-            .style = .{
-                .bg = .{ .index = 2 },
-            },
-        });
-
-        // draw the message list
-        var message_list_win = win.initChild(
-            channel_list_width + 1,
-            0,
-            .{ .limit = message_list_width - 1 },
-            .expand,
-        );
-        message_list_win = vaxis.widgets.border.right(message_list_win, .{});
-        message_list_win.fill(.{
-            .style = .{
-                .bg = .{ .index = 1 },
-            },
-        });
-
-        var topic_win = message_list_win.initChild(0, 0, .expand, .{ .limit = 1 });
-        topic_win.fill(.{
-            .style = .{
-                .bg = .{ .index = 4 },
-            },
-        });
         const input_win = message_list_win.initChild(0, win.height - 1, .expand, .{ .limit = 1 });
         input_win.clear();
         input.draw(input_win);
