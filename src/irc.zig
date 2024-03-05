@@ -2,7 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const vaxis = @import("vaxis");
-const ziglyph = vaxis.ziglyph;
+const Message = @import("Message.zig");
 
 const log = std.log.scoped(.irc);
 
@@ -15,6 +15,7 @@ pub const Command = enum {
 
     RPL_TOPIC, // 332
     RPL_NAMREPLY, // 353
+    RPL_ENDOFNAMES, // 366
 
     RPL_LOGGEDIN, // 900
     RPL_SASLSUCCESS, // 903
@@ -24,6 +25,7 @@ pub const Command = enum {
     AWAY,
     BOUNCER,
     CAP,
+    PRIVMSG,
 
     unknown,
 
@@ -36,6 +38,8 @@ pub const Command = enum {
 
         .{ "332", .RPL_TOPIC },
         .{ "353", .RPL_NAMREPLY },
+        .{ "366", .RPL_ENDOFNAMES },
+
         .{ "900", .RPL_LOGGEDIN },
         .{ "903", .RPL_SASLSUCCESS },
 
@@ -43,6 +47,7 @@ pub const Command = enum {
         .{ "AWAY", .AWAY },
         .{ "BOUNCER", .BOUNCER },
         .{ "CAP", .CAP },
+        .{ "PRIVMSG", .PRIVMSG },
     });
 
     pub fn parse(cmd: []const u8) Command {
@@ -54,6 +59,11 @@ pub const Channel = struct {
     name: []const u8,
     topic: ?[]const u8 = null,
     members: std.ArrayList(*User),
+    // inited is true after we receive 366 ENDOFNAMES
+    inited: bool = false,
+
+    messages: std.ArrayList(Message),
+    history_requested: bool = false,
 
     pub fn deinit(self: *const Channel, alloc: std.mem.Allocator) void {
         alloc.free(self.name);
@@ -61,10 +71,14 @@ pub const Channel = struct {
         if (self.topic) |topic| {
             alloc.free(topic);
         }
+        for (self.messages.items) |msg| {
+            msg.deinit(alloc);
+        }
+        self.messages.deinit();
     }
 
     pub fn compare(_: void, lhs: Channel, rhs: Channel) bool {
-        return std.mem.order(u8, lhs.name, rhs.name).compare(std.math.CompareOperator.lt);
+        return std.ascii.orderIgnoreCase(lhs.name, rhs.name).compare(std.math.CompareOperator.lt);
     }
 
     pub fn sortMembers(self: *Channel) !void {
@@ -82,16 +96,6 @@ pub const User = struct {
     }
 
     pub fn compare(_: void, lhs: *User, rhs: *User) bool {
-        var lhs_iter: ziglyph.CodePointIterator = .{ .bytes = lhs.nick };
-        var rhs_iter: ziglyph.CodePointIterator = .{ .bytes = rhs.nick };
-        while (lhs_iter.next()) |lhs_cp| {
-            const rhs_cp = rhs_iter.next() orelse return false;
-            const lhs_lower = ziglyph.toLower(lhs_cp.code);
-            const rhs_lower = ziglyph.toLower(rhs_cp.code);
-            if (lhs_lower != rhs_lower) {
-                return lhs_lower < rhs_lower;
-            }
-        }
-        return false;
+        return std.ascii.orderIgnoreCase(lhs.nick, rhs.nick).compare(std.math.CompareOperator.lt);
     }
 };

@@ -9,6 +9,7 @@ const mem = std.mem;
 
 const irc = @import("irc.zig");
 const lua = @import("lua.zig");
+const strings = @import("strings.zig");
 
 // data structures
 const Client = @import("Client.zig");
@@ -182,7 +183,10 @@ pub fn run(self: *App) !void {
                 try self.clients.append(client);
             },
             .message => |msg| {
-                defer msg.deinit(self.alloc);
+                var keep_message: bool = false;
+                defer {
+                    if (!keep_message) msg.deinit(self.alloc);
+                }
                 switch (msg.command) {
                     .unknown => {},
                     .CAP => {
@@ -266,12 +270,25 @@ pub fn run(self: *App) !void {
                         const nick_list = iter.next() orelse continue :loop; // member list
 
                         var channel = try msg.client.getOrCreateChannel(channel_name);
+                        if (channel.inited) {
+                            channel.members.clearAndFree();
+                            channel.inited = false;
+                        }
                         var nick_iter = std.mem.splitScalar(u8, nick_list, ' ');
                         while (nick_iter.next()) |nick| {
                             const user_ptr = try msg.client.getOrCreateUser(nick);
                             try channel.members.append(user_ptr);
                         }
                         try channel.sortMembers();
+                    },
+                    .RPL_ENDOFNAMES => {
+                        // syntax: <client> <channel> :End of /NAMES list
+                        var iter = msg.paramIterator();
+                        _ = iter.next() orelse continue :loop; // client ("*")
+                        const channel_name = iter.next() orelse continue :loop; // channel
+
+                        var channel = try msg.client.getOrCreateChannel(channel_name);
+                        channel.inited = true;
                     },
                     .BOUNCER => {
                         var iter = msg.paramIterator();
@@ -317,6 +334,21 @@ pub fn run(self: *App) !void {
                         // they are back.
                         user.away = if (iter.next()) |_| true else false;
                     },
+                    .PRIVMSG => {
+                        keep_message = true;
+                        // syntax: <target> :<message>
+                        var iter = msg.paramIterator();
+                        const target = iter.next() orelse continue;
+                        assert(target.len > 0);
+                        switch (target[0]) {
+                            '#' => {
+                                var channel = try msg.client.getOrCreateChannel(target);
+                                try channel.messages.append(msg);
+                            },
+                            '$' => {}, // broadcast to all users
+                            else => {}, // DM to me
+                        }
+                    },
                 }
             },
         }
@@ -346,15 +378,16 @@ pub fn run(self: *App) !void {
         );
 
         // message list
-        var message_list_win = win.initChild(
+        var middle_win = win.initChild(
             channel_list_width + 1,
             0,
             .{ .limit = message_list_width - 1 },
             .expand,
         );
-        message_list_win = vaxis.widgets.border.right(message_list_win, .{});
+        middle_win = vaxis.widgets.border.right(middle_win, .{});
 
-        var topic_win = message_list_win.initChild(0, 0, .expand, .{ .limit = 1 });
+        var topic_win = middle_win.initChild(0, 0, .expand, .{ .limit = 2 });
+        topic_win = vaxis.widgets.border.bottom(topic_win, .{});
 
         var row: usize = 0;
         for (self.clients.items) |client| {
@@ -374,7 +407,7 @@ pub fn run(self: *App) !void {
             );
             row += 1;
 
-            for (client.channels.items) |channel| {
+            for (client.channels.items) |*channel| {
                 const chan_style: vaxis.Style = if (row == self.selected_channel_index)
                     .{ .reverse = true }
                 else
@@ -408,6 +441,16 @@ pub fn run(self: *App) !void {
                         },
                     );
                 if (row == self.selected_channel_index) {
+                    if (channel.messages.items.len == 0 and !channel.history_requested) {
+                        var buf: [128]u8 = undefined;
+                        const hist = try std.fmt.bufPrint(
+                            &buf,
+                            "CHATHISTORY LATEST {s} * 50\r\n",
+                            .{channel.name},
+                        );
+                        channel.history_requested = true;
+                        try self.queueWrite(client, hist);
+                    }
                     var topic_seg = [_]vaxis.Segment{
                         .{
                             .text = channel.topic orelse "",
@@ -436,11 +479,92 @@ pub fn run(self: *App) !void {
                             },
                         );
                     }
+
+                    // loop the messages and print from the last line to current
+                    // line
+                    var i: usize = channel.messages.items.len;
+                    var h: usize = 0;
+                    const message_list_win = middle_win.initChild(
+                        0,
+                        2,
+                        .expand,
+                        .{ .limit = middle_win.height -| 3 },
+                    );
+                    var prev_sender: []const u8 = "";
+                    var sender_win: ?vaxis.Window = null;
+                    while (i > 0) {
+                        i -= 1;
+                        const message = channel.messages.items[i];
+                        // syntax: <target> <message>
+                        var iter = message.paramIterator();
+                        // target is the channel, and we already handled that
+                        _ = iter.next() orelse continue;
+
+                        // if this is the same sender, we will clear the last
+                        // sender_win and reduce one from the row we are
+                        // printing on
+                        const sender = message.source orelse "";
+                        if (sender_win != null and mem.eql(u8, sender, prev_sender)) {
+                            sender_win.?.clear();
+                            h -= 2;
+                        }
+
+                        // print the content first
+                        const content = iter.next() orelse continue;
+                        h += strings.lineCountForWindow(message_list_win, content) + 1;
+                        var content_seg = [_]vaxis.Segment{
+                            .{ .text = content },
+                        };
+                        const content_win = message_list_win.initChild(
+                            0,
+                            message_list_win.height -| h,
+                            .expand,
+                            .{ .limit = h },
+                        );
+                        _ = try content_win.print(
+                            &content_seg,
+                            .{ .wrap = .word },
+                        );
+
+                        // print the sender
+                        defer prev_sender = sender;
+                        if (h >= message_list_win.height) break;
+
+                        h += 1;
+                        const user = try client.getOrCreateUser(sender);
+                        var sender_segment = [_]vaxis.Segment{
+                            .{
+                                .text = sender,
+                                .style = .{
+                                    .fg = user.color,
+                                    .bold = true,
+                                },
+                            },
+                            .{
+                                .text = "  ",
+                            },
+                            .{
+                                // TODO: parse time
+                                .text = message.tags orelse "",
+                                .style = .{ .fg = .{ .index = 8 } },
+                            },
+                        };
+                        sender_win = message_list_win.initChild(
+                            0,
+                            message_list_win.height -| h,
+                            .expand,
+                            .{ .limit = 1 },
+                        );
+                        _ = try sender_win.?.print(
+                            &sender_segment,
+                            .{ .wrap = .word },
+                        );
+                    }
                 }
             }
         }
 
-        const input_win = message_list_win.initChild(0, win.height - 1, .expand, .{ .limit = 1 });
+        const input_win = middle_win.initChild(0, win.height - 1, .expand, .{ .limit = 1 });
         input_win.clear();
         input.draw(input_win);
 

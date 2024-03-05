@@ -146,6 +146,7 @@ pub fn getOrCreateChannel(self: *Client, name: []const u8) !*irc.Channel {
     const channel: irc.Channel = .{
         .name = try self.alloc.dupe(u8, name),
         .members = std.ArrayList(*irc.User).init(self.alloc),
+        .messages = std.ArrayList(Message).init(self.alloc),
     };
     try self.channels.append(channel);
 
@@ -153,7 +154,7 @@ pub fn getOrCreateChannel(self: *Client, name: []const u8) !*irc.Channel {
     return self.getOrCreateChannel(name);
 }
 
-var color_indices = [_]u8{ 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14 };
+var color_indices = [_]u8{ 1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14 };
 
 pub fn getOrCreateUser(self: *Client, nick: []const u8) !*irc.User {
     return self.users.get(nick) orelse {
