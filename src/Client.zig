@@ -82,7 +82,12 @@ pub fn readLoop(self: *Client) !void {
         while (iter.next()) |line| {
             if (line.len == 0) continue;
             log.debug("[server] {s}", .{line});
-            const msg = try Message.init(try self.alloc.dupe(u8, line), self);
+            const duped_line = try self.alloc.dupe(u8, line);
+            const msg = Message.init(duped_line, self) catch |err| {
+                log.err("[server] invalid message {}", .{err});
+                self.alloc.free(duped_line);
+                continue;
+            };
             self.app.vx.postEvent(.{ .message = msg });
         }
     }
@@ -115,12 +120,14 @@ pub fn connect(self: *Client) !void {
     const caps = try std.mem.join(self.alloc, " ", &required_caps);
     defer self.alloc.free(caps);
 
-    const cap_req = try std.fmt.bufPrint(
-        &buf,
-        "CAP REQ :{s}\r\n",
-        .{caps},
-    );
-    try self.app.queueWrite(self, cap_req);
+    for (required_caps) |cap| {
+        const cap_req = try std.fmt.bufPrint(
+            &buf,
+            "CAP REQ :{s}\r\n",
+            .{cap},
+        );
+        try self.app.queueWrite(self, cap_req);
+    }
 
     const nick = try std.fmt.bufPrint(
         &buf,
