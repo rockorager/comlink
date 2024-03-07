@@ -490,6 +490,12 @@ pub fn run(self: *App) !void {
                         .expand,
                         .{ .limit = middle_win.height -| 3 },
                     );
+                    const message_offset_win = message_list_win.initChild(
+                        6,
+                        0,
+                        .expand,
+                        .expand,
+                    );
                     var prev_sender: []const u8 = "";
                     var sender_win: ?vaxis.Window = null;
                     while (i > 0) {
@@ -511,19 +517,26 @@ pub fn run(self: *App) !void {
 
                         // print the content first
                         const content = iter.next() orelse continue;
-                        h += strings.lineCountForWindow(message_list_win, content) + 1;
+                        const n = strings.lineCountForWindow(message_offset_win, content) + 1;
+                        h += n;
                         var content_seg = [_]vaxis.Segment{
                             .{ .text = content },
                         };
-                        const content_win = message_list_win.initChild(
+                        const content_win = message_offset_win.initChild(
                             0,
-                            message_list_win.height -| h,
+                            message_offset_win.height -| h,
                             .expand,
                             .{ .limit = h },
                         );
                         _ = try content_win.print(
                             &content_seg,
                             .{ .wrap = .word },
+                        );
+                        const gutter = message_list_win.initChild(
+                            0,
+                            message_list_win.height -| h,
+                            .{ .limit = 5 },
+                            .{ .limit = h },
                         );
 
                         // print the sender
@@ -532,6 +545,15 @@ pub fn run(self: *App) !void {
 
                         h += 1;
                         const user = try client.getOrCreateUser(sender);
+
+                        var time_seg = [_]vaxis.Segment{
+                            .{
+                                .text = message.tags.?[16..21],
+                                .style = .{ .fg = .{ .index = 8 } },
+                            },
+                        };
+                        _ = try gutter.print(&time_seg, .{});
+
                         var sender_segment = [_]vaxis.Segment{
                             .{
                                 .text = sender,
@@ -540,17 +562,9 @@ pub fn run(self: *App) !void {
                                     .bold = true,
                                 },
                             },
-                            .{
-                                .text = "  ",
-                            },
-                            .{
-                                // TODO: parse time
-                                .text = message.tags orelse "",
-                                .style = .{ .fg = .{ .index = 8 } },
-                            },
                         };
                         sender_win = message_list_win.initChild(
-                            0,
+                            6,
                             message_list_win.height -| h,
                             .expand,
                             .{ .limit = 1 },
