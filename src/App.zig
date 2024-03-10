@@ -261,6 +261,21 @@ pub fn run(self: *App) !void {
                         channel.topic = try self.alloc.dupe(u8, topic);
                     },
                     .RPL_SASLSUCCESS => {},
+                    .RPL_WHOREPLY => {
+                        // syntax: <client> <channel> <username> <host> <server> <nick> <flags> :<hopcount> <real name>
+
+                        var iter = msg.paramIterator();
+                        _ = iter.next() orelse continue :loop; // client
+                        _ = iter.next() orelse continue :loop; // channel
+                        _ = iter.next() orelse continue :loop; // username
+                        _ = iter.next() orelse continue :loop; // host
+                        _ = iter.next() orelse continue :loop; // server
+                        const nick = iter.next() orelse continue :loop; // nick
+                        const flags = iter.next() orelse continue :loop; // nick
+
+                        const user_ptr = try msg.client.getOrCreateUser(nick);
+                        if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
+                    },
                     .RPL_NAMREPLY => {
                         // syntax: <client> <symbol> <channel> :<nicks>
                         var iter = msg.paramIterator();
@@ -450,6 +465,13 @@ pub fn run(self: *App) !void {
                         );
                         channel.history_requested = true;
                         try self.queueWrite(client, hist);
+                        const who = try std.fmt.bufPrint(
+                            &buf,
+                            "WHO {s}\r\n",
+                            .{channel.name},
+                        );
+                        channel.history_requested = true;
+                        try self.queueWrite(client, who);
                     }
                     var topic_seg = [_]vaxis.Segment{
                         .{
@@ -467,8 +489,10 @@ pub fn run(self: *App) !void {
                             .{
                                 .text = member.nick,
                                 .style = .{
-                                    .fg = member.color,
-                                    .dim = member.away,
+                                    .fg = if (member.away)
+                                        .{ .index = 8 }
+                                    else
+                                        member.color,
                                 },
                             },
                         };

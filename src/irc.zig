@@ -14,6 +14,7 @@ pub const Command = enum {
     RPL_ISUPPORT, // 005
 
     RPL_TOPIC, // 332
+    RPL_WHOREPLY, // 352
     RPL_NAMREPLY, // 353
     RPL_ENDOFNAMES, // 366
 
@@ -37,6 +38,7 @@ pub const Command = enum {
         .{ "005", .RPL_ISUPPORT },
 
         .{ "332", .RPL_TOPIC },
+        .{ "352", .RPL_WHOREPLY },
         .{ "353", .RPL_NAMREPLY },
         .{ "366", .RPL_ENDOFNAMES },
 

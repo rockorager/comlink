@@ -29,6 +29,7 @@ pub const ParamIterator = struct {
         }
 
         const start = self.index;
+        if (start >= params.len) return null;
 
         // If our first byte is a ':', we return the rest of the string as a
         // single param (or the empty string)
