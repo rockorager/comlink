@@ -23,6 +23,7 @@ const App = @This();
 /// Any event our application will handle
 pub const Event = union(enum) {
     key_press: vaxis.Key,
+    mouse: vaxis.Mouse,
     winsize: vaxis.Winsize,
     message: Message,
     connect: Client.Config,
@@ -55,6 +56,7 @@ vx: vaxis.Vaxis(Event),
 write_queue: vaxis.Queue(WriteRequest, 128) = .{},
 
 selected_channel_index: usize = 0,
+scroll_offset: usize = 0,
 
 /// initialize vaxis, lua state
 pub fn init(alloc: std.mem.Allocator) !App {
@@ -130,6 +132,7 @@ pub fn run(self: *App) !void {
         try self.vx.startReadThread();
         try self.vx.enterAltScreen();
         try self.vx.queryTerminal();
+        try self.vx.setMouseMode(true);
     }
 
     // start our write thread
@@ -173,6 +176,14 @@ pub fn run(self: *App) !void {
                 if (key.matches(vaxis.Key.up, .{ .alt = true }))
                     self.selected_channel_index -|= 1;
                 try input.update(.{ .key_press = key });
+            },
+            .mouse => |mouse| {
+                switch (mouse.button) {
+                    .wheel_up => self.scroll_offset +|= 1,
+                    .wheel_down => self.scroll_offset -|= 1,
+                    else => {},
+                }
+                log.debug("mouse event: {}", .{mouse});
             },
             .winsize => |ws| try self.vx.resize(self.alloc, ws),
             .connect => |cfg| {
@@ -506,7 +517,7 @@ pub fn run(self: *App) !void {
 
                     // loop the messages and print from the last line to current
                     // line
-                    var i: usize = channel.messages.items.len;
+                    var i: usize = channel.messages.items.len -| self.scroll_offset;
                     var h: usize = 0;
                     const message_list_win = middle_win.initChild(
                         0,
