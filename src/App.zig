@@ -166,217 +166,219 @@ pub fn run(self: *App) !void {
     defer input.deinit();
 
     loop: while (true) {
-        const event = self.vx.nextEvent();
-        switch (event) {
-            .key_press => |key| {
-                if (key.matches('c', .{ .ctrl = true }))
-                    return;
-                if (key.matches(vaxis.Key.down, .{ .alt = true }))
-                    self.selected_channel_index +|= 1;
-                if (key.matches(vaxis.Key.up, .{ .alt = true }))
-                    self.selected_channel_index -|= 1;
-                try input.update(.{ .key_press = key });
-            },
-            .mouse => |mouse| {
-                switch (mouse.button) {
-                    .wheel_up => self.scroll_offset +|= 1,
-                    .wheel_down => self.scroll_offset -|= 1,
-                    else => {},
-                }
-                log.debug("mouse event: {}", .{mouse});
-            },
-            .winsize => |ws| try self.vx.resize(self.alloc, ws),
-            .connect => |cfg| {
-                const client = try self.alloc.create(Client);
-                client.* = try Client.init(self.alloc, self, cfg);
-                const client_read_thread = try std.Thread.spawn(.{}, Client.readLoop, .{client});
-                client_read_thread.detach();
-                try self.clients.append(client);
-            },
-            .message => |msg| {
-                var keep_message: bool = false;
-                defer {
-                    if (!keep_message) msg.deinit(self.alloc);
-                }
-                switch (msg.command) {
-                    .unknown => {},
-                    .CAP => {
-                        var iter = msg.paramIterator();
-                        while (iter.next()) |param| {
-                            if (mem.eql(u8, param, "ACK")) {
-                                const caps = iter.next() orelse continue;
-                                // When we get an ACK for sasl, we initiate
-                                // authentication
-                                if (mem.indexOf(u8, caps, "sasl")) |_| {
-                                    try self.queueWrite(msg.client, "AUTHENTICATE PLAIN\r\n");
-                                }
-                            }
-                            if (mem.eql(u8, param, "NAK")) {
-                                log.err("required CAP not supported {s}", .{iter.next().?});
-                            }
-                        }
-                    },
-                    .AUTHENTICATE => {
-                        var iter = msg.paramIterator();
-                        while (iter.next()) |param| {
-                            // A '+' is the continuuation to send our
-                            // AUTHENTICATE info
-                            if (!mem.eql(u8, param, "+")) continue;
-                            var buf: [4096]u8 = undefined;
-                            const config = msg.client.config;
-                            const sasl = try std.fmt.bufPrint(
-                                &buf,
-                                "{s}\x00{s}\x00{s}",
-                                .{ config.user, config.nick, config.password },
-                            );
-
-                            // Create a buffer big enough for the base64 encoded string
-                            const b64_buf = try self.alloc.alloc(u8, base64.calcSize(sasl.len));
-                            defer self.alloc.free(b64_buf);
-                            const encoded = base64.encode(b64_buf, sasl);
-                            // Make our message
-                            const auth = try std.fmt.bufPrint(
-                                &buf,
-                                "AUTHENTICATE {s}\r\n",
-                                .{encoded},
-                            );
-                            try self.queueWrite(msg.client, auth);
-                            if (config.network_id) |id| {
-                                const bind = try std.fmt.bufPrint(
-                                    &buf,
-                                    "BOUNCER BIND {s}\r\n",
-                                    .{id},
-                                );
-                                try self.queueWrite(msg.client, bind);
-                            }
-                            try self.queueWrite(msg.client, "CAP END\r\n");
-                        }
-                    },
-                    .RPL_WELCOME => {},
-                    .RPL_YOURHOST => {},
-                    .RPL_CREATED => {},
-                    .RPL_MYINFO => {},
-                    .RPL_ISUPPORT => {},
-                    .RPL_LOGGEDIN => {},
-                    .RPL_TOPIC => {
-                        // syntax: <client> <channel> :<topic>
-                        var iter = msg.paramIterator();
-                        _ = iter.next() orelse continue :loop; // client ("*")
-                        const channel_name = iter.next() orelse continue :loop; // channel
-                        const topic = iter.next() orelse continue :loop; // topic
-
-                        var channel = try msg.client.getOrCreateChannel(channel_name);
-                        if (channel.topic) |old_topic| {
-                            self.alloc.free(old_topic);
-                        }
-                        channel.topic = try self.alloc.dupe(u8, topic);
-                    },
-                    .RPL_SASLSUCCESS => {},
-                    .RPL_WHOREPLY => {
-                        // syntax: <client> <channel> <username> <host> <server> <nick> <flags> :<hopcount> <real name>
-
-                        var iter = msg.paramIterator();
-                        _ = iter.next() orelse continue :loop; // client
-                        _ = iter.next() orelse continue :loop; // channel
-                        _ = iter.next() orelse continue :loop; // username
-                        _ = iter.next() orelse continue :loop; // host
-                        _ = iter.next() orelse continue :loop; // server
-                        const nick = iter.next() orelse continue :loop; // nick
-                        const flags = iter.next() orelse continue :loop; // nick
-
-                        const user_ptr = try msg.client.getOrCreateUser(nick);
-                        if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
-                    },
-                    .RPL_NAMREPLY => {
-                        // syntax: <client> <symbol> <channel> :<nicks>
-                        var iter = msg.paramIterator();
-                        _ = iter.next() orelse continue :loop; // client ("*")
-                        _ = iter.next() orelse continue :loop; // symbol ("=", "@", "*")
-                        const channel_name = iter.next() orelse continue :loop; // channel
-                        const nick_list = iter.next() orelse continue :loop; // member list
-
-                        var channel = try msg.client.getOrCreateChannel(channel_name);
-                        if (channel.inited) {
-                            channel.members.clearAndFree();
-                            channel.inited = false;
-                        }
-                        var nick_iter = std.mem.splitScalar(u8, nick_list, ' ');
-                        while (nick_iter.next()) |nick| {
-                            const user_ptr = try msg.client.getOrCreateUser(nick);
-                            try channel.members.append(user_ptr);
-                        }
-                        try channel.sortMembers();
-                    },
-                    .RPL_ENDOFNAMES => {
-                        // syntax: <client> <channel> :End of /NAMES list
-                        var iter = msg.paramIterator();
-                        _ = iter.next() orelse continue :loop; // client ("*")
-                        const channel_name = iter.next() orelse continue :loop; // channel
-
-                        var channel = try msg.client.getOrCreateChannel(channel_name);
-                        channel.inited = true;
-                    },
-                    .BOUNCER => {
-                        var iter = msg.paramIterator();
-                        while (iter.next()) |param| {
-                            if (mem.eql(u8, param, "NETWORK")) {
-                                const id = iter.next() orelse continue;
-                                const attr = iter.next() orelse continue;
-                                // check if we already have this network
-                                for (self.clients.items, 0..) |client, i| {
-                                    if (client.config.network_id) |net_id| {
-                                        if (mem.eql(u8, net_id, id)) {
-                                            if (mem.eql(u8, attr, "*")) {
-                                                // * means the network was
-                                                // deleted
-                                                client.deinit();
-                                                _ = self.clients.swapRemove(i);
-                                            }
-                                            continue :loop;
-                                        }
+        self.vx.pollEvent();
+        while (self.vx.queue.tryPop()) |event| {
+            switch (event) {
+                .key_press => |key| {
+                    if (key.matches('c', .{ .ctrl = true }))
+                        return;
+                    if (key.matches(vaxis.Key.down, .{ .alt = true }))
+                        self.selected_channel_index +|= 1;
+                    if (key.matches(vaxis.Key.up, .{ .alt = true }))
+                        self.selected_channel_index -|= 1;
+                    try input.update(.{ .key_press = key });
+                },
+                .mouse => |mouse| {
+                    switch (mouse.button) {
+                        .wheel_up => self.scroll_offset +|= 1,
+                        .wheel_down => self.scroll_offset -|= 1,
+                        else => {},
+                    }
+                    log.debug("mouse event: {}", .{mouse});
+                },
+                .winsize => |ws| try self.vx.resize(self.alloc, ws),
+                .connect => |cfg| {
+                    const client = try self.alloc.create(Client);
+                    client.* = try Client.init(self.alloc, self, cfg);
+                    const client_read_thread = try std.Thread.spawn(.{}, Client.readLoop, .{client});
+                    client_read_thread.detach();
+                    try self.clients.append(client);
+                },
+                .message => |msg| {
+                    var keep_message: bool = false;
+                    defer {
+                        if (!keep_message) msg.deinit(self.alloc);
+                    }
+                    switch (msg.command) {
+                        .unknown => {},
+                        .CAP => {
+                            var iter = msg.paramIterator();
+                            while (iter.next()) |param| {
+                                if (mem.eql(u8, param, "ACK")) {
+                                    const caps = iter.next() orelse continue;
+                                    // When we get an ACK for sasl, we initiate
+                                    // authentication
+                                    if (mem.indexOf(u8, caps, "sasl")) |_| {
+                                        try self.queueWrite(msg.client, "AUTHENTICATE PLAIN\r\n");
                                     }
                                 }
-
-                                var attr_iter = std.mem.splitScalar(u8, attr, ';');
-                                const name: ?[]const u8 = name: while (attr_iter.next()) |kv| {
-                                    const n = std.mem.indexOfScalar(u8, kv, '=') orelse continue;
-                                    if (mem.eql(u8, kv[0..n], "name"))
-                                        break :name try self.alloc.dupe(u8, kv[n + 1 ..]);
-                                } else null;
-
-                                var cfg = msg.client.config;
-                                cfg.network_id = try self.alloc.dupe(u8, id);
-                                cfg.name = name;
-                                self.vx.postEvent(.{ .connect = cfg });
+                                if (mem.eql(u8, param, "NAK")) {
+                                    log.err("required CAP not supported {s}", .{iter.next().?});
+                                }
                             }
-                        }
-                    },
-                    .AWAY => {
-                        const src = msg.source orelse continue :loop;
-                        var iter = msg.paramIterator();
-                        const n = std.mem.indexOfScalar(u8, src, '!') orelse src.len;
-                        const user = try msg.client.getOrCreateUser(src[0..n]);
-                        // If there are any params, the user is away. Otherwise
-                        // they are back.
-                        user.away = if (iter.next()) |_| true else false;
-                    },
-                    .PRIVMSG => {
-                        keep_message = true;
-                        // syntax: <target> :<message>
-                        var iter = msg.paramIterator();
-                        const target = iter.next() orelse continue;
-                        assert(target.len > 0);
-                        switch (target[0]) {
-                            '#' => {
-                                var channel = try msg.client.getOrCreateChannel(target);
-                                try channel.messages.append(msg);
-                            },
-                            '$' => {}, // broadcast to all users
-                            else => {}, // DM to me
-                        }
-                    },
-                }
-            },
+                        },
+                        .AUTHENTICATE => {
+                            var iter = msg.paramIterator();
+                            while (iter.next()) |param| {
+                                // A '+' is the continuuation to send our
+                                // AUTHENTICATE info
+                                if (!mem.eql(u8, param, "+")) continue;
+                                var buf: [4096]u8 = undefined;
+                                const config = msg.client.config;
+                                const sasl = try std.fmt.bufPrint(
+                                    &buf,
+                                    "{s}\x00{s}\x00{s}",
+                                    .{ config.user, config.nick, config.password },
+                                );
+
+                                // Create a buffer big enough for the base64 encoded string
+                                const b64_buf = try self.alloc.alloc(u8, base64.calcSize(sasl.len));
+                                defer self.alloc.free(b64_buf);
+                                const encoded = base64.encode(b64_buf, sasl);
+                                // Make our message
+                                const auth = try std.fmt.bufPrint(
+                                    &buf,
+                                    "AUTHENTICATE {s}\r\n",
+                                    .{encoded},
+                                );
+                                try self.queueWrite(msg.client, auth);
+                                if (config.network_id) |id| {
+                                    const bind = try std.fmt.bufPrint(
+                                        &buf,
+                                        "BOUNCER BIND {s}\r\n",
+                                        .{id},
+                                    );
+                                    try self.queueWrite(msg.client, bind);
+                                }
+                                try self.queueWrite(msg.client, "CAP END\r\n");
+                            }
+                        },
+                        .RPL_WELCOME => {},
+                        .RPL_YOURHOST => {},
+                        .RPL_CREATED => {},
+                        .RPL_MYINFO => {},
+                        .RPL_ISUPPORT => {},
+                        .RPL_LOGGEDIN => {},
+                        .RPL_TOPIC => {
+                            // syntax: <client> <channel> :<topic>
+                            var iter = msg.paramIterator();
+                            _ = iter.next() orelse continue :loop; // client ("*")
+                            const channel_name = iter.next() orelse continue :loop; // channel
+                            const topic = iter.next() orelse continue :loop; // topic
+
+                            var channel = try msg.client.getOrCreateChannel(channel_name);
+                            if (channel.topic) |old_topic| {
+                                self.alloc.free(old_topic);
+                            }
+                            channel.topic = try self.alloc.dupe(u8, topic);
+                        },
+                        .RPL_SASLSUCCESS => {},
+                        .RPL_WHOREPLY => {
+                            // syntax: <client> <channel> <username> <host> <server> <nick> <flags> :<hopcount> <real name>
+
+                            var iter = msg.paramIterator();
+                            _ = iter.next() orelse continue :loop; // client
+                            _ = iter.next() orelse continue :loop; // channel
+                            _ = iter.next() orelse continue :loop; // username
+                            _ = iter.next() orelse continue :loop; // host
+                            _ = iter.next() orelse continue :loop; // server
+                            const nick = iter.next() orelse continue :loop; // nick
+                            const flags = iter.next() orelse continue :loop; // nick
+
+                            const user_ptr = try msg.client.getOrCreateUser(nick);
+                            if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
+                        },
+                        .RPL_NAMREPLY => {
+                            // syntax: <client> <symbol> <channel> :<nicks>
+                            var iter = msg.paramIterator();
+                            _ = iter.next() orelse continue :loop; // client ("*")
+                            _ = iter.next() orelse continue :loop; // symbol ("=", "@", "*")
+                            const channel_name = iter.next() orelse continue :loop; // channel
+                            const nick_list = iter.next() orelse continue :loop; // member list
+
+                            var channel = try msg.client.getOrCreateChannel(channel_name);
+                            if (channel.inited) {
+                                channel.members.clearAndFree();
+                                channel.inited = false;
+                            }
+                            var nick_iter = std.mem.splitScalar(u8, nick_list, ' ');
+                            while (nick_iter.next()) |nick| {
+                                const user_ptr = try msg.client.getOrCreateUser(nick);
+                                try channel.members.append(user_ptr);
+                            }
+                            try channel.sortMembers();
+                        },
+                        .RPL_ENDOFNAMES => {
+                            // syntax: <client> <channel> :End of /NAMES list
+                            var iter = msg.paramIterator();
+                            _ = iter.next() orelse continue :loop; // client ("*")
+                            const channel_name = iter.next() orelse continue :loop; // channel
+
+                            var channel = try msg.client.getOrCreateChannel(channel_name);
+                            channel.inited = true;
+                        },
+                        .BOUNCER => {
+                            var iter = msg.paramIterator();
+                            while (iter.next()) |param| {
+                                if (mem.eql(u8, param, "NETWORK")) {
+                                    const id = iter.next() orelse continue;
+                                    const attr = iter.next() orelse continue;
+                                    // check if we already have this network
+                                    for (self.clients.items, 0..) |client, i| {
+                                        if (client.config.network_id) |net_id| {
+                                            if (mem.eql(u8, net_id, id)) {
+                                                if (mem.eql(u8, attr, "*")) {
+                                                    // * means the network was
+                                                    // deleted
+                                                    client.deinit();
+                                                    _ = self.clients.swapRemove(i);
+                                                }
+                                                continue :loop;
+                                            }
+                                        }
+                                    }
+
+                                    var attr_iter = std.mem.splitScalar(u8, attr, ';');
+                                    const name: ?[]const u8 = name: while (attr_iter.next()) |kv| {
+                                        const n = std.mem.indexOfScalar(u8, kv, '=') orelse continue;
+                                        if (mem.eql(u8, kv[0..n], "name"))
+                                            break :name try self.alloc.dupe(u8, kv[n + 1 ..]);
+                                    } else null;
+
+                                    var cfg = msg.client.config;
+                                    cfg.network_id = try self.alloc.dupe(u8, id);
+                                    cfg.name = name;
+                                    self.vx.postEvent(.{ .connect = cfg });
+                                }
+                            }
+                        },
+                        .AWAY => {
+                            const src = msg.source orelse continue :loop;
+                            var iter = msg.paramIterator();
+                            const n = std.mem.indexOfScalar(u8, src, '!') orelse src.len;
+                            const user = try msg.client.getOrCreateUser(src[0..n]);
+                            // If there are any params, the user is away. Otherwise
+                            // they are back.
+                            user.away = if (iter.next()) |_| true else false;
+                        },
+                        .PRIVMSG => {
+                            keep_message = true;
+                            // syntax: <target> :<message>
+                            var iter = msg.paramIterator();
+                            const target = iter.next() orelse continue;
+                            assert(target.len > 0);
+                            switch (target[0]) {
+                                '#' => {
+                                    var channel = try msg.client.getOrCreateChannel(target);
+                                    try channel.messages.append(msg);
+                                },
+                                '$' => {}, // broadcast to all users
+                                else => {}, // DM to me
+                            }
+                        },
+                    }
+                },
+            }
         }
 
         const win = self.vx.window();
