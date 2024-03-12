@@ -52,6 +52,34 @@ pub const ParamIterator = struct {
     }
 };
 
+pub const Tag = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
+pub const TagIterator = struct {
+    tags: ?[]const u8,
+    index: usize = 0,
+
+    // tags are a list of key=value pairs delimited by semicolons.
+    // key[=value] [; key[=value]]
+    pub fn next(self: *TagIterator) ?Tag {
+        const tags = self.tags orelse return null;
+        if (self.index >= tags.len) return null;
+
+        // find next delimiter
+        const end = std.mem.indexOfScalar(u8, tags[self.index..], ';') orelse tags.len;
+        defer self.index = end;
+
+        const kv_delim = std.mem.indexOfScalar(u8, tags[self.index..end], '=') orelse end;
+
+        return .{
+            .key = tags[self.index..kv_delim],
+            .value = if (end == kv_delim) "" else tags[kv_delim + 1 .. end],
+        };
+    }
+};
+
 pub fn init(src: []const u8, client: *Client) !Message {
     var i: usize = 0;
     const tags: ?[]const u8 = blk: {
@@ -107,6 +135,10 @@ pub fn deinit(msg: Message, alloc: std.mem.Allocator) void {
 
 pub fn paramIterator(msg: Message) ParamIterator {
     return .{ .params = msg.params };
+}
+
+pub fn tagIterator(msg: Message) TagIterator {
+    return .{ .tags = msg.tags };
 }
 
 test "simple message" {

@@ -583,13 +583,18 @@ pub fn run(self: *App) !void {
                         h += 1;
                         const user = try client.getOrCreateUser(sender);
 
-                        var time_seg = [_]vaxis.Segment{
-                            .{
-                                .text = message.tags.?[16..21],
-                                .style = .{ .fg = .{ .index = 8 } },
-                            },
-                        };
-                        _ = try gutter.print(&time_seg, .{});
+                        var tag_iter = message.tagIterator();
+                        while (tag_iter.next()) |tag| {
+                            if (!mem.eql(u8, tag.key, "time")) continue;
+                            var time_seg = [_]vaxis.Segment{
+                                .{
+                                    .text = tag.value[11..16],
+                                    .style = .{ .fg = .{ .index = 8 } },
+                                },
+                            };
+                            _ = try gutter.print(&time_seg, .{});
+                            break;
+                        }
 
                         var sender_segment = [_]vaxis.Segment{
                             .{
