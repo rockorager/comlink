@@ -546,7 +546,13 @@ pub fn run(self: *App) !void {
                         // if this is the same sender, we will clear the last
                         // sender_win and reduce one from the row we are
                         // printing on
-                        const sender = message.source orelse "";
+                        const sender: []const u8 = blk: {
+                            const src = message.source orelse break :blk "";
+                            const l = std.mem.indexOfScalar(u8, src, '!') orelse
+                                std.mem.indexOfScalar(u8, src, '@') orelse
+                                src.len;
+                            break :blk src[0..l];
+                        };
                         if (sender_win != null and mem.eql(u8, sender, prev_sender)) {
                             sender_win.?.clear();
                             h -= 2;
