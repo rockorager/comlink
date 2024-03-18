@@ -15,6 +15,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const zeit_dep = b.dependency("zeit", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const exe = b.addExecutable(.{
         .name = "zirconium",
         .root_source_file = .{ .path = "src/main.zig" },
@@ -23,6 +28,7 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("ziglua", ziglua_dep.module("ziglua"));
     exe.root_module.addImport("vaxis", vaxis_dep.module("vaxis"));
+    exe.root_module.addImport("zeit", zeit_dep.module("zeit"));
 
     b.installArtifact(exe);
 

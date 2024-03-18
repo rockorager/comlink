@@ -83,11 +83,19 @@ pub fn readLoop(self: *Client) !void {
             if (line.len == 0) continue;
             log.debug("[server] {s}", .{line});
             const duped_line = try self.alloc.dupe(u8, line);
-            const msg = Message.init(duped_line, self) catch |err| {
+            var msg = Message.init(duped_line, self) catch |err| {
                 log.err("[server] invalid message {}", .{err});
                 self.alloc.free(duped_line);
                 continue;
             };
+
+            if (msg.time) |time| {
+                msg.time_buf = try std.fmt.allocPrint(
+                    self.alloc,
+                    "{d:0>2}:{d:0>2}",
+                    .{ time.hour, time.minute },
+                );
+            }
             self.app.vx.postEvent(.{ .message = msg });
         }
     }
@@ -107,6 +115,7 @@ pub fn connect(self: *Client) !void {
     try self.app.queueWrite(self, "CAP LS 302\r\n");
 
     const required_caps = [_][]const u8{
+        "echo-message",
         "server-time",
         "message-tags",
         "extended-monitor",

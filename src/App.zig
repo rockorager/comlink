@@ -57,6 +57,7 @@ write_queue: vaxis.Queue(WriteRequest, 128) = .{},
 
 selected_channel_index: usize = 0,
 scroll_offset: usize = 0,
+buffers: usize = 0,
 
 /// initialize vaxis, lua state
 pub fn init(alloc: std.mem.Allocator) !App {
@@ -170,13 +171,45 @@ pub fn run(self: *App) !void {
         while (self.vx.queue.tryPop()) |event| {
             switch (event) {
                 .key_press => |key| {
-                    if (key.matches('c', .{ .ctrl = true }))
+                    if (key.matches('c', .{ .ctrl = true })) {
                         return;
-                    if (key.matches(vaxis.Key.down, .{ .alt = true }))
-                        self.selected_channel_index +|= 1;
-                    if (key.matches(vaxis.Key.up, .{ .alt = true }))
-                        self.selected_channel_index -|= 1;
-                    try input.update(.{ .key_press = key });
+                    } else if (key.matches(vaxis.Key.down, .{ .alt = true })) {
+                        if (self.selected_channel_index >= self.buffers - 1)
+                            self.selected_channel_index = 0
+                        else
+                            self.selected_channel_index +|= 1;
+                    } else if (key.matches(vaxis.Key.up, .{ .alt = true })) {
+                        if (self.selected_channel_index == 0)
+                            self.selected_channel_index = self.buffers - 1
+                        else
+                            self.selected_channel_index -|= 1;
+                    } else if (key.matches(vaxis.Key.enter, .{})) {
+                        if (input.buf.items.len == 0) continue;
+
+                        var i: usize = 0;
+                        for (self.clients.items) |client| {
+                            i += 1;
+                            for (client.channels.items) |channel| {
+                                defer i += 1;
+                                if (i != self.selected_channel_index) continue;
+
+                                var buf: [1024]u8 = undefined;
+                                const content = try input.toOwnedSlice();
+                                defer self.alloc.free(content);
+                                const msg = try std.fmt.bufPrint(
+                                    &buf,
+                                    "PRIVMSG {s} :{s}\r\n",
+                                    .{
+                                        channel.name,
+                                        content,
+                                    },
+                                );
+                                try self.queueWrite(client, msg);
+                            }
+                        }
+                    } else {
+                        try input.update(.{ .key_press = key });
+                    }
                 },
                 .mouse => |mouse| {
                     switch (mouse.button) {
@@ -560,6 +593,9 @@ pub fn run(self: *App) !void {
 
                         // print the content first
                         const content = iter.next() orelse continue;
+                        if (content[0] == 0x01 and content[content.len - 1] == 0x01) {
+                            // action message
+                        }
                         const n = strings.lineCountForWindow(message_offset_win, content) + 1;
                         h += n;
                         var content_seg = [_]vaxis.Segment{
@@ -589,17 +625,14 @@ pub fn run(self: *App) !void {
                         h += 1;
                         const user = try client.getOrCreateUser(sender);
 
-                        var tag_iter = message.tagIterator();
-                        while (tag_iter.next()) |tag| {
-                            if (!mem.eql(u8, tag.key, "time")) continue;
+                        if (message.time_buf) |buf| {
                             var time_seg = [_]vaxis.Segment{
                                 .{
-                                    .text = tag.value[11..16],
+                                    .text = buf,
                                     .style = .{ .fg = .{ .index = 8 } },
                                 },
                             };
                             _ = try gutter.print(&time_seg, .{});
-                            break;
                         }
 
                         var sender_segment = [_]vaxis.Segment{
@@ -631,5 +664,6 @@ pub fn run(self: *App) !void {
         input.draw(input_win);
 
         try self.vx.render();
+        self.buffers = row;
     }
 }

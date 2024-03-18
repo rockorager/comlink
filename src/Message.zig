@@ -3,6 +3,9 @@ const testing = std.testing;
 const irc = @import("irc.zig");
 const Command = irc.Command;
 const Client = @import("Client.zig");
+const zeit = @import("zeit");
+
+const zirconium = @import("main.zig");
 
 /// an irc message
 pub const Message = @This();
@@ -13,6 +16,8 @@ tags: ?[]const u8,
 source: ?[]const u8,
 command: Command,
 params: ?[]const u8,
+time: ?zeit.Time = null,
+time_buf: ?[]const u8 = null,
 
 pub const ParamIterator = struct {
     params: ?[]const u8,
@@ -68,10 +73,10 @@ pub const TagIterator = struct {
         if (self.index >= tags.len) return null;
 
         // find next delimiter
-        const end = std.mem.indexOfScalar(u8, tags[self.index..], ';') orelse tags.len;
-        defer self.index = end;
+        const end = std.mem.indexOfScalarPos(u8, tags, self.index, ';') orelse tags.len;
+        defer self.index = end + 1;
 
-        const kv_delim = std.mem.indexOfScalar(u8, tags[self.index..end], '=') orelse end;
+        const kv_delim = std.mem.indexOfScalarPos(u8, tags, self.index, '=') orelse end;
 
         return .{
             .key = tags[self.index..kv_delim],
@@ -92,6 +97,20 @@ pub fn init(src: []const u8, client: *Client) !Message {
             if (src[i] != ' ') break;
         }
         break :blk tags;
+    };
+
+    const instant: ?zeit.Time = blk: {
+        if (tags == null) break :blk null;
+        var tag_iter = TagIterator{ .tags = tags };
+        while (tag_iter.next()) |tag| {
+            if (!std.mem.eql(u8, tag.key, "time")) continue;
+            const instant = try zeit.instant(.{
+                .source = .{ .iso8601 = tag.value },
+                .timezone = &zirconium.local,
+            });
+
+            break :blk instant.time();
+        } else break :blk null;
     };
 
     const source: ?[]const u8 = blk: {
@@ -126,11 +145,13 @@ pub fn init(src: []const u8, client: *Client) !Message {
         .command = cmd,
         .params = params,
         .client = client,
+        .time = instant,
     };
 }
 
 pub fn deinit(msg: Message, alloc: std.mem.Allocator) void {
     alloc.free(msg.src);
+    if (msg.time_buf) |buf| alloc.free(buf);
 }
 
 pub fn paramIterator(msg: Message) ParamIterator {

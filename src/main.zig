@@ -1,7 +1,11 @@
 const std = @import("std");
 const App = @import("App.zig");
 
+const zeit = @import("zeit");
+
 const log = std.log.scoped(.main);
+
+pub var local: zeit.TimeZone = undefined;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -12,6 +16,9 @@ pub fn main() !void {
         }
     }
     const alloc = gpa.allocator();
+
+    local = try zeit.local(alloc);
+    defer local.deinit();
 
     var app = try App.init(alloc);
     defer app.deinit();
