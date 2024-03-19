@@ -66,6 +66,7 @@ pub const Channel = struct {
 
     messages: std.ArrayList(Message),
     history_requested: bool = false,
+    has_unread: bool = false,
 
     pub fn deinit(self: *const Channel, alloc: std.mem.Allocator) void {
         alloc.free(self.name);

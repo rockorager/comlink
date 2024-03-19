@@ -400,10 +400,16 @@ pub fn run(self: *App) !void {
                             var iter = msg.paramIterator();
                             const target = iter.next() orelse continue;
                             assert(target.len > 0);
+                            if (iter.next()) |content| {
+                                if (std.mem.indexOf(u8, content, msg.client.config.nick)) |_| {
+                                    try self.vx.notify("zirconium", content);
+                                }
+                            }
                             switch (target[0]) {
                                 '#' => {
                                     var channel = try msg.client.getOrCreateChannel(target);
                                     try channel.messages.append(msg);
+                                    channel.has_unread = true;
                                 },
                                 '$' => {}, // broadcast to all users
                                 else => {}, // DM to me
@@ -502,6 +508,7 @@ pub fn run(self: *App) !void {
                         },
                     );
                 if (row == self.selected_channel_index) {
+                    channel.has_unread = false;
                     if (channel.messages.items.len == 0 and !channel.history_requested) {
                         var buf: [128]u8 = undefined;
                         const hist = try std.fmt.bufPrint(
