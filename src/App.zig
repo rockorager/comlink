@@ -27,6 +27,7 @@ pub const Event = union(enum) {
     winsize: vaxis.Winsize,
     message: Message,
     connect: Client.Config,
+    redraw,
 };
 
 pub const WriteRequest = struct {
@@ -170,6 +171,7 @@ pub fn run(self: *App) !void {
         self.vx.pollEvent();
         while (self.vx.queue.tryPop()) |event| {
             switch (event) {
+                .redraw => {},
                 .key_press => |key| {
                     if (key.matches('c', .{ .ctrl = true })) {
                         return;

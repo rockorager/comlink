@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const tls = std.crypto.tls;
 const irc = @import("irc.zig");
 
@@ -89,9 +90,8 @@ pub fn readLoop(self: *Client) !void {
         log.debug("connected", .{});
         self.status = .connected;
         delay = 1 * std.time.ns_per_s;
-        // We should be able to read 512 + 8191 = 8703 bytes. Round up to
-        // nearest power of 2
-        var buf: [10_000]u8 = undefined;
+
+        var buf: [16_384]u8 = undefined;
 
         errdefer |err| {
             log.err("client: {s} error: {}", .{ self.config.network_id.?, err });
@@ -102,42 +102,43 @@ pub fn readLoop(self: *Client) !void {
             .tv_usec = 0,
         });
 
-        const keep_alive: i64 = 30 * std.time.ms_per_s;
+        const keep_alive: i64 = 10 * std.time.ms_per_s;
         // max round trip time equal to our timeout
         const max_rt: i64 = 5 * std.time.ms_per_s;
         var last_msg: i64 = std.time.milliTimestamp();
+        var start: usize = 0;
 
         while (true) {
-            const n = self.client.read(self.stream, &buf) catch |err| {
+            const n = self.client.read(self.stream, buf[start..]) catch |err| {
                 if (err != error.WouldBlock) break;
                 const now = std.time.milliTimestamp();
                 if (now - last_msg > keep_alive + max_rt) {
                     // reconnect??
                     self.status = .disconnected;
                     self.stream.close();
+                    self.app.vx.postEvent(.redraw);
                     break;
                 }
                 if (now - last_msg > keep_alive) {
                     // send a ping
-                    log.debug("sending ping", .{});
-                    try self.write("PING zirc\r\n");
+                    try self.app.queueWrite(self, "PING zirc\r\n");
                     continue;
                 }
                 continue;
             };
             if (n == 0) continue;
             last_msg = std.time.milliTimestamp();
-            var iter = std.mem.splitSequence(u8, buf[0..n], "\r\n");
-            while (iter.next()) |line| {
-                if (line.len == 0) continue;
-                log.debug("[server] {s}", .{line});
-                const duped_line = try self.alloc.dupe(u8, line);
-                var msg = Message.init(duped_line, self) catch |err| {
-                    log.err("[server] invalid message {}", .{err});
-                    self.alloc.free(duped_line);
+            var i: usize = 0;
+            while (std.mem.indexOfPos(u8, buf[0 .. n + start], i, "\r\n")) |idx| {
+                defer i = idx + 2;
+                const line = try self.alloc.dupe(u8, buf[i..idx]);
+                assert(std.mem.eql(u8, buf[idx .. idx + 2], "\r\n"));
+                log.debug("[<-{s}] {s}", .{ self.config.name orelse self.config.server, line });
+                var msg = Message.init(line, self) catch |err| {
+                    log.err("[{s}] invalid message {}", .{ self.config.name orelse self.config.server, err });
+                    self.alloc.free(line);
                     continue;
                 };
-
                 if (msg.time) |time| {
                     msg.time_buf = try std.fmt.allocPrint(
                         self.alloc,
@@ -147,13 +148,19 @@ pub fn readLoop(self: *Client) !void {
                 }
                 self.app.vx.postEvent(.{ .message = msg });
             }
+            if (i != n) {
+                // we had a part of a line read. Copy it to the beginning of the
+                // buffer
+                std.mem.copyForwards(u8, buf[0 .. (n + start) - i], buf[i..(n + start)]);
+                start = (n + start) - i;
+            } else start = 0;
             try std.os.setsockopt(self.stream.handle, std.os.SOL.SOCKET, std.os.SO.RCVTIMEO_NEW, &timeout);
         }
     }
 }
 
 pub fn write(self: *Client, buf: []const u8) !void {
-    log.debug("[client] {s}", .{buf[0 .. buf.len - 2]});
+    log.debug("[->{s}] {s}", .{ self.config.name orelse self.config.server, buf[0 .. buf.len - 2] });
     try self.client.writeAll(self.stream, buf);
 }
 
