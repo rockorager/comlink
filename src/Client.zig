@@ -30,6 +30,12 @@ config: Config,
 channels: std.ArrayList(irc.Channel),
 users: std.StringHashMap(*irc.User),
 
+should_close: bool = false,
+status: enum {
+    connected,
+    disconnected,
+} = .disconnected,
+
 pub fn init(alloc: std.mem.Allocator, app: *App, cfg: Config) !Client {
     return .{
         .alloc = alloc,
@@ -43,6 +49,7 @@ pub fn init(alloc: std.mem.Allocator, app: *App, cfg: Config) !Client {
 }
 
 pub fn deinit(self: *Client) void {
+    self.should_close = true;
     _ = self.client.writeEnd(self.stream, "", true) catch |err| {
         log.err("couldn't close tls conn: {}", .{err});
     };
@@ -66,37 +73,81 @@ pub fn deinit(self: *Client) void {
 }
 
 pub fn readLoop(self: *Client) !void {
-    try self.connect();
-    // We should be able to read 512 + 8191 = 8703 bytes. Round up to
-    // nearest power of 2
-    var buf: [10_000]u8 = undefined;
+    var delay: u64 = 1 * std.time.ns_per_s;
 
-    errdefer |err| {
-        log.err("client: {s} error: {}", .{ self.config.network_id.?, err });
-    }
+    while (!self.should_close) {
+        self.status = .disconnected;
+        log.debug("reconnecting in {d} seconds...", .{@divFloor(delay, std.time.ns_per_s)});
+        self.connect() catch {
+            self.status = .disconnected;
+            log.debug("disconnected", .{});
+            log.debug("reconnecting in {d} seconds...", .{@divFloor(delay, std.time.ns_per_s)});
+            std.time.sleep(delay);
+            delay = delay * 2;
+            if (delay > std.time.ns_per_min) delay = std.time.ns_per_min;
+        };
+        log.debug("connected", .{});
+        self.status = .connected;
+        delay = 1 * std.time.ns_per_s;
+        // We should be able to read 512 + 8191 = 8703 bytes. Round up to
+        // nearest power of 2
+        var buf: [10_000]u8 = undefined;
 
-    while (true) {
-        const n = try self.client.read(self.stream, &buf);
-        if (n == 0) break;
-        var iter = std.mem.splitSequence(u8, buf[0..n], "\r\n");
-        while (iter.next()) |line| {
-            if (line.len == 0) continue;
-            log.debug("[server] {s}", .{line});
-            const duped_line = try self.alloc.dupe(u8, line);
-            var msg = Message.init(duped_line, self) catch |err| {
-                log.err("[server] invalid message {}", .{err});
-                self.alloc.free(duped_line);
+        errdefer |err| {
+            log.err("client: {s} error: {}", .{ self.config.network_id.?, err });
+        }
+
+        const timeout = std.mem.toBytes(std.os.timeval{
+            .tv_sec = 5,
+            .tv_usec = 0,
+        });
+
+        const keep_alive: i64 = 30 * std.time.ms_per_s;
+        // max round trip time equal to our timeout
+        const max_rt: i64 = 5 * std.time.ms_per_s;
+        var last_msg: i64 = std.time.milliTimestamp();
+
+        while (true) {
+            const n = self.client.read(self.stream, &buf) catch |err| {
+                if (err != error.WouldBlock) break;
+                const now = std.time.milliTimestamp();
+                if (now - last_msg > keep_alive + max_rt) {
+                    // reconnect??
+                    self.status = .disconnected;
+                    self.stream.close();
+                    break;
+                }
+                if (now - last_msg > keep_alive) {
+                    // send a ping
+                    log.debug("sending ping", .{});
+                    try self.write("PING zirc\r\n");
+                    continue;
+                }
                 continue;
             };
+            if (n == 0) continue;
+            last_msg = std.time.milliTimestamp();
+            var iter = std.mem.splitSequence(u8, buf[0..n], "\r\n");
+            while (iter.next()) |line| {
+                if (line.len == 0) continue;
+                log.debug("[server] {s}", .{line});
+                const duped_line = try self.alloc.dupe(u8, line);
+                var msg = Message.init(duped_line, self) catch |err| {
+                    log.err("[server] invalid message {}", .{err});
+                    self.alloc.free(duped_line);
+                    continue;
+                };
 
-            if (msg.time) |time| {
-                msg.time_buf = try std.fmt.allocPrint(
-                    self.alloc,
-                    "{d:0>2}:{d:0>2}",
-                    .{ time.hour, time.minute },
-                );
+                if (msg.time) |time| {
+                    msg.time_buf = try std.fmt.allocPrint(
+                        self.alloc,
+                        "{d:0>2}:{d:0>2}",
+                        .{ time.hour, time.minute },
+                    );
+                }
+                self.app.vx.postEvent(.{ .message = msg });
             }
-            self.app.vx.postEvent(.{ .message = msg });
+            try std.os.setsockopt(self.stream.handle, std.os.SOL.SOCKET, std.os.SO.RCVTIMEO_NEW, &timeout);
         }
     }
 }
@@ -114,22 +165,20 @@ pub fn connect(self: *Client) !void {
 
     try self.app.queueWrite(self, "CAP LS 302\r\n");
 
-    const required_caps = [_][]const u8{
+    const caps = [_][]const u8{
         "echo-message",
         "server-time",
         "message-tags",
         "extended-monitor",
         "away-notify",
         "draft/chathistory",
+        "draft/read-marker",
         "soju.im/bouncer-networks",
         "soju.im/bouncer-networks-notify",
         "sasl",
     };
 
-    const caps = try std.mem.join(self.alloc, " ", &required_caps);
-    defer self.alloc.free(caps);
-
-    for (required_caps) |cap| {
+    for (caps) |cap| {
         const cap_req = try std.fmt.bufPrint(
             &buf,
             "CAP REQ :{s}\r\n",

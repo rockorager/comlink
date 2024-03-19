@@ -459,9 +459,14 @@ pub fn run(self: *App) !void {
         var row: usize = 0;
         for (self.clients.items) |client| {
             const style: vaxis.Style = if (row == self.selected_channel_index)
-                .{ .reverse = true }
+                .{
+                    .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
+                    .reverse = true,
+                }
             else
-                .{};
+                .{
+                    .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
+                };
             var segs = [_]vaxis.Segment{
                 .{
                     .text = client.config.name orelse client.config.server,
@@ -476,9 +481,19 @@ pub fn run(self: *App) !void {
 
             for (client.channels.items) |*channel| {
                 const chan_style: vaxis.Style = if (row == self.selected_channel_index)
-                    .{ .reverse = true }
+                    .{
+                        .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
+                        .reverse = true,
+                    }
+                else if (channel.has_unread)
+                    .{
+                        .fg = .{ .index = 4 },
+                        .bold = true,
+                    }
                 else
-                    .{};
+                    .{
+                        .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
+                    };
                 defer row += 1;
                 var chan_seg = [_]vaxis.Segment{
                     .{
@@ -525,6 +540,12 @@ pub fn run(self: *App) !void {
                         );
                         channel.history_requested = true;
                         try self.queueWrite(client, who);
+                        const last_read = try std.fmt.bufPrint(
+                            &buf,
+                            "MARKREAD {s}\r\n",
+                            .{channel.name},
+                        );
+                        try self.queueWrite(client, last_read);
                     }
                     var topic_seg = [_]vaxis.Segment{
                         .{

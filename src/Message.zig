@@ -74,9 +74,9 @@ pub const TagIterator = struct {
 
         // find next delimiter
         const end = std.mem.indexOfScalarPos(u8, tags, self.index, ';') orelse tags.len;
-        defer self.index = end + 1;
-
         const kv_delim = std.mem.indexOfScalarPos(u8, tags, self.index, '=') orelse end;
+
+        defer self.index = end + 1;
 
         return .{
             .key = tags[self.index..kv_delim],
