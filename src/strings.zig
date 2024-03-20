@@ -1,7 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const vaxis = @import("vaxis");
-const ziglyph = @import("vaxis").ziglyph;
+const ziglyph = vaxis.ziglyph;
 
 /// calculates the number of lines needed to display a message
 pub fn lineCountForWindow(win: vaxis.Window, message: []const u8) usize {

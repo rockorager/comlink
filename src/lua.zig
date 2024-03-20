@@ -3,7 +3,8 @@ const assert = std.debug.assert;
 const ziglua = @import("ziglua");
 
 const App = @import("App.zig");
-const Client = @import("Client.zig");
+const irc = @import("irc.zig");
+const Client = irc.Client;
 const Lua = ziglua.Lua;
 
 /// lua constant for the REGISTRYINDEX table

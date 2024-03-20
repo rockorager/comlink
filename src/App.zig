@@ -13,9 +13,9 @@ const lua = @import("lua.zig");
 const strings = @import("strings.zig");
 
 // data structures
-const Client = @import("Client.zig");
+const Client = irc.Client;
 const Lua = @import("ziglua").Lua;
-const Message = @import("Message.zig");
+const Message = irc.Message;
 
 const log = std.log.scoped(.app);
 
