@@ -10,8 +10,8 @@
             .path = "../libvaxis",
         },
         .zeit = .{
-            .url = "https://github.com/rockorager/zeit/archive/072548923de4c701eee5e5f1e79202fa02b68161.tar.gz",
-            .hash = "1220fda1d3eedeeb47423001a25e91eee57f66c48572fd52ee2dbba6f8ecba595435",
+            .url = "https://github.com/rockorager/zeit/archive/9e3fb8be5555b20e6dff3d630ef0c8c5d6284e9d.tar.gz",
+            .hash = "1220f8c7b8735ddbef4a7bccab6937e2f1a64330211757908800166fc0312ffea792",
         },
     },
     .paths = .{""},

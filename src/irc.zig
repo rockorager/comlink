@@ -26,6 +26,7 @@ pub const Command = enum {
     AWAY,
     BOUNCER,
     CAP,
+    MARKREAD,
     PRIVMSG,
 
     unknown,
@@ -49,6 +50,7 @@ pub const Command = enum {
         .{ "AWAY", .AWAY },
         .{ "BOUNCER", .BOUNCER },
         .{ "CAP", .CAP },
+        .{ "MARKREAD", .MARKREAD },
         .{ "PRIVMSG", .PRIVMSG },
     });
 
@@ -66,6 +68,7 @@ pub const Channel = struct {
 
     messages: std.ArrayList(Message),
     history_requested: bool = false,
+    last_read: i64 = 0,
     has_unread: bool = false,
 
     pub fn deinit(self: *const Channel, alloc: std.mem.Allocator) void {

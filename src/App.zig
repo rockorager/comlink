@@ -1,5 +1,6 @@
 const std = @import("std");
 const vaxis = @import("vaxis");
+const zeit = @import("zeit");
 const ziglua = @import("ziglua");
 const ziglyph = vaxis.ziglyph;
 
@@ -351,6 +352,13 @@ pub fn run(self: *App) !void {
 
                             var channel = try msg.client.getOrCreateChannel(channel_name);
                             channel.inited = true;
+                            var buf: [128]u8 = undefined;
+                            const last_read = try std.fmt.bufPrint(
+                                &buf,
+                                "MARKREAD {s}\r\n",
+                                .{channel.name},
+                            );
+                            try self.queueWrite(msg.client, last_read);
                         },
                         .BOUNCER => {
                             var iter = msg.paramIterator();
@@ -396,22 +404,47 @@ pub fn run(self: *App) !void {
                             // they are back.
                             user.away = if (iter.next()) |_| true else false;
                         },
+                        .MARKREAD => {
+                            var iter = msg.paramIterator();
+                            const target = iter.next() orelse continue;
+                            const timestamp = iter.next() orelse continue;
+                            const equal = std.mem.indexOfScalar(u8, timestamp, '=') orelse continue;
+                            const last_read = zeit.instant(.{
+                                .source = .{
+                                    .iso8601 = timestamp[equal + 1 ..],
+                                },
+                            }) catch |err| {
+                                log.err("couldn't convert timestamp: {}", .{err});
+                                continue;
+                            };
+                            var channel = try msg.client.getOrCreateChannel(target);
+                            channel.last_read = last_read.unixTimestamp();
+                            const last_msg = channel.messages.getLastOrNull() orelse continue;
+                            const time = last_msg.time orelse continue;
+                            if (time.instant().unixTimestamp() > channel.last_read)
+                                channel.has_unread = true
+                            else
+                                channel.has_unread = false;
+                        },
                         .PRIVMSG => {
                             keep_message = true;
                             // syntax: <target> :<message>
                             var iter = msg.paramIterator();
                             const target = iter.next() orelse continue;
                             assert(target.len > 0);
-                            if (iter.next()) |content| {
-                                if (std.mem.indexOf(u8, content, msg.client.config.nick)) |_| {
-                                    try self.vx.notify("zirconium", content);
-                                }
-                            }
                             switch (target[0]) {
                                 '#' => {
                                     var channel = try msg.client.getOrCreateChannel(target);
                                     try channel.messages.append(msg);
-                                    channel.has_unread = true;
+                                    const time = msg.time orelse continue;
+                                    if (time.instant().unixTimestamp() > channel.last_read) {
+                                        channel.has_unread = true;
+                                        if (iter.next()) |content| {
+                                            if (std.mem.indexOf(u8, content, msg.client.config.nick)) |_| {
+                                                try self.vx.notify("zirconium", content);
+                                            }
+                                        }
+                                    }
                                 },
                                 '$' => {}, // broadcast to all users
                                 else => {}, // DM to me
@@ -525,9 +558,32 @@ pub fn run(self: *App) !void {
                         },
                     );
                 if (row == self.selected_channel_index) {
-                    channel.has_unread = false;
+                    if (channel.has_unread) {
+                        channel.has_unread = false;
+                        const last_msg = channel.messages.getLast();
+                        var tag_iter = last_msg.tagIterator();
+                        while (tag_iter.next()) |tag| {
+                            if (!std.mem.eql(u8, tag.key, "time")) continue;
+                            var buf: [128]u8 = undefined;
+                            const mark_read = try std.fmt.bufPrint(
+                                &buf,
+                                "MARKREAD {s} timestamp={s}\r\n",
+                                .{
+                                    channel.name,
+                                    tag.value,
+                                },
+                            );
+                            try self.queueWrite(client, mark_read);
+                        }
+                    }
                     if (channel.messages.items.len == 0 and !channel.history_requested) {
                         var buf: [128]u8 = undefined;
+                        const last_read = try std.fmt.bufPrint(
+                            &buf,
+                            "MARKREAD {s}\r\n",
+                            .{channel.name},
+                        );
+                        try self.queueWrite(client, last_read);
                         const hist = try std.fmt.bufPrint(
                             &buf,
                             "CHATHISTORY LATEST {s} * 50\r\n",
@@ -542,12 +598,6 @@ pub fn run(self: *App) !void {
                         );
                         channel.history_requested = true;
                         try self.queueWrite(client, who);
-                        const last_read = try std.fmt.bufPrint(
-                            &buf,
-                            "MARKREAD {s}\r\n",
-                            .{channel.name},
-                        );
-                        try self.queueWrite(client, last_read);
                     }
                     var topic_seg = [_]vaxis.Segment{
                         .{
