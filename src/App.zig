@@ -26,6 +26,7 @@ pub const Event = union(enum) {
     key_press: vaxis.Key,
     mouse: vaxis.Mouse,
     winsize: vaxis.Winsize,
+    focus_out,
     message: Message,
     connect: Client.Config,
     redraw,
@@ -57,9 +58,29 @@ vx: vaxis.Vaxis(Event),
 /// our queue of writes
 write_queue: vaxis.Queue(WriteRequest, 128) = .{},
 
-selected_channel_index: usize = 0,
-scroll_offset: usize = 0,
-buffers: usize = 0,
+// selected_channel_index: usize = 0,
+// scroll_offset: usize = 0,
+// buffers: usize = 0,
+
+buffer_list_state: struct {
+    scroll_offset: usize = 0,
+    count: usize = 0,
+    selected_idx: usize = 0,
+    width: usize = 16,
+    resizing: bool = false,
+} = .{},
+
+message_list_state: struct {
+    scroll_offset: usize = 0,
+} = .{},
+
+member_list_state: struct {
+    scroll_offset: usize = 0,
+    width: usize = 16,
+    resizing: bool = false,
+} = .{},
+
+mouse_state: ?vaxis.Mouse = null,
 
 /// initialize vaxis, lua state
 pub fn init(alloc: std.mem.Allocator) !App {
@@ -177,15 +198,16 @@ pub fn run(self: *App) !void {
                     if (key.matches('c', .{ .ctrl = true })) {
                         return;
                     } else if (key.matches(vaxis.Key.down, .{ .alt = true })) {
-                        if (self.selected_channel_index >= self.buffers - 1)
-                            self.selected_channel_index = 0
+                        const state = self.buffer_list_state;
+                        if (state.selected_idx >= state.count - 1)
+                            self.buffer_list_state.selected_idx = 0
                         else
-                            self.selected_channel_index +|= 1;
+                            self.buffer_list_state.selected_idx +|= 1;
                     } else if (key.matches(vaxis.Key.up, .{ .alt = true })) {
-                        if (self.selected_channel_index == 0)
-                            self.selected_channel_index = self.buffers - 1
+                        if (self.buffer_list_state.selected_idx == 0)
+                            self.buffer_list_state.selected_idx = self.buffer_list_state.count - 1
                         else
-                            self.selected_channel_index -|= 1;
+                            self.buffer_list_state.selected_idx -|= 1;
                     } else if (key.matches(vaxis.Key.enter, .{})) {
                         if (input.buf.items.len == 0) continue;
 
@@ -194,7 +216,7 @@ pub fn run(self: *App) !void {
                             i += 1;
                             for (client.channels.items) |channel| {
                                 defer i += 1;
-                                if (i != self.selected_channel_index) continue;
+                                if (i != self.buffer_list_state.selected_idx) continue;
 
                                 var buf: [1024]u8 = undefined;
                                 const content = try input.toOwnedSlice();
@@ -214,12 +236,9 @@ pub fn run(self: *App) !void {
                         try input.update(.{ .key_press = key });
                     }
                 },
+                .focus_out => self.mouse_state = null,
                 .mouse => |mouse| {
-                    switch (mouse.button) {
-                        .wheel_up => self.scroll_offset +|= 1,
-                        .wheel_down => self.scroll_offset -|= 1,
-                        else => {},
-                    }
+                    self.mouse_state = mouse;
                     log.debug("mouse event: {}", .{mouse});
                 },
                 .winsize => |ws| try self.vx.resize(self.alloc, ws),
@@ -455,45 +474,62 @@ pub fn run(self: *App) !void {
             }
         }
 
+        // reset window state
         const win = self.vx.window();
         win.clear();
+        self.vx.setMouseShape(.default);
 
-        const channel_list_width = 16;
-        const member_list_width = 16;
-        const message_list_width = win.width - channel_list_width - member_list_width;
+        if (self.mouse_state) |mouse| {
+            if (self.buffer_list_state.resizing) {
+                self.buffer_list_state.width = @min(mouse.col, win.width -| self.member_list_state.width);
+            } else if (self.member_list_state.resizing) {
+                self.member_list_state.width = win.width -| mouse.col + 1;
+            }
 
-        // channel list
-        var channel_list_win = win.initChild(
-            0,
-            0,
-            .{ .limit = channel_list_width + 1 },
-            .expand,
-        );
-        channel_list_win = vaxis.widgets.border.right(channel_list_win, .{});
+            if (mouse.col == self.buffer_list_state.width) {
+                self.vx.setMouseShape(.@"ew-resize");
+                switch (mouse.type) {
+                    .press => self.buffer_list_state.resizing = true,
+                    .release => self.buffer_list_state.resizing = false,
+                    else => {},
+                }
+            } else if (mouse.col == win.width - self.member_list_state.width + 1) {
+                self.vx.setMouseShape(.@"ew-resize");
+                switch (mouse.type) {
+                    .press => self.member_list_state.resizing = true,
+                    .release => self.member_list_state.resizing = false,
+                    else => {},
+                }
+            }
+        }
 
-        // member list
-        const member_list_win = win.initChild(
-            channel_list_width + message_list_width,
-            0,
-            .expand,
-            .expand,
-        );
+        const buf_list_w = self.buffer_list_state.width;
+        const mbr_list_w = self.member_list_state.width;
+        const message_list_width = win.width -| buf_list_w -| mbr_list_w;
 
-        // message list
-        var middle_win = win.initChild(
-            channel_list_width + 1,
-            0,
-            .{ .limit = message_list_width - 1 },
-            .expand,
-        );
-        middle_win = vaxis.widgets.border.right(middle_win, .{});
+        const channel_list_win = win.child(.{
+            .width = .{ .limit = self.buffer_list_state.width + 1 },
+            .border = .{ .where = .right },
+        });
 
-        var topic_win = middle_win.initChild(0, 0, .expand, .{ .limit = 2 });
-        topic_win = vaxis.widgets.border.bottom(topic_win, .{});
+        const member_list_win = win.child(.{
+            .x_off = buf_list_w + message_list_width + 1,
+            .border = .{ .where = .left },
+        });
+
+        const middle_win = win.child(.{
+            .x_off = buf_list_w + 1,
+            .width = .{ .limit = message_list_width },
+        });
+
+        const topic_win = middle_win.child(.{
+            .height = .{ .limit = 2 },
+            .border = .{ .where = .bottom },
+        });
 
         var row: usize = 0;
         for (self.clients.items) |client| {
-            const style: vaxis.Style = if (row == self.selected_channel_index)
+            const style: vaxis.Style = if (row == self.buffer_list_state.selected_idx)
                 .{
                     .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
                     .reverse = true,
@@ -515,7 +551,7 @@ pub fn run(self: *App) !void {
             row += 1;
 
             for (client.channels.items) |*channel| {
-                const chan_style: vaxis.Style = if (row == self.selected_channel_index)
+                const chan_style: vaxis.Style = if (row == self.buffer_list_state.selected_idx)
                     .{
                         .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
                         .reverse = true,
@@ -548,16 +584,17 @@ pub fn run(self: *App) !void {
                 );
                 if (overflow)
                     channel_list_win.writeCell(
-                        channel_list_width - 1,
+                        buf_list_w -| 1,
                         row,
                         .{
                             .char = .{
                                 .grapheme = "…",
                                 .width = 1,
                             },
+                            .style = chan_style,
                         },
                     );
-                if (row == self.selected_channel_index) {
+                if (row == self.buffer_list_state.selected_idx) {
                     if (channel.has_unread) {
                         channel.has_unread = false;
                         const last_msg = channel.messages.getLast();
@@ -606,6 +643,7 @@ pub fn run(self: *App) !void {
                     };
                     _ = try topic_win.print(&topic_seg, .{ .wrap = .none });
                     var member_row: usize = 0;
+
                     for (channel.members.items) |member| {
                         defer member_row += 1;
                         var member_seg = [_]vaxis.Segment{
@@ -632,7 +670,7 @@ pub fn run(self: *App) !void {
 
                     // loop the messages and print from the last line to current
                     // line
-                    var i: usize = channel.messages.items.len -| self.scroll_offset;
+                    var i: usize = channel.messages.items.len -| self.message_list_state.scroll_offset;
                     var h: usize = 0;
                     const message_list_win = middle_win.initChild(
                         0,
@@ -640,6 +678,19 @@ pub fn run(self: *App) !void {
                         .expand,
                         .{ .limit = middle_win.height -| 3 },
                     );
+                    if (hasMouse(message_list_win, self.mouse_state)) |mouse| {
+                        switch (mouse.button) {
+                            .wheel_up => {
+                                self.message_list_state.scroll_offset +|= 1;
+                                self.mouse_state.?.button = .none;
+                            },
+                            .wheel_down => {
+                                self.message_list_state.scroll_offset -|= 1;
+                                self.mouse_state.?.button = .none;
+                            },
+                            else => {},
+                        }
+                    }
                     const message_offset_win = message_list_win.initChild(
                         6,
                         0,
@@ -685,8 +736,20 @@ pub fn run(self: *App) !void {
                             0,
                             message_offset_win.height -| h,
                             .expand,
-                            .{ .limit = h },
+                            .{ .limit = n - 1 },
                         );
+                        if (hasMouse(content_win, self.mouse_state)) |_| {
+                            content_win.fill(.{
+                                .char = .{
+                                    .grapheme = " ",
+                                    .width = 1,
+                                },
+                                .style = .{
+                                    .bg = .{ .index = 8 },
+                                },
+                            });
+                            content_seg[0].style = .{ .bg = .{ .index = 8 } };
+                        }
                         _ = try content_win.print(
                             &content_seg,
                             .{ .wrap = .word },
@@ -744,6 +807,15 @@ pub fn run(self: *App) !void {
         input.draw(input_win);
 
         try self.vx.render();
-        self.buffers = row;
+        self.buffer_list_state.count = row;
     }
+}
+
+/// returns true if the mouse event occurred within this window
+fn hasMouse(win: vaxis.Window, mouse: ?vaxis.Mouse) ?vaxis.Mouse {
+    const event = mouse orelse return null;
+    if (event.col >= win.x_off and
+        event.col < (win.x_off + win.width) and
+        event.row >= win.y_off and
+        event.row < (win.y_off + win.height)) return event else return null;
 }
