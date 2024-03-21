@@ -75,6 +75,7 @@ pub const Channel = struct {
 
     messages: std.ArrayList(Message),
     history_requested: bool = false,
+    at_oldest: bool = false,
     last_read: i64 = 0,
     has_unread: bool = false,
     batches: std.StringHashMap(bool),

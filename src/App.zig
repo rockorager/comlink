@@ -426,22 +426,28 @@ pub fn run(self: *App) !void {
                         .BATCH => {
                             var iter = msg.paramIterator();
                             const tag = iter.next() orelse continue;
-                            const batch_type = iter.next() orelse continue;
-                            if (mem.eql(u8, batch_type, "chathistory")) {
-                                const target = iter.next() orelse continue;
-                                var channel = try msg.client.getOrCreateChannel(target);
-                                switch (tag[0]) {
-                                    '+' => {
+                            switch (tag[0]) {
+                                '+' => {
+                                    const batch_type = iter.next() orelse continue;
+                                    if (mem.eql(u8, batch_type, "chathistory")) {
+                                        const target = iter.next() orelse continue;
+                                        var channel = try msg.client.getOrCreateChannel(target);
                                         const duped_tag = try self.alloc.dupe(u8, tag[1..]);
-                                        try channel.batches.put(duped_tag, true);
-                                    },
-                                    '-' => {
-                                        const key = channel.batches.getKey(tag[1..]) orelse continue;
-                                        _ = channel.batches.remove(key);
+                                        try channel.batches.put(duped_tag, false);
+                                    }
+                                },
+                                '-' => {
+                                    for (msg.client.channels.items) |*chan| {
+                                        const key = chan.batches.getKey(tag[1..]) orelse continue;
+                                        const recv_hist = chan.batches.get(key) orelse unreachable;
+                                        _ = chan.batches.remove(key);
                                         self.alloc.free(key);
-                                    },
-                                    else => {},
-                                }
+                                        chan.history_requested = false;
+                                        if (!recv_hist) chan.at_oldest = true;
+                                        break;
+                                    }
+                                },
+                                else => {},
                             }
                         },
                         .MARKREAD => {
@@ -480,6 +486,8 @@ pub fn run(self: *App) !void {
                                     const batch: bool = while (tag_iter.next()) |tag| {
                                         if (mem.eql(u8, tag.key, "batch")) {
                                             std.sort.insertion(Message, channel.messages.items, {}, Message.compareTime);
+                                            const key = channel.batches.getKey(tag.value) orelse continue;
+                                            try channel.batches.put(key, true);
                                             break true;
                                         }
                                     } else false;
@@ -730,6 +738,21 @@ pub fn run(self: *App) !void {
                     while (i > 0) {
                         i -= 1;
                         const message = channel.messages.items[i];
+                        // if we are on the oldest message, request more history
+                        if (i == 0 and !channel.history_requested and !channel.at_oldest) {
+                            var tag_iter = message.tagIterator();
+                            while (tag_iter.next()) |tag| {
+                                if (!mem.eql(u8, tag.key, "time")) continue;
+                                var buf: [128]u8 = undefined;
+                                const hist = try std.fmt.bufPrint(
+                                    &buf,
+                                    "CHATHISTORY BEFORE {s} timestamp={s} 50\r\n",
+                                    .{ channel.name, tag.value },
+                                );
+                                channel.history_requested = true;
+                                try self.queueWrite(client, hist);
+                            }
+                        }
                         // syntax: <target> <message>
                         var iter = message.paramIterator();
                         // target is the channel, and we already handled that
