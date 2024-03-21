@@ -649,7 +649,7 @@ pub fn run(self: *App) !void {
                             try self.queueWrite(client, mark_read);
                         }
                     }
-                    if (channel.messages.items.len == 0 and !channel.history_requested) {
+                    if (channel.messages.items.len == 0 and !channel.history_requested and !channel.at_oldest) {
                         var buf: [128]u8 = undefined;
                         const last_read = try std.fmt.bufPrint(
                             &buf,
