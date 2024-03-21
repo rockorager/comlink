@@ -29,6 +29,7 @@ pub const Command = enum {
     // Named commands
     AUTHENTICATE,
     AWAY,
+    BATCH,
     BOUNCER,
     CAP,
     MARKREAD,
@@ -53,6 +54,7 @@ pub const Command = enum {
 
         .{ "AUTHENTICATE", .AUTHENTICATE },
         .{ "AWAY", .AWAY },
+        .{ "BATCH", .BATCH },
         .{ "BOUNCER", .BOUNCER },
         .{ "CAP", .CAP },
         .{ "MARKREAD", .MARKREAD },
@@ -75,6 +77,7 @@ pub const Channel = struct {
     history_requested: bool = false,
     last_read: i64 = 0,
     has_unread: bool = false,
+    batches: std.StringHashMap(bool),
 
     pub fn deinit(self: *const Channel, alloc: std.mem.Allocator) void {
         alloc.free(self.name);
@@ -86,6 +89,12 @@ pub const Channel = struct {
             msg.deinit(alloc);
         }
         self.messages.deinit();
+        var batches = self.batches;
+        var iter = batches.keyIterator();
+        while (iter.next()) |key| {
+            alloc.free(key.*);
+        }
+        batches.deinit();
     }
 
     pub fn compare(_: void, lhs: Channel, rhs: Channel) bool {
@@ -121,6 +130,16 @@ pub const Message = struct {
     params: ?[]const u8,
     time: ?zeit.Time = null,
     time_buf: ?[]const u8 = null,
+
+    pub fn compareTime(_: void, lhs: Message, rhs: Message) bool {
+        const lhs_t = lhs.time orelse return false;
+        const rhs_t = rhs.time orelse return false;
+
+        const rhs_instant = rhs_t.instant();
+        const lhs_instant = lhs_t.instant();
+
+        return lhs_instant.timestamp < rhs_instant.timestamp;
+    }
 
     pub const ParamIterator = struct {
         params: ?[]const u8,
@@ -524,16 +543,18 @@ pub const Client = struct {
         try self.app.queueWrite(self, "CAP LS 302\r\n");
 
         const caps = [_][]const u8{
-            "echo-message",
-            "server-time",
-            "message-tags",
-            "extended-monitor",
             "away-notify",
+            "batch",
+            "echo-message",
+            "message-tags",
+            "sasl",
+            "server-time",
+
             "draft/chathistory",
             "draft/read-marker",
+
             "soju.im/bouncer-networks",
             "soju.im/bouncer-networks-notify",
-            "sasl",
         };
 
         for (caps) |cap| {
@@ -570,6 +591,7 @@ pub const Client = struct {
             .name = try self.alloc.dupe(u8, name),
             .members = std.ArrayList(*User).init(self.alloc),
             .messages = std.ArrayList(Message).init(self.alloc),
+            .batches = std.StringHashMap(bool).init(self.alloc),
         };
         try self.channels.append(channel);
 

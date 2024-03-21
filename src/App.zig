@@ -423,6 +423,27 @@ pub fn run(self: *App) !void {
                             // they are back.
                             user.away = if (iter.next()) |_| true else false;
                         },
+                        .BATCH => {
+                            var iter = msg.paramIterator();
+                            const tag = iter.next() orelse continue;
+                            const batch_type = iter.next() orelse continue;
+                            if (mem.eql(u8, batch_type, "chathistory")) {
+                                const target = iter.next() orelse continue;
+                                var channel = try msg.client.getOrCreateChannel(target);
+                                switch (tag[0]) {
+                                    '+' => {
+                                        const duped_tag = try self.alloc.dupe(u8, tag[1..]);
+                                        try channel.batches.put(duped_tag, true);
+                                    },
+                                    '-' => {
+                                        const key = channel.batches.getKey(tag[1..]) orelse continue;
+                                        _ = channel.batches.remove(key);
+                                        self.alloc.free(key);
+                                    },
+                                    else => {},
+                                }
+                            }
+                        },
                         .MARKREAD => {
                             var iter = msg.paramIterator();
                             const target = iter.next() orelse continue;
@@ -455,13 +476,17 @@ pub fn run(self: *App) !void {
                                 '#' => {
                                     var channel = try msg.client.getOrCreateChannel(target);
                                     try channel.messages.append(msg);
-                                    const time = msg.time orelse continue;
-                                    if (time.instant().unixTimestamp() > channel.last_read) {
-                                        channel.has_unread = true;
-                                        if (iter.next()) |content| {
-                                            if (std.mem.indexOf(u8, content, msg.client.config.nick)) |_| {
-                                                try self.vx.notify("zirconium", content);
-                                            }
+                                    var tag_iter = msg.tagIterator();
+                                    const batch: bool = while (tag_iter.next()) |tag| {
+                                        if (mem.eql(u8, tag.key, "batch")) {
+                                            std.sort.insertion(Message, channel.messages.items, {}, Message.compareTime);
+                                            break true;
+                                        }
+                                    } else false;
+                                    if (!batch) {
+                                        const content = iter.next() orelse continue;
+                                        if (std.mem.indexOf(u8, content, msg.client.config.nick)) |_| {
+                                            try self.vx.notify("zirconium", content);
                                         }
                                     }
                                 },
