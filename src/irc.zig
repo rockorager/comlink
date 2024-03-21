@@ -197,7 +197,12 @@ pub const Message = struct {
 
             // find next delimiter
             const end = std.mem.indexOfScalarPos(u8, tags, self.index, ';') orelse tags.len;
-            const kv_delim = std.mem.indexOfScalarPos(u8, tags, self.index, '=') orelse end;
+            var kv_delim = std.mem.indexOfScalarPos(u8, tags, self.index, '=') orelse end;
+            // it's possible to have tags like this:
+            //     @bot;account=botaccount;+typing=active
+            // where the first tag doesn't have a value. Guard against the
+            // kv_delim being past the end position
+            if (kv_delim > end) kv_delim = end;
 
             defer self.index = end + 1;
 
