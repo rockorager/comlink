@@ -489,6 +489,9 @@ pub fn run(self: *App) !void {
                                             try self.vx.notify("zirconium", content);
                                         }
                                     }
+                                    const time = msg.time orelse continue;
+                                    if (time.instant().unixTimestamp() > channel.last_read)
+                                        channel.has_unread = true;
                                 },
                                 '$' => {}, // broadcast to all users
                                 else => {}, // DM to me
