@@ -530,7 +530,7 @@ pub const Client = struct {
                     std.mem.copyForwards(u8, buf[0 .. (n + start) - i], buf[i..(n + start)]);
                     start = (n + start) - i;
                 } else start = 0;
-                try std.os.setsockopt(self.stream.handle, std.os.SOL.SOCKET, std.os.SO.RCVTIMEO_NEW, &timeout);
+                try std.os.setsockopt(self.stream.handle, std.os.SOL.SOCKET, std.os.SO.RCVTIMEO, &timeout);
             }
         }
     }
