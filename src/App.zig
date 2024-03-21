@@ -362,6 +362,28 @@ pub fn run(self: *App) !void {
                                 try channel.members.append(user_ptr);
                             }
                             try channel.sortMembers();
+                            if (!channel.history_requested) {
+                                var buf: [128]u8 = undefined;
+                                const last_read = try std.fmt.bufPrint(
+                                    &buf,
+                                    "MARKREAD {s}\r\n",
+                                    .{channel.name},
+                                );
+                                try self.queueWrite(msg.client, last_read);
+                                const hist = try std.fmt.bufPrint(
+                                    &buf,
+                                    "CHATHISTORY LATEST {s} * 50\r\n",
+                                    .{channel.name},
+                                );
+                                channel.history_requested = true;
+                                try self.queueWrite(msg.client, hist);
+                                const who = try std.fmt.bufPrint(
+                                    &buf,
+                                    "WHO {s}\r\n",
+                                    .{channel.name},
+                                );
+                                try self.queueWrite(msg.client, who);
+                            }
                         },
                         .RPL_ENDOFNAMES => {
                             // syntax: <client> <channel> :End of /NAMES list
@@ -648,29 +670,6 @@ pub fn run(self: *App) !void {
                             );
                             try self.queueWrite(client, mark_read);
                         }
-                    }
-                    if (channel.messages.items.len == 0 and !channel.history_requested and !channel.at_oldest) {
-                        var buf: [128]u8 = undefined;
-                        const last_read = try std.fmt.bufPrint(
-                            &buf,
-                            "MARKREAD {s}\r\n",
-                            .{channel.name},
-                        );
-                        try self.queueWrite(client, last_read);
-                        const hist = try std.fmt.bufPrint(
-                            &buf,
-                            "CHATHISTORY LATEST {s} * 50\r\n",
-                            .{channel.name},
-                        );
-                        channel.history_requested = true;
-                        try self.queueWrite(client, hist);
-                        const who = try std.fmt.bufPrint(
-                            &buf,
-                            "WHO {s}\r\n",
-                            .{channel.name},
-                        );
-                        channel.history_requested = true;
-                        try self.queueWrite(client, who);
                     }
                     var topic_seg = [_]vaxis.Segment{
                         .{
