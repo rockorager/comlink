@@ -17,9 +17,18 @@ pub const app_key = "zirconium.app";
 pub fn preloader(lua: *Lua) i32 {
     const fns = [_]ziglua.FnReg{
         .{ .name = "connect", .func = ziglua.wrap(connect) },
+        .{ .name = "log", .func = ziglua.wrap(log) },
     };
     lua.newLib(&fns); // [table]
     return 1;
+}
+
+fn log(lua: *Lua) i32 {
+    lua.argCheck(lua.isString(1), 1, "expected a string");
+    // [string]
+    const msg = lua.toString(1) catch unreachable; // []
+    std.log.scoped(.lua).info("{s}", .{msg});
+    return 0;
 }
 
 /// connects to a client. Accepts a table
