@@ -265,7 +265,7 @@ pub fn run(self: *App) !void {
                                     }
                                 }
                                 if (mem.eql(u8, param, "NAK")) {
-                                    log.err("required CAP not supported {s}", .{iter.next().?});
+                                    log.err("CAP not supported {s}", .{iter.next().?});
                                 }
                             }
                         },
@@ -310,7 +310,7 @@ pub fn run(self: *App) !void {
                             var now_buf: [30]u8 = undefined;
                             const now_fmt = try now.time().bufPrint(&now_buf, .rfc3339);
 
-                            const past = now.subtract(.{ .days = 14 });
+                            const past = now.subtract(.{ .days = 7 });
                             var past_buf: [30]u8 = undefined;
                             const past_fmt = try past.time().bufPrint(&past_buf, .rfc3339);
 
@@ -346,7 +346,8 @@ pub fn run(self: *App) !void {
 
                             var iter = msg.paramIterator();
                             _ = iter.next() orelse continue :loop; // client
-                            _ = iter.next() orelse continue :loop; // channel
+                            const channel_name = iter.next() orelse continue :loop; // channel
+                            if (mem.eql(u8, channel_name, "*")) continue;
                             _ = iter.next() orelse continue :loop; // username
                             _ = iter.next() orelse continue :loop; // host
                             _ = iter.next() orelse continue :loop; // server
@@ -355,65 +356,12 @@ pub fn run(self: *App) !void {
 
                             const user_ptr = try msg.client.getOrCreateUser(nick);
                             if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
-                        },
-                        .RPL_NAMREPLY => {
-                            // syntax: <client> <symbol> <channel> :<nicks>
-                            var iter = msg.paramIterator();
-                            _ = iter.next() orelse continue :loop; // client ("*")
-                            _ = iter.next() orelse continue :loop; // symbol ("=", "@", "*")
-                            const channel_name = iter.next() orelse continue :loop; // channel
-                            const nick_list = iter.next() orelse continue :loop; // member list
-
                             var channel = try msg.client.getOrCreateChannel(channel_name);
-                            if (channel.inited) {
-                                channel.members.clearAndFree();
-                                channel.inited = false;
-                            }
-                            var nick_iter = std.mem.splitScalar(u8, nick_list, ' ');
-                            while (nick_iter.next()) |nick| {
-                                const user_ptr = try msg.client.getOrCreateUser(nick);
-                                try channel.members.append(user_ptr);
-                            }
+                            try channel.members.append(user_ptr);
                             try channel.sortMembers();
-                            if (!channel.history_requested) {
-                                var buf: [128]u8 = undefined;
-                                const last_read = try std.fmt.bufPrint(
-                                    &buf,
-                                    "MARKREAD {s}\r\n",
-                                    .{channel.name},
-                                );
-                                try self.queueWrite(msg.client, last_read);
-                                const hist = try std.fmt.bufPrint(
-                                    &buf,
-                                    "CHATHISTORY LATEST {s} * 50\r\n",
-                                    .{channel.name},
-                                );
-                                channel.history_requested = true;
-                                try self.queueWrite(msg.client, hist);
-                                const who = try std.fmt.bufPrint(
-                                    &buf,
-                                    "WHO {s}\r\n",
-                                    .{channel.name},
-                                );
-                                try self.queueWrite(msg.client, who);
-                            }
                         },
-                        .RPL_ENDOFNAMES => {
-                            // syntax: <client> <channel> :End of /NAMES list
-                            var iter = msg.paramIterator();
-                            _ = iter.next() orelse continue :loop; // client ("*")
-                            const channel_name = iter.next() orelse continue :loop; // channel
-
-                            var channel = try msg.client.getOrCreateChannel(channel_name);
-                            channel.inited = true;
-                            var buf: [128]u8 = undefined;
-                            const last_read = try std.fmt.bufPrint(
-                                &buf,
-                                "MARKREAD {s}\r\n",
-                                .{channel.name},
-                            );
-                            try self.queueWrite(msg.client, last_read);
-                        },
+                        .RPL_NAMREPLY => {},
+                        .RPL_ENDOFNAMES => {},
                         .BOUNCER => {
                             var iter = msg.paramIterator();
                             while (iter.next()) |param| {
@@ -491,33 +439,51 @@ pub fn run(self: *App) !void {
                             if (!mem.eql(u8, should_targets, "TARGETS")) continue;
                             const target = iter.next() orelse continue;
                             // we only add direct messages, not more channels
+                            assert(target.len > 0);
                             if (target[0] == '#') continue;
 
                             var channel = try msg.client.getOrCreateChannel(target);
-                            if (channel.inited) {
-                                channel.members.clearAndFree();
-                                channel.inited = false;
-                            }
                             const user_ptr = try msg.client.getOrCreateUser(target);
                             const me_ptr = try msg.client.getOrCreateUser(msg.client.config.nick);
                             try channel.members.append(user_ptr);
                             try channel.members.append(me_ptr);
                             try channel.sortMembers();
-                            if (!channel.history_requested) {
+                            var buf: [128]u8 = undefined;
+                            const mark_read = try std.fmt.bufPrint(
+                                &buf,
+                                "MARKREAD {s}\r\n",
+                                .{channel.name},
+                            );
+                            try self.queueWrite(msg.client, mark_read);
+                            try self.requestHistory(msg.client, .after, channel);
+                        },
+                        .JOIN => {
+                            // get the user
+                            const src = msg.source orelse continue :loop;
+                            const n = std.mem.indexOfScalar(u8, src, '!') orelse src.len;
+                            const user = try msg.client.getOrCreateUser(src[0..n]);
+
+                            // get the channel
+                            var iter = msg.paramIterator();
+                            const target = iter.next() orelse continue;
+                            var channel = try msg.client.getOrCreateChannel(target);
+
+                            // If it's our nick, we WHO and CHATHISTORY the
+                            // channel, otherwise we just add the user to the
+                            // channel list
+                            if (mem.eql(u8, user.nick, msg.client.config.nick)) {
+                                channel.members.clearAndFree();
                                 var buf: [128]u8 = undefined;
-                                const last_read = try std.fmt.bufPrint(
+                                const who = try std.fmt.bufPrint(
                                     &buf,
-                                    "MARKREAD {s}\r\n",
+                                    "WHO {s}\r\n",
                                     .{channel.name},
                                 );
-                                try self.queueWrite(msg.client, last_read);
-                                const hist = try std.fmt.bufPrint(
-                                    &buf,
-                                    "CHATHISTORY LATEST {s} * 50\r\n",
-                                    .{channel.name},
-                                );
-                                channel.history_requested = true;
-                                try self.queueWrite(msg.client, hist);
+                                try self.queueWrite(msg.client, who);
+
+                                try self.requestHistory(msg.client, .after, channel);
+                            } else {
+                                try channel.members.append(user);
                             }
                         },
                         .MARKREAD => {
@@ -785,19 +751,8 @@ pub fn run(self: *App) !void {
                         i -= 1;
                         const message = channel.messages.items[i];
                         // if we are on the oldest message, request more history
-                        if (i == 0 and !channel.history_requested and !channel.at_oldest) {
-                            var tag_iter = message.tagIterator();
-                            while (tag_iter.next()) |tag| {
-                                if (!mem.eql(u8, tag.key, "time")) continue;
-                                var buf: [128]u8 = undefined;
-                                const hist = try std.fmt.bufPrint(
-                                    &buf,
-                                    "CHATHISTORY BEFORE {s} timestamp={s} 50\r\n",
-                                    .{ channel.name, tag.value },
-                                );
-                                channel.history_requested = true;
-                                try self.queueWrite(client, hist);
-                            }
+                        if (i == 0 and !channel.at_oldest) {
+                            try self.requestHistory(client, .before, channel);
                         }
                         // syntax: <target> <message>
                         var iter = message.paramIterator();
@@ -905,6 +860,65 @@ pub fn run(self: *App) !void {
 
         try self.vx.render();
         self.state.buffers.count = row;
+    }
+}
+
+const ChatHistoryCommand = enum {
+    before,
+    after,
+};
+
+/// fetch the history for the provided channel.
+fn requestHistory(self: *App, client: *Client, cmd: ChatHistoryCommand, channel: *irc.Channel) !void {
+    if (channel.history_requested) return;
+
+    channel.history_requested = true;
+
+    var buf: [128]u8 = undefined;
+    if (channel.messages.items.len == 0) {
+        const hist = try std.fmt.bufPrint(
+            &buf,
+            "CHATHISTORY LATEST {s} * 50\r\n",
+            .{channel.name},
+        );
+        channel.history_requested = true;
+        try self.queueWrite(client, hist);
+        return;
+    }
+
+    switch (cmd) {
+        .before => {
+            assert(channel.messages.items.len > 0);
+            const first = channel.messages.items[0];
+            var tag_iter = first.tagIterator();
+            const time = while (tag_iter.next()) |tag| {
+                if (mem.eql(u8, tag.key, "time")) break tag.value;
+            } else return error.NoTimeTag;
+            const hist = try std.fmt.bufPrint(
+                &buf,
+                "CHATHISTORY BEFORE {s} timestamp={s} 50\r\n",
+                .{ channel.name, time },
+            );
+            channel.history_requested = true;
+            try self.queueWrite(client, hist);
+        },
+        .after => {
+            assert(channel.messages.items.len > 0);
+            const last = channel.messages.getLast();
+            var tag_iter = last.tagIterator();
+            const time = while (tag_iter.next()) |tag| {
+                if (mem.eql(u8, tag.key, "time")) break tag.value;
+            } else return error.NoTimeTag;
+            const hist = try std.fmt.bufPrint(
+                &buf,
+                // we request 500 because we have no
+                // idea how long we've been offline
+                "CHATHISTORY AFTER {s} timestamp={s} 500\r\n",
+                .{ channel.name, time },
+            );
+            channel.history_requested = true;
+            try self.queueWrite(client, hist);
+        },
     }
 }
 

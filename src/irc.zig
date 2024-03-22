@@ -33,6 +33,7 @@ pub const Command = enum {
     BOUNCER,
     CAP,
     CHATHISTORY,
+    JOIN,
     MARKREAD,
     PRIVMSG,
 
@@ -59,6 +60,7 @@ pub const Command = enum {
         .{ "BOUNCER", .BOUNCER },
         .{ "CAP", .CAP },
         .{ "CHATHISTORY", .CHATHISTORY },
+        .{ "JOIN", .JOIN },
         .{ "MARKREAD", .MARKREAD },
         .{ "PRIVMSG", .PRIVMSG },
     });
@@ -564,6 +566,7 @@ pub const Client = struct {
             "server-time",
 
             "draft/chathistory",
+            "draft/no-implicit-names",
             "draft/read-marker",
 
             "soju.im/bouncer-networks",
