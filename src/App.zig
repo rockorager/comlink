@@ -37,6 +37,11 @@ pub const WriteRequest = struct {
     msg: []const u8,
 };
 
+const ChatHistoryCommand = enum {
+    before,
+    after,
+};
+
 /// allocator used for all allocations in the application
 alloc: std.mem.Allocator,
 
@@ -891,11 +896,6 @@ pub fn run(self: *App) !void {
         self.state.buffers.count = row;
     }
 }
-
-const ChatHistoryCommand = enum {
-    before,
-    after,
-};
 
 /// fetch the history for the provided channel.
 fn requestHistory(self: *App, client: *Client, cmd: ChatHistoryCommand, channel: *irc.Channel) !void {
