@@ -473,7 +473,7 @@ pub const Client = struct {
                 log.err("client: {s} error: {}", .{ self.config.network_id.?, err });
             }
 
-            const timeout = std.mem.toBytes(std.os.timeval{
+            const timeout = std.mem.toBytes(std.posix.timeval{
                 .tv_sec = 5,
                 .tv_usec = 0,
             });
@@ -530,7 +530,12 @@ pub const Client = struct {
                     std.mem.copyForwards(u8, buf[0 .. (n + start) - i], buf[i..(n + start)]);
                     start = (n + start) - i;
                 } else start = 0;
-                try std.os.setsockopt(self.stream.handle, std.os.SOL.SOCKET, std.os.SO.RCVTIMEO, &timeout);
+                try std.posix.setsockopt(
+                    self.stream.handle,
+                    std.posix.SOL.SOCKET,
+                    std.posix.SO.RCVTIMEO,
+                    &timeout,
+                );
             }
         }
     }
