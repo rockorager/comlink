@@ -35,6 +35,7 @@ pub const Command = enum {
     CHATHISTORY,
     JOIN,
     MARKREAD,
+    PART,
     PRIVMSG,
 
     unknown,
@@ -62,6 +63,7 @@ pub const Command = enum {
         .{ "CHATHISTORY", .CHATHISTORY },
         .{ "JOIN", .JOIN },
         .{ "MARKREAD", .MARKREAD },
+        .{ "PART", .PART },
         .{ "PRIVMSG", .PRIVMSG },
     });
 

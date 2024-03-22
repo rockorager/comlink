@@ -508,6 +508,35 @@ pub fn run(self: *App) !void {
                             else
                                 channel.has_unread = false;
                         },
+                        .PART => {
+                            // get the user
+                            const src = msg.source orelse continue :loop;
+                            const n = std.mem.indexOfScalar(u8, src, '!') orelse src.len;
+                            const user = try msg.client.getOrCreateUser(src[0..n]);
+
+                            // get the channel
+                            var iter = msg.paramIterator();
+                            const target = iter.next() orelse continue;
+
+                            // If it's our nick, we WHO and CHATHISTORY the
+                            // channel, otherwise we just add the user to the
+                            // channel list
+                            if (mem.eql(u8, user.nick, msg.client.config.nick)) {
+                                for (msg.client.channels.items, 0..) |channel, i| {
+                                    if (!mem.eql(u8, channel.name, target)) continue;
+                                    var chan = msg.client.channels.orderedRemove(i);
+                                    chan.deinit(self.alloc);
+                                    break;
+                                }
+                            } else {
+                                const channel = try msg.client.getOrCreateChannel(target);
+                                for (channel.members.items, 0..) |member, i| {
+                                    if (!mem.eql(u8, user.nick, member.nick)) continue;
+                                    _ = channel.members.orderedRemove(i);
+                                    break;
+                                }
+                            }
+                        },
                         .PRIVMSG => {
                             keep_message = true;
                             // syntax: <target> :<message>
