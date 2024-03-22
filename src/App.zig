@@ -308,7 +308,23 @@ pub fn run(self: *App) !void {
                                 try self.queueWrite(msg.client, "CAP END\r\n");
                             }
                         },
-                        .RPL_WELCOME => {},
+                        .RPL_WELCOME => {
+                            const now = try zeit.instant(.{});
+                            var now_buf: [30]u8 = undefined;
+                            const now_fmt = try now.time().bufPrint(&now_buf, .rfc3339);
+
+                            const past = now.subtract(.{ .days = 14 });
+                            var past_buf: [30]u8 = undefined;
+                            const past_fmt = try past.time().bufPrint(&past_buf, .rfc3339);
+
+                            var buf: [128]u8 = undefined;
+                            const targets = try std.fmt.bufPrint(
+                                &buf,
+                                "CHATHISTORY TARGETS timestamp={s} timestamp={s} 50\r\n",
+                                .{ now_fmt, past_fmt },
+                            );
+                            try self.queueWrite(msg.client, targets);
+                        },
                         .RPL_YOURHOST => {},
                         .RPL_CREATED => {},
                         .RPL_MYINFO => {},
@@ -472,6 +488,41 @@ pub fn run(self: *App) !void {
                                 else => {},
                             }
                         },
+                        .CHATHISTORY => {
+                            var iter = msg.paramIterator();
+                            const should_targets = iter.next() orelse continue;
+                            if (!mem.eql(u8, should_targets, "TARGETS")) continue;
+                            const target = iter.next() orelse continue;
+                            // we only add direct messages, not more channels
+                            if (target[0] == '#') continue;
+
+                            var channel = try msg.client.getOrCreateChannel(target);
+                            if (channel.inited) {
+                                channel.members.clearAndFree();
+                                channel.inited = false;
+                            }
+                            const user_ptr = try msg.client.getOrCreateUser(target);
+                            const me_ptr = try msg.client.getOrCreateUser(msg.client.config.nick);
+                            try channel.members.append(user_ptr);
+                            try channel.members.append(me_ptr);
+                            try channel.sortMembers();
+                            if (!channel.history_requested) {
+                                var buf: [128]u8 = undefined;
+                                const last_read = try std.fmt.bufPrint(
+                                    &buf,
+                                    "MARKREAD {s}\r\n",
+                                    .{channel.name},
+                                );
+                                try self.queueWrite(msg.client, last_read);
+                                const hist = try std.fmt.bufPrint(
+                                    &buf,
+                                    "CHATHISTORY LATEST {s} * 50\r\n",
+                                    .{channel.name},
+                                );
+                                channel.history_requested = true;
+                                try self.queueWrite(msg.client, hist);
+                            }
+                        },
                         .MARKREAD => {
                             var iter = msg.paramIterator();
                             const target = iter.next() orelse continue;
@@ -498,34 +549,33 @@ pub fn run(self: *App) !void {
                             keep_message = true;
                             // syntax: <target> :<message>
                             var iter = msg.paramIterator();
-                            const target = iter.next() orelse continue;
-                            assert(target.len > 0);
-                            switch (target[0]) {
-                                '#' => {
-                                    var channel = try msg.client.getOrCreateChannel(target);
-                                    try channel.messages.append(msg);
-                                    var tag_iter = msg.tagIterator();
-                                    const batch: bool = while (tag_iter.next()) |tag| {
-                                        if (mem.eql(u8, tag.key, "batch")) {
-                                            std.sort.insertion(Message, channel.messages.items, {}, Message.compareTime);
-                                            const key = channel.batches.getKey(tag.value) orelse continue;
-                                            try channel.batches.put(key, true);
-                                            break true;
-                                        }
-                                    } else false;
-                                    if (!batch) {
-                                        const content = iter.next() orelse continue;
-                                        if (std.mem.indexOf(u8, content, msg.client.config.nick)) |_| {
-                                            try self.vx.notify("zirconium", content);
-                                        }
-                                    }
-                                    const time = msg.time orelse continue;
-                                    if (time.instant().unixTimestamp() > channel.last_read)
-                                        channel.has_unread = true;
-                                },
-                                '$' => {}, // broadcast to all users
-                                else => {}, // DM to me
+                            const target = blk: {
+                                const tgt = iter.next() orelse continue;
+                                if (mem.eql(u8, tgt, msg.client.config.nick))
+                                    break :blk msg.source orelse continue
+                                else
+                                    break :blk tgt;
+                            };
+                            var channel = try msg.client.getOrCreateChannel(target);
+                            try channel.messages.append(msg);
+                            var tag_iter = msg.tagIterator();
+                            const batch: bool = while (tag_iter.next()) |tag| {
+                                if (mem.eql(u8, tag.key, "batch")) {
+                                    std.sort.insertion(Message, channel.messages.items, {}, Message.compareTime);
+                                    const key = channel.batches.getKey(tag.value) orelse continue;
+                                    try channel.batches.put(key, true);
+                                    break true;
+                                }
+                            } else false;
+                            if (!batch) {
+                                const content = iter.next() orelse continue;
+                                if (std.mem.indexOf(u8, content, msg.client.config.nick)) |_| {
+                                    try self.vx.notify("zirconium", content);
+                                }
                             }
+                            const time = msg.time orelse continue;
+                            if (time.instant().unixTimestamp() > channel.last_read)
+                                channel.has_unread = true;
                         },
                     }
                 },

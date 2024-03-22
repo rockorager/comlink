@@ -32,6 +32,7 @@ pub const Command = enum {
     BATCH,
     BOUNCER,
     CAP,
+    CHATHISTORY,
     MARKREAD,
     PRIVMSG,
 
@@ -57,6 +58,7 @@ pub const Command = enum {
         .{ "BATCH", .BATCH },
         .{ "BOUNCER", .BOUNCER },
         .{ "CAP", .CAP },
+        .{ "CHATHISTORY", .CHATHISTORY },
         .{ "MARKREAD", .MARKREAD },
         .{ "PRIVMSG", .PRIVMSG },
     });
