@@ -108,8 +108,24 @@ pub const Channel = struct {
         return std.ascii.orderIgnoreCase(lhs.name, rhs.name).compare(std.math.CompareOperator.lt);
     }
 
-    pub fn sortMembers(self: *Channel) !void {
+    pub fn sortMembers(self: *Channel) void {
         std.sort.insertion(*User, self.members.items, {}, User.compare);
+    }
+
+    pub fn addMember(self: *Channel, user: *User) !void {
+        for (self.members.items) |member| {
+            if (user == member) return;
+        }
+        try self.members.append(user);
+        self.sortMembers();
+    }
+
+    pub fn removeMember(self: *Channel, user: *User) void {
+        for (self.members.items, 0..) |member, i| {
+            if (user == member) {
+                _ = self.members.orderedRemove(i);
+            }
+        }
     }
 };
 

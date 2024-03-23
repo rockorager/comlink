@@ -362,8 +362,7 @@ pub fn run(self: *App) !void {
                             const user_ptr = try msg.client.getOrCreateUser(nick);
                             if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
                             var channel = try msg.client.getOrCreateChannel(channel_name);
-                            try channel.members.append(user_ptr);
-                            try channel.sortMembers();
+                            try channel.addMember(user_ptr);
                         },
                         .RPL_NAMREPLY => {},
                         .RPL_ENDOFNAMES => {},
@@ -450,9 +449,8 @@ pub fn run(self: *App) !void {
                             var channel = try msg.client.getOrCreateChannel(target);
                             const user_ptr = try msg.client.getOrCreateUser(target);
                             const me_ptr = try msg.client.getOrCreateUser(msg.client.config.nick);
-                            try channel.members.append(user_ptr);
-                            try channel.members.append(me_ptr);
-                            try channel.sortMembers();
+                            try channel.addMember(user_ptr);
+                            try channel.addMember(me_ptr);
                             var buf: [128]u8 = undefined;
                             const mark_read = try std.fmt.bufPrint(
                                 &buf,
@@ -477,7 +475,6 @@ pub fn run(self: *App) !void {
                             // channel, otherwise we just add the user to the
                             // channel list
                             if (mem.eql(u8, user.nick, msg.client.config.nick)) {
-                                channel.members.clearAndFree();
                                 var buf: [128]u8 = undefined;
                                 const who = try std.fmt.bufPrint(
                                     &buf,
@@ -488,7 +485,7 @@ pub fn run(self: *App) !void {
 
                                 try self.requestHistory(msg.client, .after, channel);
                             } else {
-                                try channel.members.append(user);
+                                try channel.addMember(user);
                             }
                         },
                         .MARKREAD => {
@@ -523,9 +520,6 @@ pub fn run(self: *App) !void {
                             var iter = msg.paramIterator();
                             const target = iter.next() orelse continue;
 
-                            // If it's our nick, we WHO and CHATHISTORY the
-                            // channel, otherwise we just add the user to the
-                            // channel list
                             if (mem.eql(u8, user.nick, msg.client.config.nick)) {
                                 for (msg.client.channels.items, 0..) |channel, i| {
                                     if (!mem.eql(u8, channel.name, target)) continue;
@@ -535,11 +529,7 @@ pub fn run(self: *App) !void {
                                 }
                             } else {
                                 const channel = try msg.client.getOrCreateChannel(target);
-                                for (channel.members.items, 0..) |member, i| {
-                                    if (!mem.eql(u8, user.nick, member.nick)) continue;
-                                    _ = channel.members.orderedRemove(i);
-                                    break;
-                                }
+                                channel.removeMember(user);
                             }
                         },
                         .PRIVMSG => {
