@@ -223,14 +223,23 @@ pub fn run(self: *App) !void {
                                 var buf: [1024]u8 = undefined;
                                 const content = try input.toOwnedSlice();
                                 defer self.alloc.free(content);
-                                const msg = try std.fmt.bufPrint(
-                                    &buf,
-                                    "PRIVMSG {s} :{s}\r\n",
-                                    .{
-                                        channel.name,
-                                        content,
-                                    },
-                                );
+                                const msg = if (content[0] == '/')
+                                    try std.fmt.bufPrint(
+                                        &buf,
+                                        "{s}\r\n",
+                                        .{
+                                            content[1..],
+                                        },
+                                    )
+                                else
+                                    try std.fmt.bufPrint(
+                                        &buf,
+                                        "PRIVMSG {s} :{s}\r\n",
+                                        .{
+                                            channel.name,
+                                            content,
+                                        },
+                                    );
                                 try self.queueWrite(client, msg);
                             }
                         }
