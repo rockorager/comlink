@@ -741,11 +741,11 @@ pub fn run(self: *App) !void {
                     if (hasMouse(member_list_win, self.state.mouse)) |mouse| {
                         switch (mouse.button) {
                             .wheel_up => {
-                                self.state.members.scroll_offset +|= 3;
+                                self.state.members.scroll_offset -|= 3;
                                 self.state.mouse.?.button = .none;
                             },
                             .wheel_down => {
-                                self.state.members.scroll_offset -|= 3;
+                                self.state.members.scroll_offset +|= 3;
                                 self.state.mouse.?.button = .none;
                             },
                             else => {},
