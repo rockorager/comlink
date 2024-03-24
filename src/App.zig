@@ -533,7 +533,6 @@ pub fn run(self: *App) !void {
                             else
                                 channel.has_unread = false;
                         },
-                        .NOTICE => {},
                         .PART => {
                             // get the user
                             const src = msg.source orelse continue :loop;
@@ -556,7 +555,7 @@ pub fn run(self: *App) !void {
                                 channel.removeMember(user);
                             }
                         },
-                        .PRIVMSG => {
+                        .PRIVMSG, .NOTICE => {
                             keep_message = true;
                             // syntax: <target> :<message>
                             var iter = msg.paramIterator();
