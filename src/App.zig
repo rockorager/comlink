@@ -737,10 +737,25 @@ pub fn run(self: *App) !void {
                         },
                     };
                     _ = try topic_win.print(&topic_seg, .{ .wrap = .none });
-                    var member_row: usize = 0;
 
+                    if (hasMouse(member_list_win, self.state.mouse)) |mouse| {
+                        switch (mouse.button) {
+                            .wheel_up => {
+                                self.state.members.scroll_offset +|= 3;
+                                self.state.mouse.?.button = .none;
+                            },
+                            .wheel_down => {
+                                self.state.members.scroll_offset -|= 3;
+                                self.state.mouse.?.button = .none;
+                            },
+                            else => {},
+                        }
+                    }
+
+                    var member_row: usize = 0;
                     for (channel.members.items) |member| {
                         defer member_row += 1;
+                        if (member_row < self.state.members.scroll_offset) continue;
                         var member_seg = [_]vaxis.Segment{
                             .{
                                 .text = " ",
@@ -758,7 +773,7 @@ pub fn run(self: *App) !void {
                         _ = try member_list_win.print(
                             &member_seg,
                             .{
-                                .row_offset = member_row,
+                                .row_offset = member_row - self.state.members.scroll_offset,
                             },
                         );
                     }
