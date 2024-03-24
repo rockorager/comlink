@@ -65,6 +65,8 @@ write_queue: vaxis.Queue(WriteRequest, 128) = .{},
 
 state: State = .{},
 
+content_segments: std.ArrayList(vaxis.Segment),
+
 const State = struct {
     mouse: ?vaxis.Mouse = null,
     members: struct {
@@ -91,6 +93,7 @@ pub fn init(alloc: std.mem.Allocator) !App {
         .clients = std.ArrayList(*Client).init(alloc),
         .lua = try Lua.init(&alloc),
         .vx = try vaxis.init(Event, .{}),
+        .content_segments = std.ArrayList(vaxis.Segment).init(alloc),
     };
 
     // Get our system tls certs
@@ -130,6 +133,8 @@ pub fn deinit(self: *App) void {
             else => {},
         }
     }
+
+    self.content_segments.deinit();
 }
 
 /// push a write request into the queue. The request should include the trailing
@@ -807,16 +812,12 @@ pub fn run(self: *App) !void {
                             h -= 2;
                         }
 
+                        try self.formatMessageContent(message);
+                        defer self.content_segments.clearRetainingCapacity();
+                        const user = try client.getOrCreateUser(sender);
                         // print the content first
-                        const content = iter.next() orelse continue;
-                        if (content[0] == 0x01 and content[content.len - 1] == 0x01) {
-                            // action message
-                        }
-                        const n = strings.lineCountForWindow(message_offset_win, content) + 1;
+                        const n = strings.lineCountForWindow(message_offset_win, self.content_segments.items) + 1;
                         h += n;
-                        var content_seg = [_]vaxis.Segment{
-                            .{ .text = content },
-                        };
                         const content_win = message_offset_win.initChild(
                             0,
                             message_offset_win.height -| h,
@@ -833,10 +834,12 @@ pub fn run(self: *App) !void {
                                     .bg = .{ .index = 8 },
                                 },
                             });
-                            content_seg[0].style = .{ .bg = .{ .index = 8 } };
+                            for (self.content_segments.items) |*item| {
+                                item.style.bg = .{ .index = 8 };
+                            }
                         }
                         _ = try content_win.print(
-                            &content_seg,
+                            self.content_segments.items,
                             .{ .wrap = .word },
                         );
                         const gutter = message_list_win.initChild(
@@ -851,7 +854,6 @@ pub fn run(self: *App) !void {
                         if (h >= message_list_win.height) break;
 
                         h += 1;
-                        const user = try client.getOrCreateUser(sender);
 
                         if (message.time_buf) |buf| {
                             var time_seg = [_]vaxis.Segment{
@@ -957,4 +959,263 @@ fn hasMouse(win: vaxis.Window, mouse: ?vaxis.Mouse) ?vaxis.Mouse {
         event.col < (win.x_off + win.width) and
         event.row >= win.y_off and
         event.row < (win.y_off + win.height)) return event else return null;
+}
+
+/// generate vaxis.Segments for the message content
+fn formatMessageContent(self: *App, msg: Message) !void {
+    const ColorState = enum {
+        ground,
+        fg,
+        bg,
+    };
+    const LinkState = enum {
+        h,
+        t1,
+        t2,
+        p,
+        s,
+        colon,
+        slash,
+        consume,
+    };
+    var iter = msg.paramIterator();
+    _ = iter.next() orelse return error.InvalidMessage;
+    const content = iter.next() orelse return error.InvalidMessage;
+    var start: usize = 0;
+    var i: usize = 0;
+    var style: vaxis.Style = .{};
+    while (i < content.len) : (i += 1) {
+        const b = content[i];
+        switch (b) {
+            0x01 => {
+                if (i == 0 and
+                    content.len > 7 and
+                    mem.startsWith(u8, content[1..], "ACTION"))
+                {
+                    // get the user of this message
+                    const sender: []const u8 = blk: {
+                        const src = msg.source orelse break :blk "";
+                        const l = std.mem.indexOfScalar(u8, src, '!') orelse
+                            std.mem.indexOfScalar(u8, src, '@') orelse
+                            src.len;
+                        break :blk src[0..l];
+                    };
+                    const user = try msg.client.getOrCreateUser(sender);
+                    style.italic = true;
+                    const user_style: vaxis.Style = .{
+                        .fg = user.color,
+                        .italic = true,
+                    };
+                    try self.content_segments.append(.{
+                        .text = user.nick,
+                        .style = user_style,
+                    });
+                    i += 6; // "ACTION"
+                } else {
+                    try self.content_segments.append(.{
+                        .text = content[start..i],
+                        .style = style,
+                    });
+                }
+                start = i + 1;
+            },
+            0x02 => {
+                try self.content_segments.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+                style.bold = !style.bold;
+                start = i + 1;
+            },
+            0x03 => {
+                try self.content_segments.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+                i += 1;
+                var state: ColorState = .ground;
+                var fg_idx: ?u8 = null;
+                var bg_idx: ?u8 = null;
+                while (i < content.len) : (i += 1) {
+                    const d = content[i];
+                    switch (state) {
+                        .ground => {
+                            switch (d) {
+                                '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
+                                    state = .fg;
+                                    fg_idx = d - '0';
+                                },
+                                else => {
+                                    style.fg = .default;
+                                    style.bg = .default;
+                                    start = i;
+                                    break;
+                                },
+                            }
+                        },
+                        .fg => {
+                            switch (d) {
+                                '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
+                                    const fg = fg_idx orelse 0;
+                                    if (fg > 9) {
+                                        style.fg = irc.toVaxisColor(fg);
+                                        start = i;
+                                        break;
+                                    } else {
+                                        fg_idx = fg * 10 + (d - '0');
+                                    }
+                                },
+                                else => {
+                                    if (fg_idx) |fg| {
+                                        style.fg = irc.toVaxisColor(fg);
+                                        start = i;
+                                    }
+                                    if (d == ',') state = .bg else break;
+                                },
+                            }
+                        },
+                        .bg => {
+                            switch (d) {
+                                '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
+                                    const bg = bg_idx orelse 0;
+                                    if (i - start == 2) {
+                                        style.bg = irc.toVaxisColor(bg);
+                                        start = i;
+                                        break;
+                                    } else {
+                                        bg_idx = bg * 10 + (d - '0');
+                                    }
+                                },
+                                else => {
+                                    if (bg_idx) |bg| {
+                                        style.bg = irc.toVaxisColor(bg);
+                                        start = i;
+                                    }
+                                    break;
+                                },
+                            }
+                        },
+                    }
+                }
+            },
+            0x0F => {
+                try self.content_segments.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+                style = .{};
+                start = i + 1;
+            },
+            0x16 => {
+                try self.content_segments.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+                style.reverse = !style.reverse;
+                start = i + 1;
+            },
+            0x1D => {
+                try self.content_segments.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+                style.italic = !style.italic;
+                start = i + 1;
+            },
+            0x1E => {
+                try self.content_segments.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+                style.strikethrough = !style.strikethrough;
+                start = i + 1;
+            },
+            0x1F => {
+                try self.content_segments.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+
+                style.ul_style = if (style.ul_style == .off) .single else .off;
+                start = i + 1;
+            },
+            else => {
+                if (b == 'h') {
+                    var state: LinkState = .h;
+                    const h_start = i;
+                    // consume until a space or EOF
+                    i += 1;
+                    while (i < content.len) : (i += 1) {
+                        const b1 = content[i];
+                        switch (state) {
+                            .h => {
+                                if (b1 == 't') state = .t1 else break;
+                            },
+                            .t1 => {
+                                if (b1 == 't') state = .t2 else break;
+                            },
+                            .t2 => {
+                                if (b1 == 'p') state = .p else break;
+                            },
+                            .p => {
+                                if (b1 == 's')
+                                    state = .s
+                                else if (b1 == ':')
+                                    state = .colon
+                                else
+                                    break;
+                            },
+                            .s => {
+                                if (b1 == ':') state = .colon else break;
+                            },
+                            .colon => {
+                                if (b1 == '/') state = .slash else break;
+                            },
+                            .slash => {
+                                if (b1 == '/') {
+                                    state = .consume;
+                                    try self.content_segments.append(.{
+                                        .text = content[start..h_start],
+                                        .style = style,
+                                    });
+                                } else break;
+                            },
+                            .consume => {
+                                if (b1 == ' ') {
+                                    try self.content_segments.append(.{
+                                        .text = content[h_start..i],
+                                        .style = .{
+                                            .fg = .{ .index = 4 },
+                                        },
+                                        .link = .{
+                                            .uri = content[h_start..i],
+                                        },
+                                    });
+                                    start = i;
+                                    break;
+                                } else if (i == content.len - 1) {
+                                    try self.content_segments.append(.{
+                                        .text = content[h_start..],
+                                        .style = .{
+                                            .fg = .{ .index = 4 },
+                                        },
+                                        .link = .{
+                                            .uri = content[h_start..],
+                                        },
+                                    });
+                                    return;
+                                }
+                            },
+                        }
+                    }
+                }
+            },
+        }
+    }
+    if (start < i and start < content.len) {
+        try self.content_segments.append(.{
+            .text = content[start..],
+            .style = style,
+        });
+    }
 }

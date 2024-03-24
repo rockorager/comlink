@@ -654,3 +654,55 @@ pub const Client = struct {
         };
     }
 };
+
+pub fn toVaxisColor(irc: u8) vaxis.Color {
+    return switch (irc) {
+        0 => .default, // white
+        1 => .{ .index = 0 }, // black
+        2 => .{ .index = 3 }, // blue
+        3 => .{ .index = 2 }, // green
+        4 => .{ .index = 1 }, // red
+        5 => .{ .index = 3 }, // brown
+        6 => .{ .index = 5 }, // magenta
+        7 => .{ .index = 11 }, // orange
+        8 => .{ .index = 11 }, // yellow
+        9 => .{ .index = 10 }, // light green
+        10 => .{ .index = 6 }, // cyan
+        11 => .{ .index = 14 }, // light cyan
+        12 => .{ .index = 12 }, // light blue
+        13 => .{ .index = 13 }, // pink
+        14 => .{ .index = 8 }, // grey
+        15 => .{ .index = 7 }, // light grey
+
+        // 16 to 98 are specifically defined
+        16 => .{ .index = 52 },
+        17 => .{ .index = 94 },
+        18 => .{ .index = 100 },
+        19 => .{ .index = 58 },
+        20 => .{ .index = 22 },
+        21 => .{ .index = 29 },
+        22 => .{ .index = 23 },
+        23 => .{ .index = 24 },
+        24 => .{ .index = 17 },
+        25 => .{ .index = 54 },
+        26 => .{ .index = 53 },
+        27 => .{ .index = 89 },
+        28 => .{ .index = 88 },
+        29 => .{ .index = 130 },
+        30 => .{ .index = 142 },
+        31 => .{ .index = 64 },
+        32 => .{ .index = 28 },
+        33 => .{ .index = 35 },
+        34 => .{ .index = 30 },
+        35 => .{ .index = 25 },
+        36 => .{ .index = 18 },
+        37 => .{ .index = 91 },
+        38 => .{ .index = 90 },
+        39 => .{ .index = 125 },
+        // TODO: finish these out https://modern.ircdocs.horse/formatting#color
+
+        99 => .default,
+
+        else => .{ .index = irc },
+    };
+}
