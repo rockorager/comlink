@@ -570,8 +570,8 @@ pub const Client = struct {
     }
 
     pub fn connect(self: *Client) !void {
-        self.stream = try std.net.tcpConnectToHost(self.alloc, "chat.sr.ht", 6697);
-        self.client = try tls.Client.init(self.stream, self.app.bundle, "chat.sr.ht");
+        self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, 6697);
+        self.client = try tls.Client.init(self.stream, self.app.bundle, self.config.server);
 
         var buf: [4096]u8 = undefined;
 
