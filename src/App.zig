@@ -228,7 +228,16 @@ pub fn run(self: *App) !void {
                                 var buf: [1024]u8 = undefined;
                                 const content = try input.toOwnedSlice();
                                 defer self.alloc.free(content);
-                                const msg = if (content[0] == '/')
+                                const msg = if (mem.startsWith(u8, content, "/me "))
+                                    try std.fmt.bufPrint(
+                                        &buf,
+                                        "PRIVMSG {s} :\x01ACTION {s}\x01\r\n",
+                                        .{
+                                            channel.name,
+                                            content[4..],
+                                        },
+                                    )
+                                else if (content[0] == '/')
                                     try std.fmt.bufPrint(
                                         &buf,
                                         "{s}\r\n",
@@ -524,6 +533,7 @@ pub fn run(self: *App) !void {
                             else
                                 channel.has_unread = false;
                         },
+                        .NOTICE => {},
                         .PART => {
                             // get the user
                             const src = msg.source orelse continue :loop;
