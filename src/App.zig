@@ -190,7 +190,10 @@ pub fn run(self: *App) !void {
         self.lua.setField(lua.registry_index, lua.app_key); // []
 
         // load config
-        self.lua.doFile("/home/tim/.config/zirconium/init.lua") catch return error.LuaError;
+        const home = std.posix.getenv("HOME") orelse return error.EnvironmentVariableNotFound;
+        var buf: [std.posix.PATH_MAX]u8 = undefined;
+        const path = try std.fmt.bufPrintZ(&buf, "{s}/.config/zirconium/init.lua", .{home});
+        self.lua.doFile(path) catch return error.LuaError;
     }
 
     var input = vaxis.widgets.TextInput.init(self.alloc);
