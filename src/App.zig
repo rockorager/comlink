@@ -564,10 +564,11 @@ pub fn run(self: *App) !void {
                             var iter = msg.paramIterator();
                             const target = blk: {
                                 const tgt = iter.next() orelse continue;
-                                if (mem.eql(u8, tgt, msg.client.config.nick))
-                                    break :blk msg.source orelse continue
-                                else
-                                    break :blk tgt;
+                                if (mem.eql(u8, tgt, msg.client.config.nick)) {
+                                    const source = msg.source orelse continue;
+                                    const n = mem.indexOfScalar(u8, source, '!') orelse source.len;
+                                    break :blk source[0..n];
+                                } else break :blk tgt;
                             };
                             var channel = try msg.client.getOrCreateChannel(target);
                             try channel.messages.append(msg);
