@@ -7,7 +7,7 @@ const vaxis = @import("vaxis");
 const zeit = @import("zeit");
 
 const App = @import("App.zig");
-const zirconium = @import("main.zig");
+const zircon = @import("main.zig");
 
 const log = std.log.scoped(.irc);
 
@@ -259,7 +259,7 @@ pub const Message = struct {
                 if (!std.mem.eql(u8, tag.key, "time")) continue;
                 const instant = try zeit.instant(.{
                     .source = .{ .iso8601 = tag.value },
-                    .timezone = &zirconium.local,
+                    .timezone = &zircon.local,
                 });
 
                 break :blk instant.time();

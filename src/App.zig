@@ -181,7 +181,7 @@ pub fn run(self: *App) !void {
         _ = try self.lua.getGlobal("package"); // [package]
         _ = self.lua.getField(-1, "preload"); // [package, preload]
         self.lua.pushFunction(ziglua.wrap(lua.preloader)); // [package, preload, function]
-        self.lua.setField(-2, "zirconium"); // [package, preload]
+        self.lua.setField(-2, "zircon"); // [package, preload]
         // empty the stack
         self.lua.pop(2); // []
 
@@ -192,7 +192,7 @@ pub fn run(self: *App) !void {
         // load config
         const home = std.posix.getenv("HOME") orelse return error.EnvironmentVariableNotFound;
         var buf: [std.posix.PATH_MAX]u8 = undefined;
-        const path = try std.fmt.bufPrintZ(&buf, "{s}/.config/zirconium/init.lua", .{home});
+        const path = try std.fmt.bufPrintZ(&buf, "{s}/.config/zircon/init.lua", .{home});
         self.lua.doFile(path) catch return error.LuaError;
     }
 
@@ -584,7 +584,7 @@ pub fn run(self: *App) !void {
                             if (!batch) {
                                 const content = iter.next() orelse continue;
                                 if (std.mem.indexOf(u8, content, msg.client.config.nick)) |_| {
-                                    try self.vx.notify("zirconium", content);
+                                    try self.vx.notify("zircon", content);
                                 }
                             }
                             const time = msg.time orelse continue;
@@ -688,12 +688,18 @@ pub fn run(self: *App) !void {
                         .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
                     };
                 defer row += 1;
+                const prefix: []const u8 = if (channel.name[0] == '#') "#" else "";
+                const name_offset: usize = if (prefix.len > 0) 1 else 0;
                 var chan_seg = [_]vaxis.Segment{
                     .{
                         .text = "  ",
                     },
                     .{
-                        .text = channel.name,
+                        .text = prefix,
+                        .style = .{ .fg = .{ .index = 8 } },
+                    },
+                    .{
+                        .text = channel.name[name_offset..],
                         .style = chan_style,
                     },
                 };

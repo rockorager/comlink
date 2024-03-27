@@ -1,9 +1,9 @@
 ---@meta
 
---- The primary zirconium module
+--- The primary zircon module
 --
----@class zirconium
-local zirconium = {}
+---@class zircon
+local zircon = {}
 
 ---@class ConnectionConfiguration
 --
@@ -16,11 +16,11 @@ local zirconium = {}
 ---Set connection configuration
 --
 ---@param cfg ConnectionConfiguration
-function zirconium.connect(cfg) end
+function zircon.connect(cfg) end
 
----Log a msg to the zirconium logs
+---Log a msg to the zircon logs
 --
 ---@param msg string The message to log
-function zirconium.log(msg) end
+function zircon.log(msg) end
 
-return zirconium
+return zircon
