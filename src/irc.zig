@@ -126,6 +126,7 @@ pub const Channel = struct {
         for (self.members.items, 0..) |member, i| {
             if (user == member) {
                 _ = self.members.orderedRemove(i);
+                return;
             }
         }
     }
