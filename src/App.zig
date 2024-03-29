@@ -219,8 +219,7 @@ pub fn run(self: *App) !void {
                         else
                             self.state.buffers.selected_idx -|= 1;
                     } else if (key.matches(vaxis.Key.enter, .{})) {
-                        if (input.buf.items.len == 0) continue;
-
+                        if (input.buf.realLength() == 0) continue;
                         var i: usize = 0;
                         for (self.clients.items) |client| {
                             i += 1;
