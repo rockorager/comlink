@@ -378,11 +378,11 @@ pub fn run(self: *App) !void {
                             const channel_name = iter.next() orelse continue :loop; // channel
                             if (mem.eql(u8, channel_name, "*")) continue;
                             var channel = try msg.client.getOrCreateChannel(channel_name);
-                            channel.replies.end_of_who = true;
+                            channel.state.who.end = true;
+                            channel.state.who.requested = false;
                         },
                         .RPL_WHOREPLY => {
                             // syntax: <client> <channel> <username> <host> <server> <nick> <flags> :<hopcount> <real name>
-
                             var iter = msg.paramIterator();
                             _ = iter.next() orelse continue :loop; // client
                             const channel_name = iter.next() orelse continue :loop; // channel
@@ -396,8 +396,8 @@ pub fn run(self: *App) !void {
                             const user_ptr = try msg.client.getOrCreateUser(nick);
                             if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
                             var channel = try msg.client.getOrCreateChannel(channel_name);
-                            if (channel.replies.end_of_who) {
-                                channel.replies.end_of_who = false;
+                            if (channel.state.who.end) {
+                                channel.state.who.end = false;
                                 channel.members.clearAndFree();
                             }
                             try channel.addMember(user_ptr);
@@ -509,18 +509,8 @@ pub fn run(self: *App) !void {
                             const target = iter.next() orelse continue;
                             var channel = try msg.client.getOrCreateChannel(target);
 
-                            // If it's our nick, we WHO and CHATHISTORY the
-                            // channel, otherwise we just add the user to the
-                            // channel list
+                            // If it's our nick, we request chat history
                             if (mem.eql(u8, user.nick, msg.client.config.nick)) {
-                                var buf: [128]u8 = undefined;
-                                const who = try std.fmt.bufPrint(
-                                    &buf,
-                                    "WHO {s}\r\n",
-                                    .{channel.name},
-                                );
-                                try self.queueWrite(msg.client, who);
-
                                 try self.requestHistory(msg.client, .after, channel);
                             } else {
                                 try channel.addMember(user);
@@ -735,15 +725,15 @@ pub fn run(self: *App) !void {
                         },
                     );
                 if (row == self.state.buffers.selected_idx) {
+                    var write_buf: [128]u8 = undefined;
                     if (channel.has_unread) {
                         channel.has_unread = false;
                         const last_msg = channel.messages.getLast();
                         var tag_iter = last_msg.tagIterator();
                         while (tag_iter.next()) |tag| {
                             if (!std.mem.eql(u8, tag.key, "time")) continue;
-                            var buf: [128]u8 = undefined;
                             const mark_read = try std.fmt.bufPrint(
-                                &buf,
+                                &write_buf,
                                 "MARKREAD {s} timestamp={s}\r\n",
                                 .{
                                     channel.name,
@@ -752,6 +742,17 @@ pub fn run(self: *App) !void {
                             );
                             try self.queueWrite(client, mark_read);
                         }
+                    }
+                    if (!channel.state.who.requested and !channel.state.who.end) {
+                        // We request WHO is this channel has not requested, and
+                        // hasn't received an end.
+                        const who = try std.fmt.bufPrint(
+                            &write_buf,
+                            "WHO {s}\r\n",
+                            .{channel.name},
+                        );
+                        try self.queueWrite(client, who);
+                        channel.state.who.requested = true;
                     }
                     var topic_seg = [_]vaxis.Segment{
                         .{

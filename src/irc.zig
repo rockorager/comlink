@@ -80,8 +80,11 @@ pub const Channel = struct {
     name: []const u8,
     topic: ?[]const u8 = null,
     members: std.ArrayList(*User),
-    replies: struct {
-        end_of_who: bool = false,
+    state: struct {
+        who: struct {
+            requested: bool = false,
+            end: bool = false,
+        } = .{},
     } = .{},
 
     messages: std.ArrayList(Message),
