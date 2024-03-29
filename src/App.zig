@@ -371,6 +371,15 @@ pub fn run(self: *App) !void {
                             channel.topic = try self.alloc.dupe(u8, topic);
                         },
                         .RPL_SASLSUCCESS => {},
+                        .RPL_ENDOFWHO => {
+                            // syntax: <client> <mask> :End of WHO list
+                            var iter = msg.paramIterator();
+                            _ = iter.next() orelse continue :loop; // client
+                            const channel_name = iter.next() orelse continue :loop; // channel
+                            if (mem.eql(u8, channel_name, "*")) continue;
+                            var channel = try msg.client.getOrCreateChannel(channel_name);
+                            channel.replies.end_of_who = true;
+                        },
                         .RPL_WHOREPLY => {
                             // syntax: <client> <channel> <username> <host> <server> <nick> <flags> :<hopcount> <real name>
 
@@ -387,6 +396,10 @@ pub fn run(self: *App) !void {
                             const user_ptr = try msg.client.getOrCreateUser(nick);
                             if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
                             var channel = try msg.client.getOrCreateChannel(channel_name);
+                            if (channel.replies.end_of_who) {
+                                channel.replies.end_of_who = false;
+                                channel.members.clearAndFree();
+                            }
                             try channel.addMember(user_ptr);
                         },
                         .RPL_NAMREPLY => {},

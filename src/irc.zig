@@ -18,6 +18,7 @@ pub const Command = enum {
     RPL_MYINFO, // 004
     RPL_ISUPPORT, // 005
 
+    RPL_ENDOFWHO, // 315
     RPL_TOPIC, // 332
     RPL_WHOREPLY, // 352
     RPL_NAMREPLY, // 353
@@ -48,6 +49,7 @@ pub const Command = enum {
         .{ "004", .RPL_MYINFO },
         .{ "005", .RPL_ISUPPORT },
 
+        .{ "315", .RPL_ENDOFWHO },
         .{ "332", .RPL_TOPIC },
         .{ "352", .RPL_WHOREPLY },
         .{ "353", .RPL_NAMREPLY },
@@ -78,8 +80,9 @@ pub const Channel = struct {
     name: []const u8,
     topic: ?[]const u8 = null,
     members: std.ArrayList(*User),
-    // inited is true after we receive 366 ENDOFNAMES
-    inited: bool = false,
+    replies: struct {
+        end_of_who: bool = false,
+    } = .{},
 
     messages: std.ArrayList(Message),
     history_requested: bool = false,
