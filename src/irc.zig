@@ -11,6 +11,8 @@ const zircon = @import("main.zig");
 
 const log = std.log.scoped(.irc);
 
+pub const maximum_message_size = 512;
+
 pub const Command = enum {
     RPL_WELCOME, // 001
     RPL_YOURHOST, // 002

@@ -67,6 +67,8 @@ state: State = .{},
 
 content_segments: std.ArrayList(vaxis.Segment),
 
+completer: ?Completer = null,
+
 const State = struct {
     mouse: ?vaxis.Mouse = null,
     members: struct {
@@ -135,6 +137,7 @@ pub fn deinit(self: *App) void {
     }
 
     self.content_segments.deinit();
+    if (self.completer) |*completer| completer.deinit();
 }
 
 /// push a write request into the queue. The request should include the trailing
@@ -218,6 +221,24 @@ pub fn run(self: *App) !void {
                             self.state.buffers.selected_idx = self.state.buffers.count - 1
                         else
                             self.state.buffers.selected_idx -|= 1;
+                    } else if (key.matches(vaxis.Key.tab, .{})) {
+                        // if we already have a completion word, then we are
+                        // cycling through the options
+                        if (self.completer) |*completer| {
+                            const line = completer.next();
+                            input.clearRetainingCapacity();
+                            try input.insertSliceAtCursor(line);
+                        } else {
+                            var completion_buf: [irc.maximum_message_size]u8 = undefined;
+                            const content = input.sliceToCursor(&completion_buf);
+                            self.completer = Completer.init(self.alloc, content);
+                        }
+                    } else if (key.matches(vaxis.Key.tab, .{ .shift = true })) {
+                        if (self.completer) |*completer| {
+                            const line = completer.prev();
+                            input.clearRetainingCapacity();
+                            try input.insertSliceAtCursor(line);
+                        }
                     } else if (key.matches(vaxis.Key.enter, .{})) {
                         if (input.buf.realLength() == 0) continue;
                         var i: usize = 0;
@@ -260,6 +281,10 @@ pub fn run(self: *App) !void {
                             }
                         }
                     } else {
+                        if (self.completer != null and !key.isModifier()) {
+                            self.completer.?.deinit();
+                            self.completer = null;
+                        }
                         try input.update(.{ .key_press = key });
                     }
                 },
@@ -932,6 +957,44 @@ pub fn run(self: *App) !void {
                             .{ .wrap = .word },
                         );
                     }
+                    if (self.completer) |*completer| {
+                        try completer.findMatches(channel);
+
+                        var completion_style: vaxis.Style = .{ .bg = .{ .index = 8 } };
+                        const completion_win = middle_win.child(.{
+                            .width = .{ .limit = completer.widestMatch(win) },
+                            .height = .{ .limit = completer.numMatches() },
+                            .x_off = completer.start_idx,
+                            .y_off = middle_win.height -| 1 -| completer.numMatches(),
+                        });
+                        completion_win.fill(.{
+                            .char = .{ .grapheme = " ", .width = 1 },
+                            .style = completion_style,
+                        });
+                        var completion_row: usize = 0;
+                        while (completion_row < completion_win.height) : (completion_row += 1) {
+                            if (completer.selected_idx) |idx| {
+                                if (completion_win.height - completion_row - 1 == idx)
+                                    completion_style.reverse = true
+                                else {
+                                    completion_style = .{ .bg = .{ .index = 8 } };
+                                }
+                            }
+                            var seg = [_]vaxis.Segment{
+                                .{
+                                    .text = completer.options.items[completion_row],
+                                    .style = completion_style,
+                                },
+                                .{
+                                    .text = " ",
+                                    .style = completion_style,
+                                },
+                            };
+                            _ = try completion_win.print(&seg, .{
+                                .row_offset = completion_row,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -1266,3 +1329,96 @@ fn formatMessageContent(self: *App, msg: Message) !void {
         });
     }
 }
+
+const Completer = struct {
+    word: []const u8,
+    start_idx: usize,
+    options: std.ArrayList([]const u8),
+    selected_idx: ?usize,
+    widest: ?usize,
+    buf: [irc.maximum_message_size]u8 = undefined,
+
+    pub fn init(alloc: std.mem.Allocator, line: []const u8) Completer {
+        const start_idx = if (std.mem.lastIndexOfScalar(u8, line, ' ')) |idx| idx + 1 else 0;
+        const last_word = line[start_idx..];
+        var completer: Completer = .{
+            .options = std.ArrayList([]const u8).init(alloc),
+            .start_idx = start_idx,
+            .word = last_word,
+            .selected_idx = null,
+            .widest = null,
+        };
+        @memcpy(completer.buf[0..line.len], line);
+        return completer;
+    }
+
+    pub fn deinit(self: *Completer) void {
+        self.options.deinit();
+    }
+
+    /// cycles to the next option, returns the replacement text. Note that we
+    /// start from the bottom, so a selected_idx = 0 means we are on _the last_
+    /// item
+    pub fn next(self: *Completer) []const u8 {
+        if (self.options.items.len == 0) return "";
+        {
+            const last_idx = self.options.items.len - 1;
+            if (self.selected_idx == null or self.selected_idx.? == last_idx)
+                self.selected_idx = 0
+            else
+                self.selected_idx.? +|= 1;
+        }
+        return self.replacementText();
+    }
+
+    pub fn prev(self: *Completer) []const u8 {
+        if (self.options.items.len == 0) return "";
+        {
+            const last_idx = self.options.items.len - 1;
+            if (self.selected_idx == null or self.selected_idx.? == 0)
+                self.selected_idx = last_idx
+            else
+                self.selected_idx.? -= 1;
+        }
+        return self.replacementText();
+    }
+
+    pub fn replacementText(self: *Completer) []const u8 {
+        if (self.selected_idx == null or self.options.items.len == 0) return "";
+        const replacement = self.options.items[self.options.items.len - 1 - self.selected_idx.?];
+        const start = self.start_idx;
+        @memcpy(self.buf[start .. start + replacement.len], replacement);
+        if (self.start_idx == 0) {
+            @memcpy(self.buf[start + replacement.len .. start + replacement.len + 2], ": ");
+            return self.buf[0 .. start + replacement.len + 2];
+        } else {
+            @memcpy(self.buf[start + replacement.len .. start + replacement.len + 1], " ");
+            return self.buf[0 .. start + replacement.len + 1];
+        }
+    }
+
+    pub fn findMatches(self: *Completer, chan: *irc.Channel) !void {
+        log.debug("FINDING MATCHES of {s}", .{self.word});
+        if (self.options.items.len > 0) return;
+        for (chan.members.items) |member| {
+            if (std.ascii.startsWithIgnoreCase(member.nick, self.word)) {
+                try self.options.append(member.nick);
+            }
+        }
+    }
+
+    pub fn widestMatch(self: *Completer, win: vaxis.Window) usize {
+        if (self.widest) |w| return w;
+        var widest: usize = 0;
+        for (self.options.items) |opt| {
+            const width = win.gwidth(opt);
+            if (width > widest) widest = width;
+        }
+        self.widest = widest;
+        return widest;
+    }
+
+    pub fn numMatches(self: *Completer) usize {
+        return self.options.items.len;
+    }
+};
