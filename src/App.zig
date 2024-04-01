@@ -321,7 +321,7 @@ pub fn run(self: *App) !void {
                                     msg.client.ack(cap);
                                     if (mem.eql(u8, cap, "sasl"))
                                         try self.queueWrite(msg.client, "AUTHENTICATE PLAIN\r\n");
-                                } else log.err("CAP not supported {s}", .{cap});
+                                } else log.debug("CAP not supported {s}", .{cap});
                             }
                         },
                         .AUTHENTICATE => {
