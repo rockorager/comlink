@@ -87,6 +87,10 @@ pub const Channel = struct {
             requested: bool = false,
             end: bool = false,
         } = .{},
+        names: struct {
+            requested: bool = false,
+            end: bool = false,
+        } = .{},
     } = .{},
 
     messages: std.ArrayList(Message),
@@ -431,6 +435,28 @@ pub const Client = struct {
         name: ?[]const u8 = null,
     };
 
+    pub const Capabilities = struct {
+        @"away-notify": bool = false,
+        batch: bool = false,
+        @"echo-message": bool = false,
+        @"message-tags": bool = false,
+        sasl: bool = false,
+        @"server-time": bool = false,
+
+        @"draft/chathistory": bool = false,
+        @"draft/no-implicit-names": bool = false,
+        @"draft/read-marker": bool = false,
+
+        @"soju.im/bouncer-networks": bool = false,
+        @"soju.im/bouncer-networks-notify": bool = false,
+    };
+
+    /// ISupport are features only advertised via ISUPPORT that we care about
+    pub const ISupport = struct {
+        whox: bool = false,
+        prefix: []const u8 = "",
+    };
+
     alloc: std.mem.Allocator,
     app: *App,
     client: tls.Client,
@@ -445,6 +471,9 @@ pub const Client = struct {
         connected,
         disconnected,
     } = .disconnected,
+
+    caps: Capabilities = .{},
+    supports: ISupport = .{},
 
     pub fn init(alloc: std.mem.Allocator, app: *App, cfg: Config) !Client {
         return .{
@@ -480,6 +509,19 @@ pub const Client = struct {
             self.alloc.destroy(user.*);
         }
         self.users.deinit();
+        self.alloc.free(self.supports.prefix);
+    }
+
+    pub fn ack(self: *Client, cap: []const u8) void {
+        const info = @typeInfo(Capabilities);
+        assert(info == .Struct);
+
+        inline for (info.Struct.fields) |field| {
+            if (std.mem.eql(u8, field.name, cap)) {
+                @field(self.caps, field.name) = true;
+                return;
+            }
+        }
     }
 
     pub fn readLoop(self: *Client) !void {
@@ -586,23 +628,8 @@ pub const Client = struct {
 
         try self.app.queueWrite(self, "CAP LS 302\r\n");
 
-        const caps = [_][]const u8{
-            "away-notify",
-            "batch",
-            "echo-message",
-            "message-tags",
-            "sasl",
-            "server-time",
-
-            "draft/chathistory",
-            "draft/no-implicit-names",
-            "draft/read-marker",
-
-            "soju.im/bouncer-networks",
-            "soju.im/bouncer-networks-notify",
-        };
-
-        for (caps) |cap| {
+        const cap_names = std.meta.fieldNames(Capabilities);
+        for (cap_names) |cap| {
             const cap_req = try std.fmt.bufPrint(
                 &buf,
                 "CAP REQ :{s}\r\n",

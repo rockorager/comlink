@@ -309,19 +309,19 @@ pub fn run(self: *App) !void {
                     switch (msg.command) {
                         .unknown => {},
                         .CAP => {
+                            // syntax: <client> <ACK/NACK> :caps
                             var iter = msg.paramIterator();
-                            while (iter.next()) |param| {
-                                if (mem.eql(u8, param, "ACK")) {
-                                    const caps = iter.next() orelse continue;
-                                    // When we get an ACK for sasl, we initiate
-                                    // authentication
-                                    if (mem.indexOf(u8, caps, "sasl")) |_| {
+                            _ = iter.next() orelse continue; // client
+                            const ack_or_nack = iter.next() orelse continue;
+                            const ack = mem.eql(u8, ack_or_nack, "ACK");
+                            const caps = iter.next() orelse continue;
+                            var cap_iter = mem.splitScalar(u8, caps, ' ');
+                            while (cap_iter.next()) |cap| {
+                                if (ack) {
+                                    msg.client.ack(cap);
+                                    if (mem.eql(u8, cap, "sasl"))
                                         try self.queueWrite(msg.client, "AUTHENTICATE PLAIN\r\n");
-                                    }
-                                }
-                                if (mem.eql(u8, param, "NAK")) {
-                                    log.err("CAP not supported {s}", .{iter.next().?});
-                                }
+                                } else log.err("CAP not supported {s}", .{cap});
                             }
                         },
                         .AUTHENTICATE => {
@@ -380,7 +380,24 @@ pub fn run(self: *App) !void {
                         .RPL_YOURHOST => {},
                         .RPL_CREATED => {},
                         .RPL_MYINFO => {},
-                        .RPL_ISUPPORT => {},
+                        .RPL_ISUPPORT => {
+                            // syntax: <client> <token>[ <token>] :are supported
+                            var iter = msg.paramIterator();
+                            _ = iter.next() orelse continue; // client
+                            while (iter.next()) |token| {
+                                if (mem.eql(u8, token, "WHOX"))
+                                    msg.client.supports.whox = true
+                                else if (mem.startsWith(u8, token, "PREFIX")) {
+                                    const prefix = blk: {
+                                        const idx = mem.indexOfScalar(u8, token, ')') orelse
+                                            // default is "@+"
+                                            break :blk try self.alloc.dupe(u8, "@+");
+                                        break :blk try self.alloc.dupe(u8, token[idx + 1 ..]);
+                                    };
+                                    msg.client.supports.prefix = prefix;
+                                }
+                            }
+                        },
                         .RPL_LOGGEDIN => {},
                         .RPL_TOPIC => {
                             // syntax: <client> <channel> :<topic>
@@ -427,8 +444,41 @@ pub fn run(self: *App) !void {
                             }
                             try channel.addMember(user_ptr);
                         },
-                        .RPL_NAMREPLY => {},
-                        .RPL_ENDOFNAMES => {},
+                        .RPL_NAMREPLY => {
+                            // syntax: <client> <symbol> <channel> :[<prefix>]<nick>{ [<prefix>]<nick>}
+                            var iter = msg.paramIterator();
+                            _ = iter.next() orelse continue; // client
+                            _ = iter.next() orelse continue; // symbol
+                            const channel_name = iter.next() orelse continue; // channel
+                            const names = iter.next() orelse continue;
+                            var channel = try msg.client.getOrCreateChannel(channel_name);
+                            var name_iter = std.mem.splitScalar(u8, names, ' ');
+                            if (channel.state.names.end) {
+                                channel.state.names.end = false;
+                                channel.members.clearAndFree();
+                            }
+                            log.debug("PREFIX {s}", .{msg.client.supports.prefix});
+                            while (name_iter.next()) |name| {
+                                const has_prefix = for (msg.client.supports.prefix) |ch| {
+                                    if (name[0] == ch) break true;
+                                } else false;
+
+                                if (has_prefix) log.debug("HAS PREFIX {s}", .{name});
+                                const user_ptr = if (has_prefix)
+                                    try msg.client.getOrCreateUser(name[1..])
+                                else
+                                    try msg.client.getOrCreateUser(name);
+                                try channel.addMember(user_ptr);
+                            }
+                        },
+                        .RPL_ENDOFNAMES => {
+                            // syntax: <client> <channel> :End of /NAMES list
+                            var iter = msg.paramIterator();
+                            _ = iter.next() orelse continue; // client
+                            const channel_name = iter.next() orelse continue; // channel
+                            var channel = try msg.client.getOrCreateChannel(channel_name);
+                            channel.state.names.end = true;
+                        },
                         .BOUNCER => {
                             var iter = msg.paramIterator();
                             while (iter.next()) |param| {
@@ -773,7 +823,7 @@ pub fn run(self: *App) !void {
                         // hasn't received an end.
                         const who = try std.fmt.bufPrint(
                             &write_buf,
-                            "WHO {s}\r\n",
+                            "NAMES {s}\r\n",
                             .{channel.name},
                         );
                         try self.queueWrite(client, who);
