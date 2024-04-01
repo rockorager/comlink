@@ -413,16 +413,6 @@ pub fn run(self: *App) !void {
                             channel.topic = try self.alloc.dupe(u8, topic);
                         },
                         .RPL_SASLSUCCESS => {},
-                        .RPL_ENDOFWHO => {
-                            // syntax: <client> <mask> :End of WHO list
-                            var iter = msg.paramIterator();
-                            _ = iter.next() orelse continue :loop; // client
-                            const channel_name = iter.next() orelse continue :loop; // channel
-                            if (mem.eql(u8, channel_name, "*")) continue;
-                            var channel = try msg.client.getOrCreateChannel(channel_name);
-                            channel.state.who.end = true;
-                            channel.state.who.requested = false;
-                        },
                         .RPL_WHOREPLY => {
                             // syntax: <client> <channel> <username> <host> <server> <nick> <flags> :<hopcount> <real name>
                             var iter = msg.paramIterator();
@@ -438,11 +428,29 @@ pub fn run(self: *App) !void {
                             const user_ptr = try msg.client.getOrCreateUser(nick);
                             if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
                             var channel = try msg.client.getOrCreateChannel(channel_name);
-                            if (channel.state.who.end) {
-                                channel.state.who.end = false;
-                                channel.members.clearAndFree();
-                            }
                             try channel.addMember(user_ptr);
+                        },
+                        .RPL_WHOSPCRPL => {
+                            // syntax: <client> <channel> <nick> <flags>
+                            var iter = msg.paramIterator();
+                            _ = iter.next() orelse continue;
+                            const channel_name = iter.next() orelse continue; // channel
+                            const nick = iter.next() orelse continue;
+                            const flags = iter.next() orelse continue;
+
+                            const user_ptr = try msg.client.getOrCreateUser(nick);
+                            if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
+                            var channel = try msg.client.getOrCreateChannel(channel_name);
+                            try channel.addMember(user_ptr);
+                        },
+                        .RPL_ENDOFWHO => {
+                            // syntax: <client> <mask> :End of WHO list
+                            var iter = msg.paramIterator();
+                            _ = iter.next() orelse continue :loop; // client
+                            const channel_name = iter.next() orelse continue :loop; // channel
+                            if (mem.eql(u8, channel_name, "*")) continue;
+                            var channel = try msg.client.getOrCreateChannel(channel_name);
+                            channel.in_flight.who = false;
                         },
                         .RPL_NAMREPLY => {
                             // syntax: <client> <symbol> <channel> :[<prefix>]<nick>{ [<prefix>]<nick>}
@@ -453,11 +461,6 @@ pub fn run(self: *App) !void {
                             const names = iter.next() orelse continue;
                             var channel = try msg.client.getOrCreateChannel(channel_name);
                             var name_iter = std.mem.splitScalar(u8, names, ' ');
-                            if (channel.state.names.end) {
-                                channel.state.names.end = false;
-                                channel.members.clearAndFree();
-                            }
-                            log.debug("PREFIX {s}", .{msg.client.supports.prefix});
                             while (name_iter.next()) |name| {
                                 const has_prefix = for (msg.client.supports.prefix) |ch| {
                                     if (name[0] == ch) break true;
@@ -477,7 +480,7 @@ pub fn run(self: *App) !void {
                             _ = iter.next() orelse continue; // client
                             const channel_name = iter.next() orelse continue; // channel
                             var channel = try msg.client.getOrCreateChannel(channel_name);
-                            channel.state.names.end = true;
+                            channel.in_flight.names = false;
                         },
                         .BOUNCER => {
                             var iter = msg.paramIterator();
@@ -818,16 +821,35 @@ pub fn run(self: *App) !void {
                             try self.queueWrite(client, mark_read);
                         }
                     }
-                    if (!channel.state.who.requested and !channel.state.who.end) {
-                        // We request WHO is this channel has not requested, and
-                        // hasn't received an end.
-                        const who = try std.fmt.bufPrint(
-                            &write_buf,
-                            "NAMES {s}\r\n",
-                            .{channel.name},
-                        );
-                        try self.queueWrite(client, who);
-                        channel.state.who.requested = true;
+                    // if there are no members we will request either NAMES or
+                    // WHOX
+                    if (channel.members.items.len == 0) {
+                        // Only use WHO if we have WHOX and away-notify. Without
+                        // WHOX, we can get rate limited on eg. libera. Without
+                        // away-notify, our list will become stale
+                        if (client.supports.whox and
+                            client.caps.@"away-notify" and
+                            !channel.in_flight.who)
+                        {
+                            channel.in_flight.who = true;
+                            const who = try std.fmt.bufPrint(
+                                &write_buf,
+                                "WHO {s} %cnf\r\n",
+                                .{channel.name},
+                            );
+                            try self.queueWrite(client, who);
+                        } else if (!client.supports.whox and
+                            !client.caps.@"away-notify" and
+                            !channel.in_flight.names)
+                        {
+                            channel.in_flight.names = true;
+                            const names = try std.fmt.bufPrint(
+                                &write_buf,
+                                "NAMES {s}\r\n",
+                                .{channel.name},
+                            );
+                            try self.queueWrite(client, names);
+                        }
                     }
                     var topic_seg = [_]vaxis.Segment{
                         .{

@@ -24,6 +24,7 @@ pub const Command = enum {
     RPL_TOPIC, // 332
     RPL_WHOREPLY, // 352
     RPL_NAMREPLY, // 353
+    RPL_WHOSPCRPL, // 354
     RPL_ENDOFNAMES, // 366
 
     RPL_LOGGEDIN, // 900
@@ -55,6 +56,7 @@ pub const Command = enum {
         .{ "332", .RPL_TOPIC },
         .{ "352", .RPL_WHOREPLY },
         .{ "353", .RPL_NAMREPLY },
+        .{ "354", .RPL_WHOSPCRPL },
         .{ "366", .RPL_ENDOFNAMES },
 
         .{ "900", .RPL_LOGGEDIN },
@@ -82,15 +84,9 @@ pub const Channel = struct {
     name: []const u8,
     topic: ?[]const u8 = null,
     members: std.ArrayList(*User),
-    state: struct {
-        who: struct {
-            requested: bool = false,
-            end: bool = false,
-        } = .{},
-        names: struct {
-            requested: bool = false,
-            end: bool = false,
-        } = .{},
+    in_flight: struct {
+        who: bool = false,
+        names: bool = false,
     } = .{},
 
     messages: std.ArrayList(Message),
