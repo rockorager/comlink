@@ -1512,15 +1512,18 @@ const Command = enum {
     /// a raw irc command. Sent verbatim
     irc,
     me,
+    msg,
     @"next-channel",
     @"prev-channel",
     quit,
+    who,
 
     /// if we should append a space when completing
     pub fn appendSpace(self: Command) bool {
         return switch (self) {
             .irc,
             .me,
+            .msg,
             => true,
             else => false,
         };
@@ -1556,8 +1559,32 @@ pub fn handleCommand(self: *App, client: *Client, channel: irc.Channel, cmd: []c
             );
             return self.queueWrite(client, msg);
         },
+        .msg => {
+            //syntax: /msg <nick> <msg>
+            const s = std.mem.indexOfScalar(u8, cmd, ' ') orelse return error.InvalidCommand;
+            const e = std.mem.indexOfScalarPos(u8, cmd, s + 1, ' ') orelse return error.InvalidCommand;
+            const msg = try std.fmt.bufPrint(
+                &buf,
+                "PRIVMSG {s} :{s}\r\n",
+                .{
+                    cmd[s + 1 .. e],
+                    cmd[e + 1 ..],
+                },
+            );
+            return self.queueWrite(client, msg);
+        },
         .@"next-channel" => {},
         .@"prev-channel" => {},
         .quit => {},
+        .who => {
+            const msg = try std.fmt.bufPrint(
+                &buf,
+                "WHO {s}\r\n",
+                .{
+                    channel.name,
+                },
+            );
+            return self.queueWrite(client, msg);
+        },
     }
 }
