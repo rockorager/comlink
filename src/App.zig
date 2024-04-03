@@ -1058,10 +1058,10 @@ pub fn run(self: *App) !void {
 
                         var completion_style: vaxis.Style = .{ .bg = .{ .index = 8 } };
                         const completion_win = middle_win.child(.{
-                            .width = .{ .limit = completer.widestMatch(win) },
-                            .height = .{ .limit = completer.numMatches() },
+                            .width = .{ .limit = completer.widestMatch(win) + 1 },
+                            .height = .{ .limit = @min(completer.numMatches(), middle_win.height -| 1) },
                             .x_off = completer.start_idx,
-                            .y_off = middle_win.height -| 1 -| completer.numMatches(),
+                            .y_off = middle_win.height -| completer.numMatches() -| 1,
                         });
                         completion_win.fill(.{
                             .char = .{ .grapheme = " ", .width = 1 },
@@ -1069,8 +1069,9 @@ pub fn run(self: *App) !void {
                         });
                         var completion_row: usize = 0;
                         while (completion_row < completion_win.height) : (completion_row += 1) {
+                            log.debug("COMPLETION ROW {d}, selected_idx {d}", .{ completion_row, completer.selected_idx orelse 0 });
                             if (completer.selected_idx) |idx| {
-                                if (completion_win.height - completion_row - 1 == idx)
+                                if (completion_row == idx)
                                     completion_style.reverse = true
                                 else {
                                     completion_style = .{ .bg = .{ .index = 8 } };
@@ -1078,7 +1079,7 @@ pub fn run(self: *App) !void {
                             }
                             var seg = [_]vaxis.Segment{
                                 .{
-                                    .text = completer.options.items[completion_row],
+                                    .text = completer.options.items[completer.options.items.len - 1 - completion_row],
                                     .style = completion_style,
                                 },
                                 .{
@@ -1087,7 +1088,7 @@ pub fn run(self: *App) !void {
                                 },
                             };
                             _ = try completion_win.print(&seg, .{
-                                .row_offset = completion_row,
+                                .row_offset = completion_win.height -| completion_row -| 1,
                             });
                         }
                     }
@@ -1509,12 +1510,19 @@ const Completer = struct {
     }
 
     pub fn findMatches(self: *Completer, chan: *irc.Channel) !void {
-        log.debug("FINDING MATCHES of {s}", .{self.word});
         if (self.options.items.len > 0) return;
+        const alloc = self.options.allocator;
+        var members = std.ArrayList(*irc.User).init(alloc);
+        defer members.deinit();
         for (chan.members.items) |member| {
             if (std.ascii.startsWithIgnoreCase(member.nick, self.word)) {
-                try self.options.append(member.nick);
+                try members.append(member);
             }
+        }
+        std.sort.insertion(*irc.User, members.items, chan, irc.Channel.compareRecentMessages);
+        self.options = try std.ArrayList([]const u8).initCapacity(alloc, members.items.len);
+        for (members.items) |member| {
+            try self.options.append(member.nick);
         }
     }
 

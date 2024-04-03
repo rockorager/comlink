@@ -119,6 +119,26 @@ pub const Channel = struct {
         return std.ascii.orderIgnoreCase(lhs.name, rhs.name).compare(std.math.CompareOperator.lt);
     }
 
+    pub fn compareRecentMessages(self: *Channel, lhs: *User, rhs: *User) bool {
+        var l: i64 = 0;
+        var r: i64 = 0;
+        var iter = std.mem.reverseIterator(self.messages.items);
+        while (iter.next()) |msg| {
+            if (msg.source) |source| {
+                const bang = std.mem.indexOfScalar(u8, source, '!') orelse source.len;
+                const nick = source[0..bang];
+
+                if (l == 0 and msg.time != null and std.mem.eql(u8, lhs.nick, nick)) {
+                    log.debug("L!!", .{});
+                    l = msg.time.?.instant().unixTimestamp();
+                } else if (r == 0 and msg.time != null and std.mem.eql(u8, rhs.nick, nick))
+                    r = msg.time.?.instant().unixTimestamp();
+            }
+            if (l > 0 and r > 0) break;
+        }
+        return l < r;
+    }
+
     pub fn sortMembers(self: *Channel) void {
         std.sort.insertion(*User, self.members.items, {}, User.compare);
     }
