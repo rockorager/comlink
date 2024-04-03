@@ -23,4 +23,21 @@ function zircon.connect(cfg) end
 ---@param msg string The message to log
 function zircon.log(msg) end
 
+---@enum action
+local Action = {
+	irc = 0,
+	me = 1,
+	msg = 2,
+	next_channel = 3,
+	prev_channel = 4,
+	quit = 5,
+	who = 6,
+}
+
+---Bind a key
+--
+---@param key string The key to bind, eg "alt+n", "shift+left"
+---@param action action The action to perform, eg "quit"
+function zircon.bind(key, action) end
+
 return zircon
