@@ -242,7 +242,7 @@ pub fn run(self: *App) !void {
 
     loop: while (!self.should_quit) {
         self.vx.pollEvent();
-        while (self.vx.queue.tryPop()) |event| {
+        while (self.vx.tryEvent()) |event| {
             switch (event) {
                 .redraw => {},
                 .key_press => |key| {
