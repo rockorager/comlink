@@ -242,34 +242,19 @@ pub fn run(self: *App) !void {
                     } else if (key.matches(vaxis.Key.enter, .{})) {
                         if (input.buf.realLength() == 0) continue;
                         var i: usize = 0;
-                        for (self.clients.items) |client| {
+                        clients: for (self.clients.items) |client| {
                             i += 1;
                             for (client.channels.items) |channel| {
                                 defer i += 1;
                                 if (i != self.state.buffers.selected_idx) continue;
 
-                                var buf: [1024]u8 = undefined;
                                 const content = try input.toOwnedSlice();
                                 defer self.alloc.free(content);
-                                const msg = if (mem.startsWith(u8, content, "/me "))
-                                    try std.fmt.bufPrint(
-                                        &buf,
-                                        "PRIVMSG {s} :\x01ACTION {s}\x01\r\n",
-                                        .{
-                                            channel.name,
-                                            content[4..],
-                                        },
-                                    )
-                                else if (content[0] == '/')
-                                    try std.fmt.bufPrint(
-                                        &buf,
-                                        "{s}\r\n",
-                                        .{
-                                            content[1..],
-                                        },
-                                    )
-                                else
-                                    try std.fmt.bufPrint(
+                                if (content[0] == '/')
+                                    try self.handleCommand(client, channel, content)
+                                else {
+                                    var buf: [1024]u8 = undefined;
+                                    const msg = try std.fmt.bufPrint(
                                         &buf,
                                         "PRIVMSG {s} :{s}\r\n",
                                         .{
@@ -277,7 +262,9 @@ pub fn run(self: *App) !void {
                                             content,
                                         },
                                     );
-                                try self.queueWrite(client, msg);
+                                    try self.queueWrite(client, msg);
+                                }
+                                break :clients;
                             }
                         }
                     } else {
@@ -1494,3 +1481,47 @@ const Completer = struct {
         return self.options.items.len;
     }
 };
+
+const Command = enum {
+    /// a raw irc command. Sent verbatim
+    irc,
+    me,
+    @"next-channel",
+    @"prev-channel",
+    quit,
+};
+
+/// handle a command
+pub fn handleCommand(self: *App, client: *Client, channel: irc.Channel, cmd: []const u8) !void {
+    const command: Command = blk: {
+        const start: u1 = if (cmd[0] == '/') 1 else 0;
+        const end = mem.indexOfScalar(u8, cmd, ' ') orelse cmd.len;
+        break :blk std.meta.stringToEnum(Command, cmd[start..end]) orelse return error.UnknownCommand;
+    };
+    var buf: [1024]u8 = undefined;
+    switch (command) {
+        .irc => {
+            const start = mem.indexOfScalar(u8, cmd, ' ') orelse return error.InvalidCommand;
+            const msg = try std.fmt.bufPrint(
+                &buf,
+                "{s}\r\n",
+                .{cmd[start + 1 ..]},
+            );
+            return self.queueWrite(client, msg);
+        },
+        .me => {
+            const msg = try std.fmt.bufPrint(
+                &buf,
+                "PRIVMSG {s} :\x01ACTION {s}\x01\r\n",
+                .{
+                    channel.name,
+                    cmd[4..],
+                },
+            );
+            return self.queueWrite(client, msg);
+        },
+        .@"next-channel" => {},
+        .@"prev-channel" => {},
+        .quit => {},
+    }
+}
