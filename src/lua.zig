@@ -68,6 +68,15 @@ fn connect(lua: *Lua) i32 {
     return 0;
 }
 
+/// creates a keybind. Accepts a table
+fn bind(lua: *Lua) i32 {
+    const app = getApp(lua);
+    _ = app;
+    lua.argCheck(lua.isString(1), 1, "expected a string");
+    // second arg can be a string (action) or a lua function
+    lua.argCheck(lua.isString(2) or lua.isFunction(2), 1, "expected a string or a function");
+}
+
 /// retrieves the *App lightuserdata from the registry index
 fn getApp(lua: *Lua) *App {
     const lua_type = lua.getField(ziglua.registry_index, app_key); // [userdata]

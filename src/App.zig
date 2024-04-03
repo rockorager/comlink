@@ -231,7 +231,7 @@ pub fn run(self: *App) !void {
                         } else {
                             var completion_buf: [irc.maximum_message_size]u8 = undefined;
                             const content = input.sliceToCursor(&completion_buf);
-                            self.completer = Completer.init(self.alloc, content);
+                            self.completer = try Completer.init(self.alloc, content);
                         }
                     } else if (key.matches(vaxis.Key.tab, .{ .shift = true })) {
                         if (self.completer) |*completer| {
@@ -1396,8 +1396,9 @@ const Completer = struct {
     selected_idx: ?usize,
     widest: ?usize,
     buf: [irc.maximum_message_size]u8 = undefined,
+    cmd: bool = false, // true when we are completing a command
 
-    pub fn init(alloc: std.mem.Allocator, line: []const u8) Completer {
+    pub fn init(alloc: std.mem.Allocator, line: []const u8) !Completer {
         const start_idx = if (std.mem.lastIndexOfScalar(u8, line, ' ')) |idx| idx + 1 else 0;
         const last_word = line[start_idx..];
         var completer: Completer = .{
@@ -1408,6 +1409,10 @@ const Completer = struct {
             .widest = null,
         };
         @memcpy(completer.buf[0..line.len], line);
+        if (last_word.len > 0 and last_word[0] == '/') {
+            completer.cmd = true;
+            try completer.findCommandMatches();
+        }
         return completer;
     }
 
@@ -1445,6 +1450,16 @@ const Completer = struct {
     pub fn replacementText(self: *Completer) []const u8 {
         if (self.selected_idx == null or self.options.items.len == 0) return "";
         const replacement = self.options.items[self.options.items.len - 1 - self.selected_idx.?];
+        if (self.cmd) {
+            self.buf[0] = '/';
+            @memcpy(self.buf[1 .. 1 + replacement.len], replacement);
+            const append_space = if (std.meta.stringToEnum(Command, replacement)) |cmd|
+                cmd.appendSpace()
+            else
+                true;
+            if (append_space) self.buf[1 + replacement.len] = ' ';
+            return self.buf[0 .. 1 + replacement.len + @as(u1, if (append_space) 1 else 0)];
+        }
         const start = self.start_idx;
         @memcpy(self.buf[start .. start + replacement.len], replacement);
         if (self.start_idx == 0) {
@@ -1462,6 +1477,17 @@ const Completer = struct {
         for (chan.members.items) |member| {
             if (std.ascii.startsWithIgnoreCase(member.nick, self.word)) {
                 try self.options.append(member.nick);
+            }
+        }
+    }
+
+    pub fn findCommandMatches(self: *Completer) !void {
+        if (self.options.items.len > 0) return;
+        self.cmd = true;
+        const commands = std.meta.fieldNames(Command);
+        for (commands) |cmd| {
+            if (std.ascii.startsWithIgnoreCase(cmd, self.word[1..])) {
+                try self.options.append(cmd);
             }
         }
     }
@@ -1489,6 +1515,16 @@ const Command = enum {
     @"next-channel",
     @"prev-channel",
     quit,
+
+    /// if we should append a space when completing
+    pub fn appendSpace(self: Command) bool {
+        return switch (self) {
+            .irc,
+            .me,
+            => true,
+            else => false,
+        };
+    }
 };
 
 /// handle a command
