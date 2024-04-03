@@ -1,6 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const ziglua = @import("ziglua");
+const vaxis = @import("vaxis");
 
 const App = @import("App.zig");
 const irc = @import("irc.zig");
@@ -16,6 +17,7 @@ pub const app_key = "zircon.app";
 /// loads our "zircon" library
 pub fn preloader(lua: *Lua) i32 {
     const fns = [_]ziglua.FnReg{
+        .{ .name = "bind", .func = ziglua.wrap(bind) },
         .{ .name = "connect", .func = ziglua.wrap(connect) },
         .{ .name = "log", .func = ziglua.wrap(log) },
     };
@@ -68,13 +70,53 @@ fn connect(lua: *Lua) i32 {
     return 0;
 }
 
-/// creates a keybind. Accepts a table
+/// creates a keybind. Accepts 2 strings
 fn bind(lua: *Lua) i32 {
     const app = getApp(lua);
-    _ = app;
     lua.argCheck(lua.isString(1), 1, "expected a string");
-    // second arg can be a string (action) or a lua function
-    lua.argCheck(lua.isString(2) or lua.isFunction(2), 1, "expected a string or a function");
+    lua.argCheck(lua.isString(2), 1, "expected a string");
+
+    // [string string]
+    const key_str = lua.toString(1) catch unreachable; // [string]
+    const action = lua.toString(2) catch unreachable; // []
+
+    var codepoint: ?u21 = null;
+    var mods: vaxis.Key.Modifiers = .{};
+
+    var iter = std.mem.splitScalar(u8, std.mem.span(key_str), '+');
+    while (iter.next()) |key_txt| {
+        const last = iter.peek() == null;
+        if (last) {
+            codepoint = vaxis.Key.name_map.get(key_txt) orelse
+                std.unicode.utf8Decode(key_txt) catch {
+                lua.raiseErrorStr("invalid utf8 or more than one codepoint", .{});
+            };
+        }
+        if (std.mem.eql(u8, "shift", key_txt))
+            mods.shift = true
+        else if (std.mem.eql(u8, "alt", key_txt))
+            mods.alt = true
+        else if (std.mem.eql(u8, "ctrl", key_txt))
+            mods.ctrl = true
+        else if (std.mem.eql(u8, "super", key_txt))
+            mods.super = true
+        else if (std.mem.eql(u8, "hyper", key_txt))
+            mods.hyper = true
+        else if (std.mem.eql(u8, "meta", key_txt))
+            mods.meta = true;
+    }
+    const command = std.meta.stringToEnum(App.Command, std.mem.span(action)) orelse
+        lua.raiseErrorStr("not a valid command: %s", .{action});
+    if (codepoint) |cp| {
+        app.binds.append(.{
+            .key = .{
+                .codepoint = cp,
+                .mods = mods,
+            },
+            .command = command,
+        }) catch lua.raiseErrorStr("out of memory", .{});
+    }
+    return 0;
 }
 
 /// retrieves the *App lightuserdata from the registry index

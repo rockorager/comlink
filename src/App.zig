@@ -47,6 +47,11 @@ const Buffer = union(enum) {
     channel: *irc.Channel,
 };
 
+pub const Bind = struct {
+    key: vaxis.Key,
+    command: Command,
+};
+
 /// allocator used for all allocations in the application
 alloc: std.mem.Allocator,
 
@@ -76,6 +81,8 @@ completer: ?Completer = null,
 
 should_quit: bool = false,
 
+binds: std.ArrayList(Bind),
+
 const State = struct {
     mouse: ?vaxis.Mouse = null,
     members: struct {
@@ -103,7 +110,30 @@ pub fn init(alloc: std.mem.Allocator) !App {
         .lua = try Lua.init(&alloc),
         .vx = try vaxis.init(Event, .{}),
         .content_segments = std.ArrayList(vaxis.Segment).init(alloc),
+        .binds = try std.ArrayList(Bind).initCapacity(alloc, 16),
     };
+
+    try app.binds.append(.{
+        .key = .{
+            .codepoint = 'c',
+            .mods = .{ .ctrl = true },
+        },
+        .command = .quit,
+    });
+    try app.binds.append(.{
+        .key = .{
+            .codepoint = vaxis.Key.up,
+            .mods = .{ .alt = true },
+        },
+        .command = .@"prev-channel",
+    });
+    try app.binds.append(.{
+        .key = .{
+            .codepoint = vaxis.Key.down,
+            .mods = .{ .alt = true },
+        },
+        .command = .@"next-channel",
+    });
 
     // Get our system tls certs
     try app.bundle.rescan(alloc);
@@ -145,6 +175,7 @@ pub fn deinit(self: *App) void {
 
     self.content_segments.deinit();
     if (self.completer) |*completer| completer.deinit();
+    self.binds.deinit();
 }
 
 /// push a write request into the queue. The request should include the trailing
@@ -215,19 +246,16 @@ pub fn run(self: *App) !void {
             switch (event) {
                 .redraw => {},
                 .key_press => |key| {
-                    if (key.matches('c', .{ .ctrl = true })) {
-                        return;
-                    } else if (key.matches(vaxis.Key.down, .{ .alt = true })) {
-                        const state = self.state.buffers;
-                        if (state.selected_idx >= state.count - 1)
-                            self.state.buffers.selected_idx = 0
-                        else
-                            self.state.buffers.selected_idx +|= 1;
-                    } else if (key.matches(vaxis.Key.up, .{ .alt = true })) {
-                        if (self.state.buffers.selected_idx == 0)
-                            self.state.buffers.selected_idx = self.state.buffers.count - 1
-                        else
-                            self.state.buffers.selected_idx -|= 1;
+                    for (self.binds.items) |bind| {
+                        if (key.matches(bind.key.codepoint, bind.key.mods)) {
+                            switch (bind.command) {
+                                .quit => self.should_quit = true,
+                                .@"next-channel" => self.nextChannel(),
+                                .@"prev-channel" => self.prevChannel(),
+                                else => {},
+                            }
+                            break;
+                        }
                     } else if (key.matches(vaxis.Key.tab, .{})) {
                         // if we already have a completion word, then we are
                         // cycling through the options
@@ -271,6 +299,10 @@ pub fn run(self: *App) !void {
                                 },
                                 .client => log.err("can't send message to client", .{}),
                             }
+                        }
+                        if (self.completer != null) {
+                            self.completer.?.deinit();
+                            self.completer = null;
                         }
                     } else {
                         if (self.completer != null and !key.isModifier()) {
@@ -1513,7 +1545,7 @@ const Completer = struct {
     }
 };
 
-const Command = enum {
+pub const Command = enum {
     /// a raw irc command. Sent verbatim
     irc,
     me,
@@ -1534,6 +1566,21 @@ const Command = enum {
         };
     }
 };
+
+pub fn nextChannel(self: *App) void {
+    const state = self.state.buffers;
+    if (state.selected_idx >= state.count - 1)
+        self.state.buffers.selected_idx = 0
+    else
+        self.state.buffers.selected_idx +|= 1;
+}
+
+pub fn prevChannel(self: *App) void {
+    switch (self.state.buffers.selected_idx) {
+        0 => self.state.buffers.selected_idx = self.state.buffers.count - 1,
+        else => self.state.buffers.selected_idx -|= 1,
+    }
+}
 
 /// handle a command
 pub fn handleCommand(self: *App, buffer: Buffer, cmd: []const u8) !void {
@@ -1587,8 +1634,8 @@ pub fn handleCommand(self: *App, buffer: Buffer, cmd: []const u8) !void {
             );
             return self.queueWrite(client, msg);
         },
-        .@"next-channel" => {},
-        .@"prev-channel" => {},
+        .@"next-channel" => self.nextChannel(),
+        .@"prev-channel" => self.prevChannel(),
         .quit => self.should_quit = true,
         .who => {
             if (channel == null) return error.InvalidCommand;
