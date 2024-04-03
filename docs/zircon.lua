@@ -25,13 +25,13 @@ function zircon.log(msg) end
 
 ---@enum action
 local Action = {
-	irc = 0,
-	me = 1,
-	msg = 2,
-	next_channel = 3,
-	prev_channel = 4,
-	quit = 5,
-	who = 6,
+	irc = "irc",
+	me = "me",
+	msg = "msg",
+	next_channel = "next-channel",
+	prev_channel = "prev-channel",
+	quit = "quit",
+	who = "who",
 }
 
 ---Bind a key
