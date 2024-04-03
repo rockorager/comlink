@@ -42,6 +42,11 @@ const ChatHistoryCommand = enum {
     after,
 };
 
+const Buffer = union(enum) {
+    client: *Client,
+    channel: *irc.Channel,
+};
+
 /// allocator used for all allocations in the application
 alloc: std.mem.Allocator,
 
@@ -68,6 +73,8 @@ state: State = .{},
 content_segments: std.ArrayList(vaxis.Segment),
 
 completer: ?Completer = null,
+
+should_quit: bool = false,
 
 const State = struct {
     mouse: ?vaxis.Mouse = null,
@@ -202,7 +209,7 @@ pub fn run(self: *App) !void {
     var input = vaxis.widgets.TextInput.init(self.alloc);
     defer input.deinit();
 
-    loop: while (true) {
+    loop: while (!self.should_quit) {
         self.vx.pollEvent();
         while (self.vx.queue.tryPop()) |event| {
             switch (event) {
@@ -241,18 +248,16 @@ pub fn run(self: *App) !void {
                         }
                     } else if (key.matches(vaxis.Key.enter, .{})) {
                         if (input.buf.realLength() == 0) continue;
-                        var i: usize = 0;
-                        clients: for (self.clients.items) |client| {
-                            i += 1;
-                            for (client.channels.items) |channel| {
-                                defer i += 1;
-                                if (i != self.state.buffers.selected_idx) continue;
-
-                                const content = try input.toOwnedSlice();
-                                defer self.alloc.free(content);
-                                if (content[0] == '/')
-                                    try self.handleCommand(client, channel, content)
-                                else {
+                        const buffer = self.selectedBuffer();
+                        const content = try input.toOwnedSlice();
+                        defer self.alloc.free(content);
+                        if (content[0] == '/')
+                            self.handleCommand(buffer, content) catch |err| {
+                                log.err("couldn't handle command: {}", .{err});
+                            }
+                        else {
+                            switch (buffer) {
+                                .channel => |channel| {
                                     var buf: [1024]u8 = undefined;
                                     const msg = try std.fmt.bufPrint(
                                         &buf,
@@ -262,9 +267,9 @@ pub fn run(self: *App) !void {
                                             content,
                                         },
                                     );
-                                    try self.queueWrite(client, msg);
-                                }
-                                break :clients;
+                                    try self.queueWrite(channel.client, msg);
+                                },
+                                .client => log.err("can't send message to client", .{}),
                             }
                         }
                     } else {
@@ -1531,13 +1536,21 @@ const Command = enum {
 };
 
 /// handle a command
-pub fn handleCommand(self: *App, client: *Client, channel: irc.Channel, cmd: []const u8) !void {
+pub fn handleCommand(self: *App, buffer: Buffer, cmd: []const u8) !void {
     const command: Command = blk: {
         const start: u1 = if (cmd[0] == '/') 1 else 0;
         const end = mem.indexOfScalar(u8, cmd, ' ') orelse cmd.len;
         break :blk std.meta.stringToEnum(Command, cmd[start..end]) orelse return error.UnknownCommand;
     };
     var buf: [1024]u8 = undefined;
+    const client: *Client = switch (buffer) {
+        .client => |client| client,
+        .channel => |channel| channel.client,
+    };
+    const channel: ?*irc.Channel = switch (buffer) {
+        .client => null,
+        .channel => |channel| channel,
+    };
     switch (command) {
         .irc => {
             const start = mem.indexOfScalar(u8, cmd, ' ') orelse return error.InvalidCommand;
@@ -1549,11 +1562,12 @@ pub fn handleCommand(self: *App, client: *Client, channel: irc.Channel, cmd: []c
             return self.queueWrite(client, msg);
         },
         .me => {
+            if (channel == null) return error.InvalidCommand;
             const msg = try std.fmt.bufPrint(
                 &buf,
                 "PRIVMSG {s} :\x01ACTION {s}\x01\r\n",
                 .{
-                    channel.name,
+                    channel.?.name,
                     cmd[4..],
                 },
             );
@@ -1575,16 +1589,30 @@ pub fn handleCommand(self: *App, client: *Client, channel: irc.Channel, cmd: []c
         },
         .@"next-channel" => {},
         .@"prev-channel" => {},
-        .quit => {},
+        .quit => self.should_quit = true,
         .who => {
+            if (channel == null) return error.InvalidCommand;
             const msg = try std.fmt.bufPrint(
                 &buf,
                 "WHO {s}\r\n",
                 .{
-                    channel.name,
+                    channel.?.name,
                 },
             );
             return self.queueWrite(client, msg);
         },
     }
+}
+
+pub fn selectedBuffer(self: *App) Buffer {
+    var i: usize = 0;
+    for (self.clients.items) |client| {
+        if (i == self.state.buffers.selected_idx) return .{ .client = client };
+        i += 1;
+        for (client.channels.items) |*channel| {
+            if (i == self.state.buffers.selected_idx) return .{ .channel = channel };
+            i += 1;
+        }
+    }
+    unreachable;
 }

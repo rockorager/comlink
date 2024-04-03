@@ -81,6 +81,7 @@ pub const Command = enum {
 };
 
 pub const Channel = struct {
+    client: *Client,
     name: []const u8,
     topic: ?[]const u8 = null,
     members: std.ArrayList(*User),
@@ -660,6 +661,7 @@ pub const Client = struct {
             .members = std.ArrayList(*User).init(self.alloc),
             .messages = std.ArrayList(Message).init(self.alloc),
             .batches = std.StringHashMap(bool).init(self.alloc),
+            .client = self,
         };
         try self.channels.append(channel);
 
