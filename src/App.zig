@@ -1096,7 +1096,46 @@ pub fn run(self: *App) !void {
             }
         }
 
-        const input_win = middle_win.initChild(0, win.height - 1, .expand, .{ .limit = 1 });
+        const input_win = middle_win.initChild(
+            0,
+            win.height - 1,
+            .{ .limit = middle_win.width - 7 },
+            .{ .limit = 1 },
+        );
+        const len_win = middle_win.child(.{
+            .x_off = input_win.width,
+            .y_off = win.height - 1,
+            .width = .{ .limit = 7 },
+            .height = .{ .limit = 1 },
+        });
+        const buf_name_len = blk: {
+            const sel_buf = self.selectedBuffer();
+            switch (sel_buf) {
+                .channel => |chan| break :blk chan.name.len,
+                else => break :blk 0,
+            }
+        };
+        // PRIVMSG <channel_name> :<message>\r\n = 12 bytes of overhead
+        const max_len = irc.maximum_message_size - buf_name_len - 12;
+        var len_buf: [7]u8 = undefined;
+        const msg_len = input.buf.realLength();
+        _ = try std.fmt.bufPrint(&len_buf, "{d: >3}/{d}", .{ msg_len, max_len });
+
+        var len_segs = [_]vaxis.Segment{
+            .{
+                .text = len_buf[0..3],
+                .style = .{ .fg = if (msg_len > max_len)
+                    .{ .index = 1 }
+                else
+                    .{ .index = 8 } },
+            },
+            .{
+                .text = len_buf[3..],
+                .style = .{ .fg = .{ .index = 8 } },
+            },
+        };
+
+        _ = try len_win.print(&len_segs, .{});
         input_win.clear();
         input.draw(input_win);
 
