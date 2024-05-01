@@ -28,7 +28,7 @@ pub fn main() !void {
             // ziglua errors
             error.LuaError => {
                 const msg = app.lua.toString(-1) catch "";
-                const duped = app.alloc.dupe(u8, std.mem.span(msg)) catch "";
+                const duped = app.alloc.dupe(u8, msg) catch "";
                 defer app.alloc.free(duped);
                 app.deinit();
                 log.err("{s}", .{duped});

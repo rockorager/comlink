@@ -547,7 +547,8 @@ pub const Client = struct {
         while (!self.should_close) {
             self.status = .disconnected;
             log.debug("reconnecting in {d} seconds...", .{@divFloor(delay, std.time.ns_per_s)});
-            self.connect() catch {
+            self.connect() catch |err| {
+                log.err("connection error: {}", .{err});
                 self.status = .disconnected;
                 log.debug("disconnected", .{});
                 log.debug("reconnecting in {d} seconds...", .{@divFloor(delay, std.time.ns_per_s)});
@@ -584,7 +585,7 @@ pub const Client = struct {
                         // reconnect??
                         self.status = .disconnected;
                         self.stream.close();
-                        self.app.vx.postEvent(.redraw);
+                        self.app.loop.?.postEvent(.redraw);
                         break;
                     }
                     if (now - last_msg > keep_alive) {
@@ -614,7 +615,7 @@ pub const Client = struct {
                             .{ time.hour, time.minute },
                         );
                     }
-                    self.app.vx.postEvent(.{ .message = msg });
+                    self.app.loop.?.postEvent(.{ .message = msg });
                 }
                 if (i != n) {
                     // we had a part of a line read. Copy it to the beginning of the

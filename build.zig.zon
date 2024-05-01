@@ -3,12 +3,12 @@
     .version = "0.0.0",
     .dependencies = .{
         .ziglua = .{
-            .url = "https://github.com/natecraddock/ziglua/archive/effbedc64ab51d5a98ac263abefc1da4b8742929.tar.gz",
-            .hash = "122033ec0f8f8645f69991c187f34c4674b8785bdb64c8a60524e8e49841faf79b92",
+            // .url = "git+https://github.com/natecraddock/ziglua#486f51d3acc61d805783f5f07aee34c75ab59a25",
+            // .hash = "12208603e0f51fa6ce7201d8e851c5979b6b78887434623ac87a0f2a5a3dd3e75130",
+            .path = "../ziglua",
         },
         .vaxis = .{
-            .url = "git+https://github.com/rockorager/libvaxis#310bff369b4456fc99547a015f729da18fa3553a",
-            .hash = "1220d1a0dc126ba0e6ebbde848dedb4aea76c5070d0f19370bdf8fecdbf4a8a36912",
+            .path = "../libvaxis",
         },
         .zeit = .{
             .url = "git+https://github.com/rockorager/zeit#d5ce6b6b6336b4dc9c0d1d67339dea81fb4d2e77",

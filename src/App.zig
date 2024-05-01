@@ -10,7 +10,6 @@ const mem = std.mem;
 
 const irc = @import("irc.zig");
 const lua = @import("lua.zig");
-const strings = @import("strings.zig");
 
 // data structures
 const Client = irc.Client;
@@ -30,6 +29,8 @@ pub const Event = union(enum) {
     message: Message,
     connect: Client.Config,
     redraw,
+    paste_start,
+    paste_end,
 };
 
 pub const WriteRequest = struct {
@@ -65,10 +66,12 @@ clients: std.ArrayList(*Client),
 deinited: bool = false,
 
 /// Our lua state
-lua: Lua,
+lua: *Lua,
 
 /// the vaxis instance for our application
-vx: vaxis.Vaxis(Event),
+vx: vaxis.Vaxis,
+
+loop: ?vaxis.Loop(Event) = null,
 
 /// our queue of writes
 write_queue: vaxis.Queue(WriteRequest, 128) = .{},
@@ -82,6 +85,8 @@ completer: ?Completer = null,
 should_quit: bool = false,
 
 binds: std.ArrayList(Bind),
+
+paste_buffer: std.ArrayList(u8),
 
 const State = struct {
     mouse: ?vaxis.Mouse = null,
@@ -100,6 +105,14 @@ const State = struct {
         width: usize = 16,
         resizing: bool = false,
     } = .{},
+    paste: struct {
+        pasting: bool = false,
+        has_newline: bool = false,
+
+        fn showDialog(self: @This()) bool {
+            return !self.pasting and self.has_newline;
+        }
+    } = .{},
 };
 
 /// initialize vaxis, lua state
@@ -108,9 +121,10 @@ pub fn init(alloc: std.mem.Allocator) !App {
         .alloc = alloc,
         .clients = std.ArrayList(*Client).init(alloc),
         .lua = try Lua.init(&alloc),
-        .vx = try vaxis.init(Event, .{}),
+        .vx = try vaxis.init(alloc, .{}),
         .content_segments = std.ArrayList(vaxis.Segment).init(alloc),
         .binds = try std.ArrayList(Bind).initCapacity(alloc, 16),
+        .paste_buffer = std.ArrayList(u8).init(alloc),
     };
 
     try app.binds.append(.{
@@ -159,14 +173,13 @@ pub fn deinit(self: *App) void {
 
     // close vaxis
     {
-        self.vx.stopReadThread();
         self.vx.deinit(self.alloc);
     }
 
     self.lua.deinit();
     self.bundle.deinit(self.alloc);
     // drain the queue
-    while (self.vx.queue.tryPop()) |event| {
+    while (self.loop.?.queue.tryPop()) |event| {
         switch (event) {
             .message => |msg| msg.deinit(self.alloc),
             else => {},
@@ -176,6 +189,7 @@ pub fn deinit(self: *App) void {
     self.content_segments.deinit();
     if (self.completer) |*completer| completer.deinit();
     self.binds.deinit();
+    self.paste_buffer.deinit();
 }
 
 /// push a write request into the queue. The request should include the trailing
@@ -201,10 +215,12 @@ fn writeLoop(self: *App) !void {
 pub fn run(self: *App) !void {
     // start vaxis
     {
-        try self.vx.startReadThread();
+        self.loop = .{ .vaxis = &self.vx };
+        try self.loop.?.run();
         try self.vx.enterAltScreen();
         try self.vx.queryTerminal();
         try self.vx.setMouseMode(true);
+        try self.vx.setBracketedPaste(true);
     }
 
     // start our write thread
@@ -237,15 +253,32 @@ pub fn run(self: *App) !void {
         self.lua.doFile(path) catch return error.LuaError;
     }
 
-    var input = vaxis.widgets.TextInput.init(self.alloc);
+    var input = vaxis.widgets.TextInput.init(self.alloc, &self.vx.unicode);
     defer input.deinit();
 
     loop: while (!self.should_quit) {
-        self.vx.pollEvent();
-        while (self.vx.tryEvent()) |event| {
+        self.loop.?.pollEvent();
+        while (self.loop.?.tryEvent()) |event| {
             switch (event) {
                 .redraw => {},
                 .key_press => |key| {
+                    if (self.state.paste.showDialog()) {
+                        if (key.matches(vaxis.Key.escape, .{})) {
+                            self.state.paste.has_newline = false;
+                            self.paste_buffer.clearAndFree();
+                        }
+                        break;
+                    }
+                    if (self.state.paste.pasting) {
+                        if (key.matches(vaxis.Key.enter, .{})) {
+                            self.state.paste.has_newline = true;
+                            try self.paste_buffer.append('\n');
+                            continue :loop;
+                        }
+                        const text = key.text orelse continue :loop;
+                        try self.paste_buffer.appendSlice(text);
+                        continue :loop;
+                    }
                     for (self.binds.items) |bind| {
                         if (key.matches(bind.key.codepoint, bind.key.mods)) {
                             switch (bind.command) {
@@ -309,7 +342,18 @@ pub fn run(self: *App) !void {
                             self.completer.?.deinit();
                             self.completer = null;
                         }
+                        log.debug("{}", .{key});
                         try input.update(.{ .key_press = key });
+                    }
+                },
+                .paste_start => self.state.paste.pasting = true,
+                .paste_end => {
+                    self.state.paste.pasting = false;
+                    if (self.state.paste.has_newline) {
+                        log.warn("NEWLINE", .{});
+                    } else {
+                        try input.insertSliceAtCursor(self.paste_buffer.items);
+                        defer self.paste_buffer.clearAndFree();
                     }
                 },
                 .focus_out => self.state.mouse = null,
@@ -537,7 +581,7 @@ pub fn run(self: *App) !void {
                                     var cfg = msg.client.config;
                                     cfg.network_id = try self.alloc.dupe(u8, id);
                                     cfg.name = name;
-                                    self.vx.postEvent(.{ .connect = cfg });
+                                    self.loop.?.postEvent(.{ .connect = cfg });
                                 }
                             }
                         },
@@ -612,11 +656,10 @@ pub fn run(self: *App) !void {
                             var channel = try msg.client.getOrCreateChannel(target);
 
                             // If it's our nick, we request chat history
-                            if (mem.eql(u8, user.nick, msg.client.config.nick)) {
-                                try self.requestHistory(msg.client, .after, channel);
-                            } else {
+                            if (mem.eql(u8, user.nick, msg.client.config.nick))
+                                try self.requestHistory(msg.client, .after, channel)
+                            else
                                 try channel.addMember(user);
-                            }
                         },
                         .MARKREAD => {
                             var iter = msg.paramIterator();
@@ -807,14 +850,14 @@ pub fn run(self: *App) !void {
                         .style = chan_style,
                     },
                 };
-                const overflow = try channel_list_win.print(
+                const result = try channel_list_win.print(
                     &chan_seg,
                     .{
                         .row_offset = row,
                         .wrap = .none,
                     },
                 );
-                if (overflow)
+                if (result.overflow)
                     channel_list_win.writeCell(
                         buf_list_w -| 1,
                         row,
@@ -847,34 +890,7 @@ pub fn run(self: *App) !void {
                     }
                     // if there are no members we will request either NAMES or
                     // WHOX
-                    if (channel.members.items.len == 0) {
-                        // Only use WHO if we have WHOX and away-notify. Without
-                        // WHOX, we can get rate limited on eg. libera. Without
-                        // away-notify, our list will become stale
-                        if (client.supports.whox and
-                            client.caps.@"away-notify" and
-                            !channel.in_flight.who)
-                        {
-                            channel.in_flight.who = true;
-                            const who = try std.fmt.bufPrint(
-                                &write_buf,
-                                "WHO {s} %cnf\r\n",
-                                .{channel.name},
-                            );
-                            try self.queueWrite(client, who);
-                        } else if (!client.supports.whox and
-                            !client.caps.@"away-notify" and
-                            !channel.in_flight.names)
-                        {
-                            channel.in_flight.names = true;
-                            const names = try std.fmt.bufPrint(
-                                &write_buf,
-                                "NAMES {s}\r\n",
-                                .{channel.name},
-                            );
-                            try self.queueWrite(client, names);
-                        }
-                    }
+                    if (channel.members.items.len == 0) try self.whox(client, channel);
                     var topic_seg = [_]vaxis.Segment{
                         .{
                             .text = channel.topic orelse "",
@@ -924,7 +940,6 @@ pub fn run(self: *App) !void {
 
                     // loop the messages and print from the last line to current
                     // line
-                    var i: usize = channel.messages.items.len -| self.state.messages.scroll_offset;
                     var h: usize = 0;
                     const message_list_win = middle_win.initChild(
                         0,
@@ -953,6 +968,7 @@ pub fn run(self: *App) !void {
                     );
                     var prev_sender: []const u8 = "";
                     var sender_win: ?vaxis.Window = null;
+                    var i: usize = channel.messages.items.len -| self.state.messages.scroll_offset;
                     while (i > 0) {
                         i -= 1;
                         const message = channel.messages.items[i];
@@ -984,7 +1000,15 @@ pub fn run(self: *App) !void {
                         defer self.content_segments.clearRetainingCapacity();
                         const user = try client.getOrCreateUser(sender);
                         // print the content first
-                        const n = strings.lineCountForWindow(message_offset_win, self.content_segments.items) + 1;
+                        const print_result = try message_offset_win.print(self.content_segments.items, .{
+                            .wrap = .word,
+                            .commit = false,
+                        });
+                        const n = if (print_result.col == 0)
+                            print_result.row + 1
+                        else
+                            print_result.row + 2;
+
                         h += n;
                         const content_win = message_offset_win.initChild(
                             0,
@@ -1099,7 +1123,7 @@ pub fn run(self: *App) !void {
         const input_win = middle_win.initChild(
             0,
             win.height - 1,
-            .{ .limit = middle_win.width - 7 },
+            .{ .limit = middle_win.width -| 7 },
             .{ .limit = 1 },
         );
         const len_win = middle_win.child(.{
@@ -1138,6 +1162,18 @@ pub fn run(self: *App) !void {
         _ = try len_win.print(&len_segs, .{});
         input_win.clear();
         input.draw(input_win);
+
+        if (self.state.paste.showDialog()) {
+            // Draw a modal dialog for how to handle multi-line paste
+            const multiline_paste_win = vaxis.widgets.alignment.center(win, win.width - 10, win.height - 10);
+            const bordered = vaxis.widgets.border.all(multiline_paste_win, .{});
+            var segs = [_]vaxis.Segment{
+                .{ .text = "WARNING: multiline paste detected\n\n" },
+                .{ .text = self.paste_buffer.items },
+            };
+            bordered.clear();
+            _ = try bordered.print(&segs, .{ .wrap = .word });
+        }
 
         try self.vx.render();
         self.state.buffers.count = row;
@@ -1695,6 +1731,34 @@ pub fn handleCommand(self: *App, buffer: Buffer, cmd: []const u8) !void {
             );
             return self.queueWrite(client, msg);
         },
+    }
+}
+
+pub fn whox(self: *App, client: *Client, channel: *irc.Channel) !void {
+    // Only use WHO if we have WHOX and away-notify. Without
+    // WHOX, we can get rate limited on eg. libera. Without
+    // away-notify, our list will become stale
+    if (client.supports.whox and
+        client.caps.@"away-notify" and
+        !channel.in_flight.who)
+    {
+        var write_buf: [64]u8 = undefined;
+        channel.in_flight.who = true;
+        const who = try std.fmt.bufPrint(
+            &write_buf,
+            "WHO {s} %cnf\r\n",
+            .{channel.name},
+        );
+        try self.queueWrite(client, who);
+    } else {
+        var write_buf: [64]u8 = undefined;
+        channel.in_flight.names = true;
+        const names = try std.fmt.bufPrint(
+            &write_buf,
+            "NAMES {s}\r\n",
+            .{channel.name},
+        );
+        try self.queueWrite(client, names);
     }
 }
 

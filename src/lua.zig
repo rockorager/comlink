@@ -60,13 +60,13 @@ fn connect(lua: *Lua) i32 {
     const server = lua.toString(-1) catch unreachable;
 
     const cfg: Client.Config = .{
-        .server = std.mem.span(server),
-        .user = std.mem.span(user),
-        .nick = std.mem.span(nick),
-        .password = std.mem.span(password),
-        .real_name = std.mem.span(real_name),
+        .server = server,
+        .user = user,
+        .nick = nick,
+        .password = password,
+        .real_name = real_name,
     };
-    app.vx.postEvent(.{ .connect = cfg });
+    app.loop.?.postEvent(.{ .connect = cfg });
     return 0;
 }
 
@@ -83,7 +83,7 @@ fn bind(lua: *Lua) i32 {
     var codepoint: ?u21 = null;
     var mods: vaxis.Key.Modifiers = .{};
 
-    var iter = std.mem.splitScalar(u8, std.mem.span(key_str), '+');
+    var iter = std.mem.splitScalar(u8, key_str, '+');
     while (iter.next()) |key_txt| {
         const last = iter.peek() == null;
         if (last) {
@@ -105,8 +105,13 @@ fn bind(lua: *Lua) i32 {
         else if (std.mem.eql(u8, "meta", key_txt))
             mods.meta = true;
     }
-    const command = std.meta.stringToEnum(App.Command, std.mem.span(action)) orelse
-        lua.raiseErrorStr("not a valid command: %s", .{action});
+    const command = std.meta.stringToEnum(App.Command, action) orelse {
+        // var buf: [64]u8 = undefined;
+        // const msg = std.fmt.bufPrintZ(&buf, "{s}", .{"not a valid command: %s"}) catch unreachable;
+        // lua.raiseErrorStr(msg, .{action});
+        // TODO: go back to raise error str when the null terminator is fixed
+        lua.raiseError();
+    };
     if (codepoint) |cp| {
         app.binds.append(.{
             .key = .{
@@ -114,7 +119,8 @@ fn bind(lua: *Lua) i32 {
                 .mods = mods,
             },
             .command = command,
-        }) catch lua.raiseErrorStr("out of memory", .{});
+        }) catch lua.raiseError();
+        // TODO: go back to raise error str when the null terminator is fixed
     }
     return 0;
 }

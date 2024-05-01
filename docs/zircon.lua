@@ -23,6 +23,8 @@ function zircon.connect(cfg) end
 ---@param msg string The message to log
 function zircon.log(msg) end
 
+--- A command for zircon to execute
+--
 ---@enum action
 local Action = {
 	irc = "irc",
