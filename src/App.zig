@@ -88,6 +88,8 @@ binds: std.ArrayList(Bind),
 
 paste_buffer: std.ArrayList(u8),
 
+input: vaxis.widgets.TextInput = undefined,
+
 const State = struct {
     mouse: ?vaxis.Mouse = null,
     members: struct {
@@ -117,14 +119,16 @@ const State = struct {
 
 /// initialize vaxis, lua state
 pub fn init(alloc: std.mem.Allocator) !App {
+    const vx = try vaxis.init(alloc, .{});
     var app: App = .{
         .alloc = alloc,
         .clients = std.ArrayList(*Client).init(alloc),
         .lua = try Lua.init(&alloc),
-        .vx = try vaxis.init(alloc, .{}),
+        .vx = vx,
         .content_segments = std.ArrayList(vaxis.Segment).init(alloc),
         .binds = try std.ArrayList(Bind).initCapacity(alloc, 16),
         .paste_buffer = std.ArrayList(u8).init(alloc),
+        .input = vaxis.widgets.TextInput.init(alloc, &vx.unicode),
     };
 
     try app.binds.append(.{
@@ -253,8 +257,7 @@ pub fn run(self: *App) !void {
         self.lua.doFile(path) catch return error.LuaError;
     }
 
-    var input = vaxis.widgets.TextInput.init(self.alloc, &self.vx.unicode);
-    defer input.deinit();
+    defer self.input.deinit();
 
     loop: while (!self.should_quit) {
         self.loop.?.pollEvent();
@@ -294,23 +297,23 @@ pub fn run(self: *App) !void {
                         // cycling through the options
                         if (self.completer) |*completer| {
                             const line = completer.next();
-                            input.clearRetainingCapacity();
-                            try input.insertSliceAtCursor(line);
+                            self.input.clearRetainingCapacity();
+                            try self.input.insertSliceAtCursor(line);
                         } else {
                             var completion_buf: [irc.maximum_message_size]u8 = undefined;
-                            const content = input.sliceToCursor(&completion_buf);
+                            const content = self.input.sliceToCursor(&completion_buf);
                             self.completer = try Completer.init(self.alloc, content);
                         }
                     } else if (key.matches(vaxis.Key.tab, .{ .shift = true })) {
                         if (self.completer) |*completer| {
                             const line = completer.prev();
-                            input.clearRetainingCapacity();
-                            try input.insertSliceAtCursor(line);
+                            self.input.clearRetainingCapacity();
+                            try self.input.insertSliceAtCursor(line);
                         }
                     } else if (key.matches(vaxis.Key.enter, .{})) {
-                        if (input.buf.realLength() == 0) continue;
+                        if (self.input.buf.realLength() == 0) continue;
                         const buffer = self.selectedBuffer();
-                        const content = try input.toOwnedSlice();
+                        const content = try self.input.toOwnedSlice();
                         defer self.alloc.free(content);
                         if (content[0] == '/')
                             self.handleCommand(buffer, content) catch |err| {
@@ -343,7 +346,7 @@ pub fn run(self: *App) !void {
                             self.completer = null;
                         }
                         log.debug("{}", .{key});
-                        try input.update(.{ .key_press = key });
+                        try self.input.update(.{ .key_press = key });
                     }
                 },
                 .paste_start => self.state.paste.pasting = true,
@@ -352,7 +355,7 @@ pub fn run(self: *App) !void {
                     if (self.state.paste.has_newline) {
                         log.warn("NEWLINE", .{});
                     } else {
-                        try input.insertSliceAtCursor(self.paste_buffer.items);
+                        try self.input.insertSliceAtCursor(self.paste_buffer.items);
                         defer self.paste_buffer.clearAndFree();
                     }
                 },
@@ -743,440 +746,7 @@ pub fn run(self: *App) !void {
             }
         }
 
-        // reset window state
-        const win = self.vx.window();
-        win.clear();
-        self.vx.setMouseShape(.default);
-
-        if (self.state.mouse) |mouse| {
-            if (self.state.buffers.resizing) {
-                self.state.buffers.width = @min(mouse.col, win.width -| self.state.members.width);
-            } else if (self.state.members.resizing) {
-                self.state.members.width = win.width -| mouse.col + 1;
-            }
-
-            if (mouse.col == self.state.buffers.width) {
-                self.vx.setMouseShape(.@"ew-resize");
-                switch (mouse.type) {
-                    .press => self.state.buffers.resizing = true,
-                    .release => self.state.buffers.resizing = false,
-                    else => {},
-                }
-            } else if (mouse.col == win.width - self.state.members.width + 1) {
-                self.vx.setMouseShape(.@"ew-resize");
-                switch (mouse.type) {
-                    .press => self.state.members.resizing = true,
-                    .release => self.state.members.resizing = false,
-                    else => {},
-                }
-            }
-        }
-
-        const buf_list_w = self.state.buffers.width;
-        const mbr_list_w = self.state.members.width;
-        const message_list_width = win.width -| buf_list_w -| mbr_list_w;
-
-        const channel_list_win = win.child(.{
-            .width = .{ .limit = self.state.buffers.width + 1 },
-            .border = .{ .where = .right },
-        });
-
-        const member_list_win = win.child(.{
-            .x_off = buf_list_w + message_list_width + 1,
-            .border = .{ .where = .left },
-        });
-
-        const middle_win = win.child(.{
-            .x_off = buf_list_w + 1,
-            .width = .{ .limit = message_list_width },
-        });
-
-        const topic_win = middle_win.child(.{
-            .height = .{ .limit = 2 },
-            .border = .{ .where = .bottom },
-        });
-
-        var row: usize = 0;
-        for (self.clients.items) |client| {
-            const style: vaxis.Style = if (row == self.state.buffers.selected_idx)
-                .{
-                    .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
-                    .reverse = true,
-                }
-            else
-                .{
-                    .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
-                };
-            var segs = [_]vaxis.Segment{
-                .{
-                    .text = client.config.name orelse client.config.server,
-                    .style = style,
-                },
-            };
-            _ = try channel_list_win.print(
-                &segs,
-                .{ .row_offset = row },
-            );
-            row += 1;
-
-            for (client.channels.items) |*channel| {
-                const chan_style: vaxis.Style = if (row == self.state.buffers.selected_idx)
-                    .{
-                        .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
-                        .reverse = true,
-                    }
-                else if (channel.has_unread)
-                    .{
-                        .fg = .{ .index = 4 },
-                        .bold = true,
-                    }
-                else
-                    .{
-                        .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
-                    };
-                defer row += 1;
-                const prefix: []const u8 = if (channel.name[0] == '#') "#" else "";
-                const name_offset: usize = if (prefix.len > 0) 1 else 0;
-                var chan_seg = [_]vaxis.Segment{
-                    .{
-                        .text = "  ",
-                    },
-                    .{
-                        .text = prefix,
-                        .style = .{ .fg = .{ .index = 8 } },
-                    },
-                    .{
-                        .text = channel.name[name_offset..],
-                        .style = chan_style,
-                    },
-                };
-                const result = try channel_list_win.print(
-                    &chan_seg,
-                    .{
-                        .row_offset = row,
-                        .wrap = .none,
-                    },
-                );
-                if (result.overflow)
-                    channel_list_win.writeCell(
-                        buf_list_w -| 1,
-                        row,
-                        .{
-                            .char = .{
-                                .grapheme = "…",
-                                .width = 1,
-                            },
-                            .style = chan_style,
-                        },
-                    );
-                if (row == self.state.buffers.selected_idx) {
-                    var write_buf: [128]u8 = undefined;
-                    if (channel.has_unread) {
-                        channel.has_unread = false;
-                        const last_msg = channel.messages.getLast();
-                        var tag_iter = last_msg.tagIterator();
-                        while (tag_iter.next()) |tag| {
-                            if (!std.mem.eql(u8, tag.key, "time")) continue;
-                            const mark_read = try std.fmt.bufPrint(
-                                &write_buf,
-                                "MARKREAD {s} timestamp={s}\r\n",
-                                .{
-                                    channel.name,
-                                    tag.value,
-                                },
-                            );
-                            try self.queueWrite(client, mark_read);
-                        }
-                    }
-                    // if there are no members we will request either NAMES or
-                    // WHOX
-                    if (channel.members.items.len == 0) try self.whox(client, channel);
-                    var topic_seg = [_]vaxis.Segment{
-                        .{
-                            .text = channel.topic orelse "",
-                        },
-                    };
-                    _ = try topic_win.print(&topic_seg, .{ .wrap = .none });
-
-                    if (hasMouse(member_list_win, self.state.mouse)) |mouse| {
-                        switch (mouse.button) {
-                            .wheel_up => {
-                                self.state.members.scroll_offset -|= 3;
-                                self.state.mouse.?.button = .none;
-                            },
-                            .wheel_down => {
-                                self.state.members.scroll_offset +|= 3;
-                                self.state.mouse.?.button = .none;
-                            },
-                            else => {},
-                        }
-                    }
-
-                    var member_row: usize = 0;
-                    for (channel.members.items) |member| {
-                        defer member_row += 1;
-                        if (member_row < self.state.members.scroll_offset) continue;
-                        var member_seg = [_]vaxis.Segment{
-                            .{
-                                .text = " ",
-                            },
-                            .{
-                                .text = member.nick,
-                                .style = .{
-                                    .fg = if (member.away)
-                                        .{ .index = 8 }
-                                    else
-                                        member.color,
-                                },
-                            },
-                        };
-                        _ = try member_list_win.print(
-                            &member_seg,
-                            .{
-                                .row_offset = member_row - self.state.members.scroll_offset,
-                            },
-                        );
-                    }
-
-                    // loop the messages and print from the last line to current
-                    // line
-                    var h: usize = 0;
-                    const message_list_win = middle_win.initChild(
-                        0,
-                        2,
-                        .expand,
-                        .{ .limit = middle_win.height -| 3 },
-                    );
-                    if (hasMouse(message_list_win, self.state.mouse)) |mouse| {
-                        switch (mouse.button) {
-                            .wheel_up => {
-                                self.state.messages.scroll_offset +|= 1;
-                                self.state.mouse.?.button = .none;
-                            },
-                            .wheel_down => {
-                                self.state.messages.scroll_offset -|= 1;
-                                self.state.mouse.?.button = .none;
-                            },
-                            else => {},
-                        }
-                    }
-                    const message_offset_win = message_list_win.initChild(
-                        6,
-                        0,
-                        .expand,
-                        .expand,
-                    );
-                    var prev_sender: []const u8 = "";
-                    var sender_win: ?vaxis.Window = null;
-                    var i: usize = channel.messages.items.len -| self.state.messages.scroll_offset;
-                    while (i > 0) {
-                        i -= 1;
-                        const message = channel.messages.items[i];
-                        // if we are on the oldest message, request more history
-                        if (i == 0 and !channel.at_oldest) {
-                            try self.requestHistory(client, .before, channel);
-                        }
-                        // syntax: <target> <message>
-                        var iter = message.paramIterator();
-                        // target is the channel, and we already handled that
-                        _ = iter.next() orelse continue;
-
-                        // if this is the same sender, we will clear the last
-                        // sender_win and reduce one from the row we are
-                        // printing on
-                        const sender: []const u8 = blk: {
-                            const src = message.source orelse break :blk "";
-                            const l = std.mem.indexOfScalar(u8, src, '!') orelse
-                                std.mem.indexOfScalar(u8, src, '@') orelse
-                                src.len;
-                            break :blk src[0..l];
-                        };
-                        if (sender_win != null and mem.eql(u8, sender, prev_sender)) {
-                            sender_win.?.clear();
-                            h -= 2;
-                        }
-
-                        try self.formatMessageContent(message);
-                        defer self.content_segments.clearRetainingCapacity();
-                        const user = try client.getOrCreateUser(sender);
-                        // print the content first
-                        const print_result = try message_offset_win.print(self.content_segments.items, .{
-                            .wrap = .word,
-                            .commit = false,
-                        });
-                        const n = if (print_result.col == 0)
-                            print_result.row + 1
-                        else
-                            print_result.row + 2;
-
-                        h += n;
-                        const content_win = message_offset_win.initChild(
-                            0,
-                            message_offset_win.height -| h,
-                            .expand,
-                            .{ .limit = n - 1 },
-                        );
-                        if (hasMouse(content_win, self.state.mouse)) |_| {
-                            content_win.fill(.{
-                                .char = .{
-                                    .grapheme = " ",
-                                    .width = 1,
-                                },
-                                .style = .{
-                                    .bg = .{ .index = 8 },
-                                },
-                            });
-                            for (self.content_segments.items) |*item| {
-                                item.style.bg = .{ .index = 8 };
-                            }
-                        }
-                        _ = try content_win.print(
-                            self.content_segments.items,
-                            .{ .wrap = .word },
-                        );
-                        const gutter = message_list_win.initChild(
-                            0,
-                            message_list_win.height -| h,
-                            .{ .limit = 5 },
-                            .{ .limit = h },
-                        );
-
-                        // print the sender
-                        defer prev_sender = sender;
-                        if (h >= message_list_win.height) break;
-
-                        h += 1;
-
-                        if (message.time_buf) |buf| {
-                            var time_seg = [_]vaxis.Segment{
-                                .{
-                                    .text = buf,
-                                    .style = .{ .fg = .{ .index = 8 } },
-                                },
-                            };
-                            _ = try gutter.print(&time_seg, .{});
-                        }
-
-                        var sender_segment = [_]vaxis.Segment{
-                            .{
-                                .text = sender,
-                                .style = .{
-                                    .fg = user.color,
-                                    .bold = true,
-                                },
-                            },
-                        };
-                        sender_win = message_list_win.initChild(
-                            6,
-                            message_list_win.height -| h,
-                            .expand,
-                            .{ .limit = 1 },
-                        );
-                        _ = try sender_win.?.print(
-                            &sender_segment,
-                            .{ .wrap = .word },
-                        );
-                    }
-                    if (self.completer) |*completer| {
-                        try completer.findMatches(channel);
-
-                        var completion_style: vaxis.Style = .{ .bg = .{ .index = 8 } };
-                        const completion_win = middle_win.child(.{
-                            .width = .{ .limit = completer.widestMatch(win) + 1 },
-                            .height = .{ .limit = @min(completer.numMatches(), middle_win.height -| 1) },
-                            .x_off = completer.start_idx,
-                            .y_off = middle_win.height -| completer.numMatches() -| 1,
-                        });
-                        completion_win.fill(.{
-                            .char = .{ .grapheme = " ", .width = 1 },
-                            .style = completion_style,
-                        });
-                        var completion_row: usize = 0;
-                        while (completion_row < completion_win.height) : (completion_row += 1) {
-                            log.debug("COMPLETION ROW {d}, selected_idx {d}", .{ completion_row, completer.selected_idx orelse 0 });
-                            if (completer.selected_idx) |idx| {
-                                if (completion_row == idx)
-                                    completion_style.reverse = true
-                                else {
-                                    completion_style = .{ .bg = .{ .index = 8 } };
-                                }
-                            }
-                            var seg = [_]vaxis.Segment{
-                                .{
-                                    .text = completer.options.items[completer.options.items.len - 1 - completion_row],
-                                    .style = completion_style,
-                                },
-                                .{
-                                    .text = " ",
-                                    .style = completion_style,
-                                },
-                            };
-                            _ = try completion_win.print(&seg, .{
-                                .row_offset = completion_win.height -| completion_row -| 1,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        const input_win = middle_win.initChild(
-            0,
-            win.height - 1,
-            .{ .limit = middle_win.width -| 7 },
-            .{ .limit = 1 },
-        );
-        const len_win = middle_win.child(.{
-            .x_off = input_win.width,
-            .y_off = win.height - 1,
-            .width = .{ .limit = 7 },
-            .height = .{ .limit = 1 },
-        });
-        const buf_name_len = blk: {
-            const sel_buf = self.selectedBuffer();
-            switch (sel_buf) {
-                .channel => |chan| break :blk chan.name.len,
-                else => break :blk 0,
-            }
-        };
-        // PRIVMSG <channel_name> :<message>\r\n = 12 bytes of overhead
-        const max_len = irc.maximum_message_size - buf_name_len - 12;
-        var len_buf: [7]u8 = undefined;
-        const msg_len = input.buf.realLength();
-        _ = try std.fmt.bufPrint(&len_buf, "{d: >3}/{d}", .{ msg_len, max_len });
-
-        var len_segs = [_]vaxis.Segment{
-            .{
-                .text = len_buf[0..3],
-                .style = .{ .fg = if (msg_len > max_len)
-                    .{ .index = 1 }
-                else
-                    .{ .index = 8 } },
-            },
-            .{
-                .text = len_buf[3..],
-                .style = .{ .fg = .{ .index = 8 } },
-            },
-        };
-
-        _ = try len_win.print(&len_segs, .{});
-        input_win.clear();
-        input.draw(input_win);
-
-        if (self.state.paste.showDialog()) {
-            // Draw a modal dialog for how to handle multi-line paste
-            const multiline_paste_win = vaxis.widgets.alignment.center(win, win.width - 10, win.height - 10);
-            const bordered = vaxis.widgets.border.all(multiline_paste_win, .{});
-            var segs = [_]vaxis.Segment{
-                .{ .text = "WARNING: multiline paste detected\n\n" },
-                .{ .text = self.paste_buffer.items },
-            };
-            bordered.clear();
-            _ = try bordered.print(&segs, .{ .wrap = .word });
-        }
-
-        try self.vx.render();
-        self.state.buffers.count = row;
+        try self.draw();
     }
 }
 
@@ -1773,4 +1343,442 @@ pub fn selectedBuffer(self: *App) Buffer {
         }
     }
     unreachable;
+}
+
+fn draw(self: *App) !void {
+
+    // reset window state
+    const win = self.vx.window();
+    win.clear();
+    self.vx.setMouseShape(.default);
+
+    if (self.state.mouse) |mouse| {
+        if (self.state.buffers.resizing) {
+            self.state.buffers.width = @min(mouse.col, win.width -| self.state.members.width);
+        } else if (self.state.members.resizing) {
+            self.state.members.width = win.width -| mouse.col + 1;
+        }
+
+        if (mouse.col == self.state.buffers.width) {
+            self.vx.setMouseShape(.@"ew-resize");
+            switch (mouse.type) {
+                .press => self.state.buffers.resizing = true,
+                .release => self.state.buffers.resizing = false,
+                else => {},
+            }
+        } else if (mouse.col == win.width - self.state.members.width + 1) {
+            self.vx.setMouseShape(.@"ew-resize");
+            switch (mouse.type) {
+                .press => self.state.members.resizing = true,
+                .release => self.state.members.resizing = false,
+                else => {},
+            }
+        }
+    }
+
+    const buf_list_w = self.state.buffers.width;
+    const mbr_list_w = self.state.members.width;
+    const message_list_width = win.width -| buf_list_w -| mbr_list_w;
+
+    const channel_list_win = win.child(.{
+        .width = .{ .limit = self.state.buffers.width + 1 },
+        .border = .{ .where = .right },
+    });
+
+    const member_list_win = win.child(.{
+        .x_off = buf_list_w + message_list_width + 1,
+        .border = .{ .where = .left },
+    });
+
+    const middle_win = win.child(.{
+        .x_off = buf_list_w + 1,
+        .width = .{ .limit = message_list_width },
+    });
+
+    const topic_win = middle_win.child(.{
+        .height = .{ .limit = 2 },
+        .border = .{ .where = .bottom },
+    });
+
+    var row: usize = 0;
+    for (self.clients.items) |client| {
+        const style: vaxis.Style = if (row == self.state.buffers.selected_idx)
+            .{
+                .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
+                .reverse = true,
+            }
+        else
+            .{
+                .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
+            };
+        var segs = [_]vaxis.Segment{
+            .{
+                .text = client.config.name orelse client.config.server,
+                .style = style,
+            },
+        };
+        _ = try channel_list_win.print(
+            &segs,
+            .{ .row_offset = row },
+        );
+        row += 1;
+
+        for (client.channels.items) |*channel| {
+            const chan_style: vaxis.Style = if (row == self.state.buffers.selected_idx)
+                .{
+                    .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
+                    .reverse = true,
+                }
+            else if (channel.has_unread)
+                .{
+                    .fg = .{ .index = 4 },
+                    .bold = true,
+                }
+            else
+                .{
+                    .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
+                };
+            defer row += 1;
+            const prefix: []const u8 = if (channel.name[0] == '#') "#" else "";
+            const name_offset: usize = if (prefix.len > 0) 1 else 0;
+            var chan_seg = [_]vaxis.Segment{
+                .{
+                    .text = "  ",
+                },
+                .{
+                    .text = prefix,
+                    .style = .{ .fg = .{ .index = 8 } },
+                },
+                .{
+                    .text = channel.name[name_offset..],
+                    .style = chan_style,
+                },
+            };
+            const result = try channel_list_win.print(
+                &chan_seg,
+                .{
+                    .row_offset = row,
+                    .wrap = .none,
+                },
+            );
+            if (result.overflow)
+                channel_list_win.writeCell(
+                    buf_list_w -| 1,
+                    row,
+                    .{
+                        .char = .{
+                            .grapheme = "…",
+                            .width = 1,
+                        },
+                        .style = chan_style,
+                    },
+                );
+            if (row == self.state.buffers.selected_idx) {
+                var write_buf: [128]u8 = undefined;
+                if (channel.has_unread) {
+                    channel.has_unread = false;
+                    const last_msg = channel.messages.getLast();
+                    var tag_iter = last_msg.tagIterator();
+                    while (tag_iter.next()) |tag| {
+                        if (!std.mem.eql(u8, tag.key, "time")) continue;
+                        const mark_read = try std.fmt.bufPrint(
+                            &write_buf,
+                            "MARKREAD {s} timestamp={s}\r\n",
+                            .{
+                                channel.name,
+                                tag.value,
+                            },
+                        );
+                        try self.queueWrite(client, mark_read);
+                    }
+                }
+                // if there are no members we will request either NAMES or
+                // WHOX
+                if (channel.members.items.len == 0) try self.whox(client, channel);
+                var topic_seg = [_]vaxis.Segment{
+                    .{
+                        .text = channel.topic orelse "",
+                    },
+                };
+                _ = try topic_win.print(&topic_seg, .{ .wrap = .none });
+
+                if (hasMouse(member_list_win, self.state.mouse)) |mouse| {
+                    switch (mouse.button) {
+                        .wheel_up => {
+                            self.state.members.scroll_offset -|= 3;
+                            self.state.mouse.?.button = .none;
+                        },
+                        .wheel_down => {
+                            self.state.members.scroll_offset +|= 3;
+                            self.state.mouse.?.button = .none;
+                        },
+                        else => {},
+                    }
+                }
+
+                var member_row: usize = 0;
+                for (channel.members.items) |member| {
+                    defer member_row += 1;
+                    if (member_row < self.state.members.scroll_offset) continue;
+                    var member_seg = [_]vaxis.Segment{
+                        .{
+                            .text = " ",
+                        },
+                        .{
+                            .text = member.nick,
+                            .style = .{
+                                .fg = if (member.away)
+                                    .{ .index = 8 }
+                                else
+                                    member.color,
+                            },
+                        },
+                    };
+                    _ = try member_list_win.print(
+                        &member_seg,
+                        .{
+                            .row_offset = member_row - self.state.members.scroll_offset,
+                        },
+                    );
+                }
+
+                // loop the messages and print from the last line to current
+                // line
+                var h: usize = 0;
+                const message_list_win = middle_win.initChild(
+                    0,
+                    2,
+                    .expand,
+                    .{ .limit = middle_win.height -| 3 },
+                );
+                if (hasMouse(message_list_win, self.state.mouse)) |mouse| {
+                    switch (mouse.button) {
+                        .wheel_up => {
+                            self.state.messages.scroll_offset +|= 1;
+                            self.state.mouse.?.button = .none;
+                        },
+                        .wheel_down => {
+                            self.state.messages.scroll_offset -|= 1;
+                            self.state.mouse.?.button = .none;
+                        },
+                        else => {},
+                    }
+                }
+                const message_offset_win = message_list_win.initChild(
+                    6,
+                    0,
+                    .expand,
+                    .expand,
+                );
+                var prev_sender: []const u8 = "";
+                var sender_win: ?vaxis.Window = null;
+                var i: usize = channel.messages.items.len -| self.state.messages.scroll_offset;
+                while (i > 0) {
+                    i -= 1;
+                    const message = channel.messages.items[i];
+                    // if we are on the oldest message, request more history
+                    if (i == 0 and !channel.at_oldest) {
+                        try self.requestHistory(client, .before, channel);
+                    }
+                    // syntax: <target> <message>
+                    var iter = message.paramIterator();
+                    // target is the channel, and we already handled that
+                    _ = iter.next() orelse continue;
+
+                    // if this is the same sender, we will clear the last
+                    // sender_win and reduce one from the row we are
+                    // printing on
+                    const sender: []const u8 = blk: {
+                        const src = message.source orelse break :blk "";
+                        const l = std.mem.indexOfScalar(u8, src, '!') orelse
+                            std.mem.indexOfScalar(u8, src, '@') orelse
+                            src.len;
+                        break :blk src[0..l];
+                    };
+                    if (sender_win != null and mem.eql(u8, sender, prev_sender)) {
+                        sender_win.?.clear();
+                        h -= 2;
+                    }
+
+                    try self.formatMessageContent(message);
+                    defer self.content_segments.clearRetainingCapacity();
+                    const user = try client.getOrCreateUser(sender);
+                    // print the content first
+                    const print_result = try message_offset_win.print(self.content_segments.items, .{
+                        .wrap = .word,
+                        .commit = false,
+                    });
+                    const n = if (print_result.col == 0)
+                        print_result.row + 1
+                    else
+                        print_result.row + 2;
+
+                    h += n;
+                    const content_win = message_offset_win.initChild(
+                        0,
+                        message_offset_win.height -| h,
+                        .expand,
+                        .{ .limit = n - 1 },
+                    );
+                    if (hasMouse(content_win, self.state.mouse)) |_| {
+                        content_win.fill(.{
+                            .char = .{
+                                .grapheme = " ",
+                                .width = 1,
+                            },
+                            .style = .{
+                                .bg = .{ .index = 8 },
+                            },
+                        });
+                        for (self.content_segments.items) |*item| {
+                            item.style.bg = .{ .index = 8 };
+                        }
+                    }
+                    _ = try content_win.print(
+                        self.content_segments.items,
+                        .{ .wrap = .word },
+                    );
+                    const gutter = message_list_win.initChild(
+                        0,
+                        message_list_win.height -| h,
+                        .{ .limit = 5 },
+                        .{ .limit = h },
+                    );
+
+                    // print the sender
+                    defer prev_sender = sender;
+                    if (h >= message_list_win.height) break;
+
+                    h += 1;
+
+                    if (message.time_buf) |buf| {
+                        var time_seg = [_]vaxis.Segment{
+                            .{
+                                .text = buf,
+                                .style = .{ .fg = .{ .index = 8 } },
+                            },
+                        };
+                        _ = try gutter.print(&time_seg, .{});
+                    }
+
+                    var sender_segment = [_]vaxis.Segment{
+                        .{
+                            .text = sender,
+                            .style = .{
+                                .fg = user.color,
+                                .bold = true,
+                            },
+                        },
+                    };
+                    sender_win = message_list_win.initChild(
+                        6,
+                        message_list_win.height -| h,
+                        .expand,
+                        .{ .limit = 1 },
+                    );
+                    _ = try sender_win.?.print(
+                        &sender_segment,
+                        .{ .wrap = .word },
+                    );
+                }
+                if (self.completer) |*completer| {
+                    try completer.findMatches(channel);
+
+                    var completion_style: vaxis.Style = .{ .bg = .{ .index = 8 } };
+                    const completion_win = middle_win.child(.{
+                        .width = .{ .limit = completer.widestMatch(win) + 1 },
+                        .height = .{ .limit = @min(completer.numMatches(), middle_win.height -| 1) },
+                        .x_off = completer.start_idx,
+                        .y_off = middle_win.height -| completer.numMatches() -| 1,
+                    });
+                    completion_win.fill(.{
+                        .char = .{ .grapheme = " ", .width = 1 },
+                        .style = completion_style,
+                    });
+                    var completion_row: usize = 0;
+                    while (completion_row < completion_win.height) : (completion_row += 1) {
+                        log.debug("COMPLETION ROW {d}, selected_idx {d}", .{ completion_row, completer.selected_idx orelse 0 });
+                        if (completer.selected_idx) |idx| {
+                            if (completion_row == idx)
+                                completion_style.reverse = true
+                            else {
+                                completion_style = .{ .bg = .{ .index = 8 } };
+                            }
+                        }
+                        var seg = [_]vaxis.Segment{
+                            .{
+                                .text = completer.options.items[completer.options.items.len - 1 - completion_row],
+                                .style = completion_style,
+                            },
+                            .{
+                                .text = " ",
+                                .style = completion_style,
+                            },
+                        };
+                        _ = try completion_win.print(&seg, .{
+                            .row_offset = completion_win.height -| completion_row -| 1,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    const input_win = middle_win.initChild(
+        0,
+        win.height - 1,
+        .{ .limit = middle_win.width -| 7 },
+        .{ .limit = 1 },
+    );
+    const len_win = middle_win.child(.{
+        .x_off = input_win.width,
+        .y_off = win.height - 1,
+        .width = .{ .limit = 7 },
+        .height = .{ .limit = 1 },
+    });
+    const buf_name_len = blk: {
+        const sel_buf = self.selectedBuffer();
+        switch (sel_buf) {
+            .channel => |chan| break :blk chan.name.len,
+            else => break :blk 0,
+        }
+    };
+    // PRIVMSG <channel_name> :<message>\r\n = 12 bytes of overhead
+    const max_len = irc.maximum_message_size - buf_name_len - 12;
+    var len_buf: [7]u8 = undefined;
+    const msg_len = self.input.buf.realLength();
+    _ = try std.fmt.bufPrint(&len_buf, "{d: >3}/{d}", .{ msg_len, max_len });
+
+    var len_segs = [_]vaxis.Segment{
+        .{
+            .text = len_buf[0..3],
+            .style = .{ .fg = if (msg_len > max_len)
+                .{ .index = 1 }
+            else
+                .{ .index = 8 } },
+        },
+        .{
+            .text = len_buf[3..],
+            .style = .{ .fg = .{ .index = 8 } },
+        },
+    };
+
+    _ = try len_win.print(&len_segs, .{});
+    input_win.clear();
+    self.input.draw(input_win);
+
+    if (self.state.paste.showDialog()) {
+        // Draw a modal dialog for how to handle multi-line paste
+        const multiline_paste_win = vaxis.widgets.alignment.center(win, win.width - 10, win.height - 10);
+        const bordered = vaxis.widgets.border.all(multiline_paste_win, .{});
+        var segs = [_]vaxis.Segment{
+            .{ .text = "WARNING: multiline paste detected\n\n" },
+            .{ .text = self.paste_buffer.items },
+        };
+        bordered.clear();
+        _ = try bordered.print(&segs, .{ .wrap = .word });
+    }
+
+    try self.vx.render();
+    self.state.buffers.count = row;
 }
