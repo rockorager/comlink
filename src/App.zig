@@ -2,7 +2,9 @@ const std = @import("std");
 const vaxis = @import("vaxis");
 const zeit = @import("zeit");
 const ziglua = @import("ziglua");
-const ziglyph = vaxis.ziglyph;
+
+const Normalize = @import("Normalize");
+const CaseFold = @import("CaseFold");
 
 const assert = std.debug.assert;
 const base64 = std.base64.standard.Encoder;
@@ -90,6 +92,9 @@ paste_buffer: std.ArrayList(u8),
 
 input: vaxis.widgets.TextInput = undefined,
 
+norm_data: Normalize.NormData,
+fold_data: CaseFold.FoldData,
+
 const State = struct {
     mouse: ?vaxis.Mouse = null,
     members: struct {
@@ -120,6 +125,8 @@ const State = struct {
 /// initialize vaxis, lua state
 pub fn init(alloc: std.mem.Allocator) !App {
     const vx = try vaxis.init(alloc, .{});
+    var norm_data: Normalize.NormData = undefined;
+    try Normalize.NormData.init(&norm_data, alloc);
     var app: App = .{
         .alloc = alloc,
         .clients = std.ArrayList(*Client).init(alloc),
@@ -129,6 +136,8 @@ pub fn init(alloc: std.mem.Allocator) !App {
         .binds = try std.ArrayList(Bind).initCapacity(alloc, 16),
         .paste_buffer = std.ArrayList(u8).init(alloc),
         .input = vaxis.widgets.TextInput.init(alloc, &vx.unicode),
+        .norm_data = norm_data,
+        .fold_data = try CaseFold.FoldData.init(alloc),
     };
 
     try app.binds.append(.{
@@ -194,6 +203,8 @@ pub fn deinit(self: *App) void {
     if (self.completer) |*completer| completer.deinit();
     self.binds.deinit();
     self.paste_buffer.deinit();
+    self.norm_data.deinit();
+    self.fold_data.deinit();
 }
 
 /// push a write request into the queue. The request should include the trailing
@@ -1764,7 +1775,6 @@ fn draw(self: *App) !void {
     };
 
     _ = try len_win.print(&len_segs, .{});
-    input_win.clear();
     self.input.draw(input_win);
 
     if (self.state.paste.showDialog()) {
@@ -1779,6 +1789,7 @@ fn draw(self: *App) !void {
         _ = try bordered.print(&segs, .{ .wrap = .word });
     }
 
-    try self.vx.render();
     self.state.buffers.count = row;
+
+    try self.vx.render();
 }

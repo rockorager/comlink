@@ -3,6 +3,8 @@ const assert = std.debug.assert;
 const testing = std.testing;
 const tls = std.crypto.tls;
 
+const CaseFold = @import("CaseFold");
+const Normalize = @import("Normalize");
 const vaxis = @import("vaxis");
 const zeit = @import("zeit");
 
@@ -672,8 +674,10 @@ pub const Client = struct {
     }
 
     pub fn getOrCreateChannel(self: *Client, name: []const u8) !*Channel {
+        const norm = Normalize{ .norm_data = &self.app.norm_data };
+        const cf = CaseFold{ .fold_data = &self.app.fold_data };
         for (self.channels.items) |*channel| {
-            if (std.mem.eql(u8, name, channel.name)) {
+            if (try cf.canonCaselessMatch(self.alloc, &norm, name, channel.name)) {
                 return channel;
             }
         }

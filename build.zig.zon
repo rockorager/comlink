@@ -14,6 +14,10 @@
             .url = "git+https://github.com/rockorager/zeit#d5ce6b6b6336b4dc9c0d1d67339dea81fb4d2e77",
             .hash = "1220242e2867feae2cc8a6a07fa65bdef586f7d9d58a6c7c432abfb53db276973f55",
         },
+        .zg = .{
+            .url = "git+https://codeberg.org/dude_the_builder/zg#16735685fcc3410de361ba3411788ad1fb4fe188",
+            .hash = "1220fe9ac5cdb41833d327a78745614e67d472469f8666567bd8cf9f5847a52b1c51",
+        },
     },
     .paths = .{""},
 }
