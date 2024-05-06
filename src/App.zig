@@ -1373,14 +1373,18 @@ fn draw(self: *App) !void {
         if (mouse.col == self.state.buffers.width) {
             self.vx.setMouseShape(.@"ew-resize");
             switch (mouse.type) {
-                .press => self.state.buffers.resizing = true,
+                .press => {
+                    if (mouse.button == .left) self.state.buffers.resizing = true;
+                },
                 .release => self.state.buffers.resizing = false,
                 else => {},
             }
         } else if (mouse.col == win.width - self.state.members.width + 1) {
             self.vx.setMouseShape(.@"ew-resize");
             switch (mouse.type) {
-                .press => self.state.members.resizing = true,
+                .press => {
+                    if (mouse.button == .left) self.state.members.resizing = true;
+                },
                 .release => self.state.members.resizing = false,
                 else => {},
             }
