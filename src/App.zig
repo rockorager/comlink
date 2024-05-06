@@ -1573,81 +1573,102 @@ fn draw(self: *App) !void {
 
                 // loop the messages and print from the last line to current
                 // line
-                var h: usize = 0;
-                const message_list_win = middle_win.initChild(
-                    0,
-                    2,
-                    .expand,
-                    .{ .limit = middle_win.height -| 3 },
-                );
+                const message_list_win = middle_win.child(.{
+                    .y_off = 2,
+                    .height = .{ .limit = middle_win.height -| 3 },
+                    .width = .{ .limit = middle_win.width -| 1 },
+                });
                 if (hasMouse(message_list_win, self.state.mouse)) |mouse| {
                     switch (mouse.button) {
                         .wheel_up => {
-                            self.state.messages.scroll_offset +|= 1;
+                            self.state.messages.scroll_offset +|= 3;
                             self.state.mouse.?.button = .none;
                         },
                         .wheel_down => {
-                            self.state.messages.scroll_offset -|= 1;
+                            self.state.messages.scroll_offset -|= 3;
                             self.state.mouse.?.button = .none;
                         },
                         else => {},
                     }
                 }
-                const message_offset_win = message_list_win.initChild(
-                    6,
-                    0,
-                    .expand,
-                    .expand,
-                );
-                var prev_sender: []const u8 = "";
-                var sender_win: ?vaxis.Window = null;
+                const message_offset_win = message_list_win.child(.{
+                    .x_off = 6,
+                });
+
+                var prev_sender: ?[]const u8 = null;
                 var i: usize = channel.messages.items.len -| self.state.messages.scroll_offset;
+                var y_off: usize = message_list_win.height -| 1;
                 while (i > 0) {
                     i -= 1;
                     const message = channel.messages.items[i];
-                    // if we are on the oldest message, request more history
-                    if (i == 0 and !channel.at_oldest) {
-                        try self.requestHistory(client, .before, channel);
-                    }
                     // syntax: <target> <message>
+
+                    {
+                        // If this sender is not the same as the previous printed
+                        // message, then we'll print the previous sender and keep
+                        // going
+                        const sender: []const u8 = blk: {
+                            const src = message.source orelse break :blk "";
+                            const l = std.mem.indexOfScalar(u8, src, '!') orelse
+                                std.mem.indexOfScalar(u8, src, '@') orelse
+                                src.len;
+                            break :blk src[0..l];
+                        };
+                        defer prev_sender = sender;
+                        if (prev_sender != null and
+                            !mem.eql(u8, sender, prev_sender.?) and
+                            y_off > 0)
+                        {
+                            y_off -|= 1;
+                            const user = try client.getOrCreateUser(prev_sender.?);
+                            const sender_win = message_list_win.child(.{
+                                .x_off = 6,
+                                .y_off = y_off,
+                                .height = .{ .limit = 1 },
+                            });
+                            const sender_result = try sender_win.print(
+                                &.{.{
+                                    .text = prev_sender.?,
+                                    .style = .{
+                                        .fg = user.color,
+                                        .bold = true,
+                                    },
+                                }},
+                                .{ .wrap = .word },
+                            );
+                            y_off -|= 1;
+                            const result_win = sender_win.child(.{ .width = .{ .limit = sender_result.col } });
+                            if (result_win.hasMouse(self.state.mouse)) |_| {
+                                self.vx.setMouseShape(.pointer);
+                            }
+                        }
+                    }
+
+                    if (y_off == 0) break;
+
                     var iter = message.paramIterator();
                     // target is the channel, and we already handled that
                     _ = iter.next() orelse continue;
 
-                    // if this is the same sender, we will clear the last
-                    // sender_win and reduce one from the row we are
-                    // printing on
-                    const sender: []const u8 = blk: {
-                        const src = message.source orelse break :blk "";
-                        const l = std.mem.indexOfScalar(u8, src, '!') orelse
-                            std.mem.indexOfScalar(u8, src, '@') orelse
-                            src.len;
-                        break :blk src[0..l];
-                    };
-                    if (sender_win != null and mem.eql(u8, sender, prev_sender)) {
-                        sender_win.?.clear();
-                        h -= 2;
-                    }
-
                     try self.formatMessageContent(message);
                     defer self.content_segments.clearRetainingCapacity();
-                    const user = try client.getOrCreateUser(sender);
                     // print the content first
                     const print_result = try message_offset_win.print(self.content_segments.items, .{
                         .wrap = .word,
                         .commit = false,
                     });
-                    const n = if (print_result.col == 0)
-                        print_result.row + 1
+                    const content_height = if (print_result.col == 0)
+                        print_result.row
                     else
-                        print_result.row + 2;
+                        print_result.row + 1;
 
-                    h += n;
-                    const content_win = message_offset_win.initChild(
-                        0,
-                        message_offset_win.height -| h,
-                        .expand,
-                        .{ .limit = n - 1 },
+                    const height = if (content_height > y_off) content_height - y_off else content_height;
+                    if (height == 0) break;
+                    const content_win = message_offset_win.child(
+                        .{
+                            .y_off = y_off -| content_height,
+                            .height = .{ .limit = height },
+                        },
                     );
                     if (hasMouse(content_win, self.state.mouse)) |_| {
                         content_win.fill(.{
@@ -1665,20 +1686,16 @@ fn draw(self: *App) !void {
                     }
                     _ = try content_win.print(
                         self.content_segments.items,
-                        .{ .wrap = .word },
+                        .{
+                            .wrap = .word,
+                            .skip_n_rows = content_height - content_win.height,
+                        },
                     );
-                    const gutter = message_list_win.initChild(
-                        0,
-                        message_list_win.height -| h,
-                        .{ .limit = 5 },
-                        .{ .limit = h },
-                    );
-
-                    // print the sender
-                    defer prev_sender = sender;
-                    if (h >= message_list_win.height) break;
-
-                    h += 1;
+                    if (content_height > y_off) break;
+                    const gutter = message_list_win.child(.{
+                        .y_off = y_off -| content_height,
+                        .width = .{ .limit = 5 },
+                    });
 
                     if (message.time_buf) |buf| {
                         var time_seg = [_]vaxis.Segment{
@@ -1689,26 +1706,26 @@ fn draw(self: *App) !void {
                         };
                         _ = try gutter.print(&time_seg, .{});
                     }
+                    y_off -|= content_height;
 
-                    var sender_segment = [_]vaxis.Segment{
-                        .{
-                            .text = sender,
-                            .style = .{
-                                .fg = user.color,
-                                .bold = true,
-                            },
-                        },
+                    // if we are on the oldest message, request more history
+                    if (i == 0 and !channel.at_oldest) {
+                        try self.requestHistory(client, .before, channel);
+                    }
+                }
+                {
+                    // draw a scrollbar
+                    var scrollbar: vaxis.widgets.Scrollbar = .{
+                        .total = channel.messages.items.len,
+                        .view_size = channel.messages.items.len -| self.state.messages.scroll_offset -| i,
+                        .top = i,
                     };
-                    sender_win = message_list_win.initChild(
-                        6,
-                        message_list_win.height -| h,
-                        .expand,
-                        .{ .limit = 1 },
-                    );
-                    _ = try sender_win.?.print(
-                        &sender_segment,
-                        .{ .wrap = .word },
-                    );
+                    const scrollbar_win = middle_win.child(.{
+                        .x_off = message_list_win.width,
+                        .y_off = 2,
+                        .height = .{ .limit = middle_win.height -| 3 },
+                    });
+                    scrollbar.draw(scrollbar_win);
                 }
                 if (self.completer) |*completer| {
                     try completer.findMatches(channel);
