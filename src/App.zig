@@ -1434,7 +1434,10 @@ fn draw(self: *App) !void {
         };
         _ = try channel_list_win.print(
             &segs,
-            .{ .row_offset = row },
+            .{
+                .row_offset = row,
+                .wrap = .none,
+            },
         );
         row += 1;
 
