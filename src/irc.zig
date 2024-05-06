@@ -97,7 +97,6 @@ pub const Channel = struct {
     at_oldest: bool = false,
     last_read: i64 = 0,
     has_unread: bool = false,
-    batches: std.StringHashMap(bool),
 
     pub fn deinit(self: *const Channel, alloc: std.mem.Allocator) void {
         alloc.free(self.name);
@@ -109,12 +108,6 @@ pub const Channel = struct {
             msg.deinit(alloc);
         }
         self.messages.deinit();
-        var batches = self.batches;
-        var iter = batches.keyIterator();
-        while (iter.next()) |key| {
-            alloc.free(key.*);
-        }
-        batches.deinit();
     }
 
     pub fn compare(_: void, lhs: Channel, rhs: Channel) bool {
@@ -494,6 +487,8 @@ pub const Client = struct {
     caps: Capabilities = .{},
     supports: ISupport = .{},
 
+    batches: std.StringHashMap(*Channel),
+
     pub fn init(alloc: std.mem.Allocator, app: *App, cfg: Config) !Client {
         return .{
             .alloc = alloc,
@@ -503,12 +498,13 @@ pub const Client = struct {
             .config = cfg,
             .channels = std.ArrayList(Channel).init(alloc),
             .users = std.StringHashMap(*User).init(alloc),
+            .batches = std.StringHashMap(*Channel).init(alloc),
         };
     }
 
     pub fn deinit(self: *Client) void {
         self.should_close = true;
-        _ = self.client.writeEnd(self.stream, "", true) catch |err| {
+        _ = self.client.writeEnd(self.stream, "PING zirc\r\n", true) catch |err| {
             log.err("couldn't close tls conn: {}", .{err});
         };
         self.stream.close();
@@ -529,6 +525,12 @@ pub const Client = struct {
         }
         self.users.deinit();
         self.alloc.free(self.supports.prefix);
+        var batches = self.batches;
+        var iter = batches.keyIterator();
+        while (iter.next()) |key| {
+            self.alloc.free(key.*);
+        }
+        batches.deinit();
     }
 
     pub fn ack(self: *Client, cap: []const u8) void {
@@ -685,7 +687,6 @@ pub const Client = struct {
             .name = try self.alloc.dupe(u8, name),
             .members = std.ArrayList(*User).init(self.alloc),
             .messages = std.ArrayList(Message).init(self.alloc),
-            .batches = std.StringHashMap(bool).init(self.alloc),
             .client = self,
         };
         try self.channels.append(channel);

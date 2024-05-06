@@ -324,7 +324,7 @@ pub fn run(self: *App) !void {
                         }
                     } else if (key.matches(vaxis.Key.enter, .{})) {
                         if (self.input.buf.realLength() == 0) continue;
-                        const buffer = self.selectedBuffer();
+                        const buffer = self.selectedBuffer() orelse @panic("no buffer");
                         const content = try self.input.toOwnedSlice();
                         defer self.alloc.free(content);
                         if (content[0] == '/')
@@ -618,20 +618,17 @@ pub fn run(self: *App) !void {
                                     if (mem.eql(u8, batch_type, "chathistory")) {
                                         const target = iter.next() orelse continue;
                                         var channel = try msg.client.getOrCreateChannel(target);
+                                        channel.at_oldest = true;
                                         const duped_tag = try self.alloc.dupe(u8, tag[1..]);
-                                        try channel.batches.put(duped_tag, false);
+                                        try msg.client.batches.put(duped_tag, channel);
                                     }
                                 },
                                 '-' => {
-                                    for (msg.client.channels.items) |*chan| {
-                                        const key = chan.batches.getKey(tag[1..]) orelse continue;
-                                        const recv_hist = chan.batches.get(key) orelse unreachable;
-                                        _ = chan.batches.remove(key);
-                                        self.alloc.free(key);
-                                        chan.history_requested = false;
-                                        if (!recv_hist) chan.at_oldest = true;
-                                        break;
-                                    }
+                                    const key = msg.client.batches.getKey(tag[1..]) orelse continue;
+                                    var chan = msg.client.batches.get(key) orelse @panic("key should exist here");
+                                    chan.history_requested = false;
+                                    _ = msg.client.batches.remove(key);
+                                    self.alloc.free(key);
                                 },
                                 else => {},
                             }
@@ -727,31 +724,44 @@ pub fn run(self: *App) !void {
                             const target = blk: {
                                 const tgt = iter.next() orelse continue;
                                 if (mem.eql(u8, tgt, msg.client.config.nick)) {
+                                    // If the target is us, it likely has our
+                                    // hostname in it.
                                     const source = msg.source orelse continue;
                                     const n = mem.indexOfScalar(u8, source, '!') orelse source.len;
                                     break :blk source[0..n];
                                 } else break :blk tgt;
                             };
-                            var channel = try msg.client.getOrCreateChannel(target);
-                            try channel.messages.append(msg);
+
+                            // We handle batches separately. When we encounter a
+                            // PRIVMSG from a batch, we use the original target
+                            // from the batch start. We also never notify from a
+                            // batched message. Batched messages also require
+                            // sorting
                             var tag_iter = msg.tagIterator();
-                            const batch: bool = while (tag_iter.next()) |tag| {
+                            while (tag_iter.next()) |tag| {
                                 if (mem.eql(u8, tag.key, "batch")) {
+                                    const entry = msg.client.batches.getEntry(tag.value) orelse @panic("TODO");
+                                    var channel = entry.value_ptr.*;
+                                    try channel.messages.append(msg);
                                     std.sort.insertion(Message, channel.messages.items, {}, Message.compareTime);
-                                    const key = channel.batches.getKey(tag.value) orelse continue;
-                                    try channel.batches.put(key, true);
-                                    break true;
+                                    channel.at_oldest = false;
+                                    const time = msg.time orelse continue;
+                                    if (time.instant().unixTimestamp() > channel.last_read)
+                                        channel.has_unread = true;
+                                    break;
                                 }
-                            } else false;
-                            if (!batch) {
+                            } else {
+                                // standard handling
+                                var channel = try msg.client.getOrCreateChannel(target);
+                                try channel.messages.append(msg);
                                 const content = iter.next() orelse continue;
                                 if (std.mem.indexOf(u8, content, msg.client.config.nick)) |_| {
                                     try self.vx.notify("zircon", content);
                                 }
+                                const time = msg.time orelse continue;
+                                if (time.instant().unixTimestamp() > channel.last_read)
+                                    channel.has_unread = true;
                             }
-                            const time = msg.time orelse continue;
-                            if (time.instant().unixTimestamp() > channel.last_read)
-                                channel.has_unread = true;
                         },
                     }
                 },
@@ -1344,7 +1354,7 @@ pub fn whox(self: *App, client: *Client, channel: *irc.Channel) !void {
     }
 }
 
-pub fn selectedBuffer(self: *App) Buffer {
+pub fn selectedBuffer(self: *App) ?Buffer {
     var i: usize = 0;
     for (self.clients.items) |client| {
         if (i == self.state.buffers.selected_idx) return .{ .client = client };
@@ -1354,7 +1364,7 @@ pub fn selectedBuffer(self: *App) Buffer {
             i += 1;
         }
     }
-    unreachable;
+    return null;
 }
 
 fn draw(self: *App) !void {
@@ -1756,7 +1766,7 @@ fn draw(self: *App) !void {
         .height = .{ .limit = 1 },
     });
     const buf_name_len = blk: {
-        const sel_buf = self.selectedBuffer();
+        const sel_buf = self.selectedBuffer() orelse @panic("no buffer");
         switch (sel_buf) {
             .channel => |chan| break :blk chan.name.len,
             else => break :blk 0,
