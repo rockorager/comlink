@@ -265,7 +265,8 @@ pub fn run(self: *App) !void {
         const home = std.posix.getenv("HOME") orelse return error.EnvironmentVariableNotFound;
         var buf: [std.posix.PATH_MAX]u8 = undefined;
         const path = try std.fmt.bufPrintZ(&buf, "{s}/.config/zircon/init.lua", .{home});
-        self.lua.doFile(path) catch return error.LuaError;
+        self.lua.loadFile(path) catch return error.LuaError;
+        self.lua.protectedCall(0, ziglua.mult_return, 0) catch return error.luaError;
     }
 
     defer self.input.deinit();

@@ -3,9 +3,8 @@
     .version = "0.0.0",
     .dependencies = .{
         .ziglua = .{
-            // .url = "git+https://github.com/natecraddock/ziglua#486f51d3acc61d805783f5f07aee34c75ab59a25",
-            // .hash = "12208603e0f51fa6ce7201d8e851c5979b6b78887434623ac87a0f2a5a3dd3e75130",
-            .path = "../ziglua",
+            .url = "git+https://github.com/natecraddock/ziglua#486f51d3acc61d805783f5f07aee34c75ab59a25",
+            .hash = "12208603e0f51fa6ce7201d8e851c5979b6b78887434623ac87a0f2a5a3dd3e75130",
         },
         .vaxis = .{
             .path = "../libvaxis",

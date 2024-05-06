@@ -21,7 +21,8 @@ pub fn preloader(lua: *Lua) i32 {
         .{ .name = "connect", .func = ziglua.wrap(connect) },
         .{ .name = "log", .func = ziglua.wrap(log) },
     };
-    lua.newLib(&fns); // [table]
+    lua.newLibTable(&fns); // [table]
+    lua.setFuncs(&fns, 0); // [table]
     return 1;
 }
 
