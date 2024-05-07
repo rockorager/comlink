@@ -1770,15 +1770,14 @@ fn draw(self: *App) !void {
         }
     }
 
-    const input_win = middle_win.initChild(
-        0,
-        win.height - 1,
-        .{ .limit = middle_win.width -| 7 },
-        .{ .limit = 1 },
-    );
+    const input_win = middle_win.child(.{
+        .y_off = win.height -| 1,
+        .width = .{ .limit = middle_win.width -| 7 },
+        .height = .{ .limit = 1 },
+    });
     const len_win = middle_win.child(.{
         .x_off = input_win.width,
-        .y_off = win.height - 1,
+        .y_off = win.height -| 1,
         .width = .{ .limit = 7 },
         .height = .{ .limit = 1 },
     });
