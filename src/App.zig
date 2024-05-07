@@ -1612,6 +1612,7 @@ fn draw(self: *App) !void {
                         else => {},
                     }
                 }
+                self.state.messages.scroll_offset = @min(self.state.messages.scroll_offset, channel.messages.items.len -| 1);
                 const message_offset_win = message_list_win.child(.{
                     .x_off = 6,
                 });
