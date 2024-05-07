@@ -1428,7 +1428,7 @@ fn draw(self: *App) !void {
 
     var row: usize = 0;
     for (self.clients.items) |client| {
-        const style: vaxis.Style = if (row == self.state.buffers.selected_idx)
+        var style: vaxis.Style = if (row == self.state.buffers.selected_idx)
             .{
                 .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
                 .reverse = true,
@@ -1437,23 +1437,38 @@ fn draw(self: *App) !void {
             .{
                 .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
             };
-        var segs = [_]vaxis.Segment{
-            .{
+        const network_win = channel_list_win.child(.{
+            .y_off = row,
+            .height = .{ .limit = 1 },
+        });
+        if (network_win.hasMouse(self.state.mouse)) |_| {
+            self.vx.setMouseShape(.pointer);
+            style.bg = .{ .index = 8 };
+        }
+        _ = try network_win.print(
+            &.{.{
                 .text = client.config.name orelse client.config.server,
                 .style = style,
-            },
-        };
-        _ = try channel_list_win.print(
-            &segs,
-            .{
-                .row_offset = row,
-                .wrap = .none,
-            },
+            }},
+            .{},
         );
+        if (network_win.hasMouse(self.state.mouse)) |_| {
+            self.vx.setMouseShape(.pointer);
+        }
         row += 1;
 
         for (client.channels.items) |*channel| {
-            const chan_style: vaxis.Style = if (row == self.state.buffers.selected_idx)
+            const channel_win = channel_list_win.child(.{
+                .y_off = row,
+                .height = .{ .limit = 1 },
+            });
+            if (channel_win.hasMouse(self.state.mouse)) |mouse| {
+                if (mouse.type == .release) {
+                    self.state.buffers.selected_idx = row;
+                    self.loop.?.postEvent(.redraw);
+                }
+            }
+            var chan_style: vaxis.Style = if (row == self.state.buffers.selected_idx)
                 .{
                     .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
                     .reverse = true,
@@ -1470,6 +1485,15 @@ fn draw(self: *App) !void {
             defer row += 1;
             const prefix: []const u8 = if (channel.name[0] == '#') "#" else "";
             const name_offset: usize = if (prefix.len > 0) 1 else 0;
+
+            if (channel_win.hasMouse(self.state.mouse)) |mouse| {
+                self.vx.setMouseShape(.pointer);
+                if (mouse.button == .left)
+                    chan_style.reverse = true
+                else
+                    chan_style.bg = .{ .index = 8 };
+            }
+
             var chan_seg = [_]vaxis.Segment{
                 .{
                     .text = "  ",
@@ -1483,12 +1507,9 @@ fn draw(self: *App) !void {
                     .style = chan_style,
                 },
             };
-            const result = try channel_list_win.print(
+            const result = try channel_win.print(
                 &chan_seg,
-                .{
-                    .row_offset = row,
-                    .wrap = .none,
-                },
+                .{},
             );
             if (result.overflow)
                 channel_list_win.writeCell(
