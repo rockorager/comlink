@@ -674,14 +674,8 @@ pub const Client = struct {
     }
 
     pub fn getOrCreateChannel(self: *Client, name: []const u8) !*Channel {
-        const name_lower = try self.alloc.alloc(u8, name.len);
-        defer self.alloc.free(name_lower);
-        try caseMap(name_lower, name, .rfc1459);
         for (self.channels.items) |*channel| {
-            const chan_lower = try self.alloc.alloc(u8, channel.name.len);
-            defer self.alloc.free(chan_lower);
-            try caseMap(chan_lower, channel.name, .rfc1459);
-            if (std.mem.eql(u8, name_lower, chan_lower)) return channel;
+            if (caseFold(name, channel.name)) return channel;
         }
         const channel: Channel = .{
             .name = try self.alloc.dupe(u8, name),
@@ -775,32 +769,43 @@ const CaseMapAlgo = enum {
     rfc1459_strict,
 };
 
-pub fn caseMap(out: []u8, str: []const u8, algo: CaseMapAlgo) !void {
-    assert(out.len == str.len);
+pub fn caseMap(char: u8, algo: CaseMapAlgo) u8 {
     switch (algo) {
         .ascii => {
-            for (str, 0..) |b, i| {
-                switch (b) {
-                    'A'...'Z' => out[i] = b + 0x20,
-                    else => out[i] = b,
-                }
+            switch (char) {
+                'A'...'Z' => return char + 0x20,
+                else => return char,
             }
         },
         .rfc1459 => {
-            for (str, 0..) |b, i| {
-                switch (b) {
-                    'A'...'^' => out[i] = b + 0x20,
-                    else => out[i] = b,
-                }
+            switch (char) {
+                'A'...'^' => return char + 0x20,
+                else => return char,
             }
         },
         .rfc1459_strict => {
-            for (str, 0..) |b, i| {
-                switch (b) {
-                    'A'...']' => out[i] = b + 0x20,
-                    else => out[i] = b,
-                }
+            switch (char) {
+                'A'...']' => return char + 0x20,
+                else => return char,
             }
         },
     }
+}
+
+pub fn caseFold(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    var i: usize = 0;
+    while (i < a.len) {
+        const diff = std.mem.indexOfDiff(u8, a[i..], b[i..]) orelse return true;
+        const a_diff = caseMap(a[diff], .rfc1459);
+        const b_diff = caseMap(b[diff], .rfc1459);
+        if (a_diff != b_diff) return false;
+        i += diff + 1;
+    }
+    return true;
+}
+
+test "caseFold" {
+    try testing.expect(caseFold("a", "A"));
+    try testing.expect(caseFold("aBcDeFgH", "abcdefgh"));
 }
