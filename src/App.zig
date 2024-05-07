@@ -1716,18 +1716,25 @@ fn draw(self: *App) !void {
                     if (content_height > y_off) break;
                     const gutter = message_list_win.child(.{
                         .y_off = y_off -| content_height,
-                        .width = .{ .limit = 5 },
+                        .width = .{ .limit = 6 },
                     });
 
+                    const content = iter.next() orelse continue;
+
                     if (message.time_buf) |buf| {
+                        const fg: vaxis.Color = if (std.mem.indexOf(u8, content, client.config.nick)) |_|
+                            .{ .index = 3 }
+                        else
+                            .{ .index = 8 };
                         var time_seg = [_]vaxis.Segment{
                             .{
                                 .text = buf,
-                                .style = .{ .fg = .{ .index = 8 } },
+                                .style = .{ .fg = fg },
                             },
                         };
                         _ = try gutter.print(&time_seg, .{});
                     }
+
                     y_off -|= content_height;
 
                     // if we are on the oldest message, request more history
