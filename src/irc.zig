@@ -3,8 +3,6 @@ const assert = std.debug.assert;
 const testing = std.testing;
 const tls = std.crypto.tls;
 
-const CaseFold = @import("CaseFold");
-const Normalize = @import("Normalize");
 const vaxis = @import("vaxis");
 const zeit = @import("zeit");
 
@@ -676,12 +674,14 @@ pub const Client = struct {
     }
 
     pub fn getOrCreateChannel(self: *Client, name: []const u8) !*Channel {
-        const norm = Normalize{ .norm_data = &self.app.norm_data };
-        const cf = CaseFold{ .fold_data = &self.app.fold_data };
+        const name_lower = try self.alloc.alloc(u8, name.len);
+        defer self.alloc.free(name_lower);
+        try caseMap(name_lower, name, .rfc1459);
         for (self.channels.items) |*channel| {
-            if (try cf.canonCaselessMatch(self.alloc, &norm, name, channel.name)) {
-                return channel;
-            }
+            const chan_lower = try self.alloc.alloc(u8, channel.name.len);
+            defer self.alloc.free(chan_lower);
+            try caseMap(chan_lower, channel.name, .rfc1459);
+            if (std.mem.eql(u8, name_lower, chan_lower)) return channel;
         }
         const channel: Channel = .{
             .name = try self.alloc.dupe(u8, name),
@@ -767,4 +767,40 @@ pub fn toVaxisColor(irc: u8) vaxis.Color {
 
         else => .{ .index = irc },
     };
+}
+
+const CaseMapAlgo = enum {
+    ascii,
+    rfc1459,
+    rfc1459_strict,
+};
+
+pub fn caseMap(out: []u8, str: []const u8, algo: CaseMapAlgo) !void {
+    assert(out.len == str.len);
+    switch (algo) {
+        .ascii => {
+            for (str, 0..) |b, i| {
+                switch (b) {
+                    'A'...'Z' => out[i] = b + 0x20,
+                    else => out[i] = b,
+                }
+            }
+        },
+        .rfc1459 => {
+            for (str, 0..) |b, i| {
+                switch (b) {
+                    'A'...'^' => out[i] = b + 0x20,
+                    else => out[i] = b,
+                }
+            }
+        },
+        .rfc1459_strict => {
+            for (str, 0..) |b, i| {
+                switch (b) {
+                    'A'...']' => out[i] = b + 0x20,
+                    else => out[i] = b,
+                }
+            }
+        },
+    }
 }

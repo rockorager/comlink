@@ -9,10 +9,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .lang = .luajit,
     });
-    const zg_dep = b.dependency("zg", .{
-        .target = target,
-        .optimize = optimize,
-    });
 
     const vaxis_dep = b.dependency("vaxis", .{
         .target = target,
@@ -33,8 +29,6 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("ziglua", ziglua_dep.module("ziglua"));
     exe.root_module.addImport("vaxis", vaxis_dep.module("vaxis"));
     exe.root_module.addImport("zeit", zeit_dep.module("zeit"));
-    exe.root_module.addImport("Normalize", zg_dep.module("Normalize"));
-    exe.root_module.addImport("CaseFold", zg_dep.module("CaseFold"));
 
     b.installArtifact(exe);
 

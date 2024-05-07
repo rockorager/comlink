@@ -3,9 +3,6 @@ const vaxis = @import("vaxis");
 const zeit = @import("zeit");
 const ziglua = @import("ziglua");
 
-const Normalize = @import("Normalize");
-const CaseFold = @import("CaseFold");
-
 const assert = std.debug.assert;
 const base64 = std.base64.standard.Encoder;
 const mem = std.mem;
@@ -92,9 +89,6 @@ paste_buffer: std.ArrayList(u8),
 
 input: vaxis.widgets.TextInput = undefined,
 
-norm_data: Normalize.NormData,
-fold_data: CaseFold.FoldData,
-
 const State = struct {
     mouse: ?vaxis.Mouse = null,
     members: struct {
@@ -125,8 +119,6 @@ const State = struct {
 /// initialize vaxis, lua state
 pub fn init(alloc: std.mem.Allocator) !App {
     const vx = try vaxis.init(alloc, .{});
-    var norm_data: Normalize.NormData = undefined;
-    try Normalize.NormData.init(&norm_data, alloc);
     var app: App = .{
         .alloc = alloc,
         .clients = std.ArrayList(*Client).init(alloc),
@@ -136,8 +128,6 @@ pub fn init(alloc: std.mem.Allocator) !App {
         .binds = try std.ArrayList(Bind).initCapacity(alloc, 16),
         .paste_buffer = std.ArrayList(u8).init(alloc),
         .input = vaxis.widgets.TextInput.init(alloc, &vx.unicode),
-        .norm_data = norm_data,
-        .fold_data = try CaseFold.FoldData.init(alloc),
     };
 
     try app.binds.append(.{
@@ -203,8 +193,6 @@ pub fn deinit(self: *App) void {
     if (self.completer) |*completer| completer.deinit();
     self.binds.deinit();
     self.paste_buffer.deinit();
-    self.norm_data.deinit();
-    self.fold_data.deinit();
 }
 
 /// push a write request into the queue. The request should include the trailing
@@ -265,7 +253,10 @@ pub fn run(self: *App) !void {
         const home = std.posix.getenv("HOME") orelse return error.EnvironmentVariableNotFound;
         var buf: [std.posix.PATH_MAX]u8 = undefined;
         const path = try std.fmt.bufPrintZ(&buf, "{s}/.config/zircon/init.lua", .{home});
-        self.lua.loadFile(path) catch return error.LuaError;
+        switch (ziglua.lang) {
+            .luajit, .lua51 => self.lua.loadFile(path) catch return error.LuaError,
+            else => self.lua.loadFile(path, .binary_text) catch return error.LuaError,
+        }
         self.lua.protectedCall(0, ziglua.mult_return, 0) catch return error.luaError;
     }
 
@@ -1706,6 +1697,13 @@ fn draw(self: *App) !void {
                             item.style.bg = .{ .index = 8 };
                         }
                     }
+                    const content = iter.next() orelse continue;
+                    if (std.mem.indexOf(u8, content, client.config.nick)) |_| {
+                        for (self.content_segments.items) |*item| {
+                            if (item.style.fg == .default)
+                                item.style.fg = .{ .index = 3 };
+                        }
+                    }
                     _ = try content_win.print(
                         self.content_segments.items,
                         .{
@@ -1719,17 +1717,11 @@ fn draw(self: *App) !void {
                         .width = .{ .limit = 6 },
                     });
 
-                    const content = iter.next() orelse continue;
-
                     if (message.time_buf) |buf| {
-                        const fg: vaxis.Color = if (std.mem.indexOf(u8, content, client.config.nick)) |_|
-                            .{ .index = 3 }
-                        else
-                            .{ .index = 8 };
                         var time_seg = [_]vaxis.Segment{
                             .{
                                 .text = buf,
-                                .style = .{ .fg = fg },
+                                .style = .{ .fg = .{ .index = 8 } },
                             },
                         };
                         _ = try gutter.print(&time_seg, .{});
