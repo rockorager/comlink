@@ -1335,6 +1335,15 @@ pub fn handleCommand(self: *App, buffer: Buffer, cmd: []const u8) !void {
 
 pub fn whox(self: *App, client: *Client, channel: *irc.Channel) !void {
     channel.who_requested = true;
+    if (channel.name.len > 0 and
+        channel.name[0] != '#')
+    {
+        const other = try client.getOrCreateUser(channel.name);
+        const me = try client.getOrCreateUser(client.config.nick);
+        try channel.addMember(other);
+        try channel.addMember(me);
+        return;
+    }
     // Only use WHO if we have WHOX and away-notify. Without
     // WHOX, we can get rate limited on eg. libera. Without
     // away-notify, our list will become stale
