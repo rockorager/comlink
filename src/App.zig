@@ -1734,7 +1734,7 @@ fn draw(self: *App) !void {
                         self.content_segments.items,
                         .{
                             .wrap = .word,
-                            .skip_n_rows = content_height - content_win.height,
+                            // .skip_n_rows = content_height - content_win.height,
                         },
                     );
                     if (content_height > y_off) break;
