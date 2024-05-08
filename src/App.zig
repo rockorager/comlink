@@ -1217,6 +1217,7 @@ const Completer = struct {
 pub const Command = enum {
     /// a raw irc command. Sent verbatim
     irc,
+    join,
     me,
     msg,
     @"next-channel",
@@ -1228,6 +1229,7 @@ pub const Command = enum {
     pub fn appendSpace(self: Command) bool {
         return switch (self) {
             .irc,
+            .join,
             .me,
             .msg,
             => true,
@@ -1274,6 +1276,17 @@ pub fn handleCommand(self: *App, buffer: Buffer, cmd: []const u8) !void {
                 &buf,
                 "{s}\r\n",
                 .{cmd[start + 1 ..]},
+            );
+            return self.queueWrite(client, msg);
+        },
+        .join => {
+            const start = std.mem.indexOfScalar(u8, cmd, ' ') orelse return error.InvalidCommand;
+            const msg = try std.fmt.bufPrint(
+                &buf,
+                "JOIN {s}\r\n",
+                .{
+                    cmd[start + 1 ..],
+                },
             );
             return self.queueWrite(client, msg);
         },
