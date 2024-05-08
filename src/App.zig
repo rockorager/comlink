@@ -1642,17 +1642,17 @@ fn draw(self: *App) !void {
                     const message = channel.messages.items[i];
                     // syntax: <target> <message>
 
+                    const sender: []const u8 = blk: {
+                        const src = message.source orelse break :blk "";
+                        const l = std.mem.indexOfScalar(u8, src, '!') orelse
+                            std.mem.indexOfScalar(u8, src, '@') orelse
+                            src.len;
+                        break :blk src[0..l];
+                    };
                     {
                         // If this sender is not the same as the previous printed
                         // message, then we'll print the previous sender and keep
                         // going
-                        const sender: []const u8 = blk: {
-                            const src = message.source orelse break :blk "";
-                            const l = std.mem.indexOfScalar(u8, src, '!') orelse
-                                std.mem.indexOfScalar(u8, src, '@') orelse
-                                src.len;
-                            break :blk src[0..l];
-                        };
                         defer prev_sender = sender;
                         if (prev_sender != null and
                             !mem.eql(u8, sender, prev_sender.?) and
@@ -1754,6 +1754,31 @@ fn draw(self: *App) !void {
                     }
 
                     y_off -|= content_height;
+
+                    // If we are on the first message, print the sender
+                    if (i == 0) {
+                        y_off -= 1;
+                        const user = try client.getOrCreateUser(sender);
+                        const sender_win = message_list_win.child(.{
+                            .x_off = 6,
+                            .y_off = y_off,
+                            .height = .{ .limit = 1 },
+                        });
+                        const sender_result = try sender_win.print(
+                            &.{.{
+                                .text = sender,
+                                .style = .{
+                                    .fg = user.color,
+                                    .bold = true,
+                                },
+                            }},
+                            .{ .wrap = .word },
+                        );
+                        const result_win = sender_win.child(.{ .width = .{ .limit = sender_result.col } });
+                        if (result_win.hasMouse(self.state.mouse)) |_| {
+                            self.vx.setMouseShape(.pointer);
+                        }
+                    }
 
                     // if we are on the oldest message, request more history
                     if (i == 0 and !channel.at_oldest) {
