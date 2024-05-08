@@ -34,7 +34,7 @@ pub fn main() !void {
                 log.err("{s}", .{duped});
                 return err;
             },
-            else => {},
+            else => return err,
         }
     };
 }

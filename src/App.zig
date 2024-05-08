@@ -257,7 +257,7 @@ pub fn run(self: *App) !void {
             .luajit, .lua51 => self.lua.loadFile(path) catch return error.LuaError,
             else => self.lua.loadFile(path, .binary_text) catch return error.LuaError,
         }
-        self.lua.protectedCall(0, ziglua.mult_return, 0) catch return error.luaError;
+        self.lua.protectedCall(0, ziglua.mult_return, 0) catch return error.LuaError;
     }
 
     defer self.input.deinit();
