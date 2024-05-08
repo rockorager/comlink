@@ -558,6 +558,7 @@ pub const Client = struct {
                 std.time.sleep(delay);
                 delay = delay * 2;
                 if (delay > std.time.ns_per_min) delay = std.time.ns_per_min;
+                continue;
             };
             log.debug("connected", .{});
             self.status = .connected;
