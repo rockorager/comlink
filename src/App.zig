@@ -638,6 +638,9 @@ pub fn run(self: *App) !void {
                             const me_ptr = try msg.client.getOrCreateUser(msg.client.config.nick);
                             try channel.addMember(user_ptr);
                             try channel.addMember(me_ptr);
+                            // we set who_requested so we don't try to request
+                            // who on DMs
+                            channel.who_requested = true;
                             var buf: [128]u8 = undefined;
                             const mark_read = try std.fmt.bufPrint(
                                 &buf,
@@ -1318,6 +1321,7 @@ pub fn handleCommand(self: *App, buffer: Buffer, cmd: []const u8) !void {
 }
 
 pub fn whox(self: *App, client: *Client, channel: *irc.Channel) !void {
+    channel.who_requested = true;
     // Only use WHO if we have WHOX and away-notify. Without
     // WHOX, we can get rate limited on eg. libera. Without
     // away-notify, our list will become stale
@@ -1533,9 +1537,7 @@ fn draw(self: *App) !void {
                         try self.queueWrite(client, mark_read);
                     }
                 }
-                // if there are no members we will request either NAMES or
-                // WHOX
-                if (channel.members.items.len == 0) try self.whox(client, channel);
+                if (!channel.who_requested) try self.whox(client, channel);
                 var topic_seg = [_]vaxis.Segment{
                     .{
                         .text = channel.topic orelse "",
