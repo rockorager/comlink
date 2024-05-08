@@ -1557,6 +1557,8 @@ fn draw(self: *App) !void {
                     }
                 }
 
+                self.state.members.scroll_offset = @min(self.state.members.scroll_offset, channel.members.items.len -| member_list_win.height);
+
                 var member_row: usize = 0;
                 for (channel.members.items) |member| {
                     defer member_row += 1;
