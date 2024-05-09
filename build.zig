@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
     const ziglua_dep = b.dependency("ziglua", .{
         .target = target,
         .optimize = optimize,
-        .lang = .luajit,
+        .lang = .lua54,
     });
 
     const vaxis_dep = b.dependency("vaxis", .{
