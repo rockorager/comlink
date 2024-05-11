@@ -1480,7 +1480,7 @@ fn draw(self: *App) !void {
                 .height = .{ .limit = 1 },
             });
             if (channel_win.hasMouse(self.state.mouse)) |mouse| {
-                if (mouse.type == .release) {
+                if (mouse.type == .press and mouse.button == .left) {
                     self.state.buffers.selected_idx = row;
                     self.loop.?.postEvent(.redraw);
                 }
