@@ -178,7 +178,7 @@ pub const Message = struct {
     command: Command,
     params: ?[]const u8,
     time: ?zeit.Time = null,
-    time_buf: ?[]const u8 = null,
+    time_buf: ?[]u8 = null,
 
     pub fn compareTime(_: void, lhs: Message, rhs: Message) bool {
         const lhs_t = lhs.time orelse return false;

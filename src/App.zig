@@ -1639,7 +1639,7 @@ fn draw(self: *App) !void {
                 var y_off: usize = message_list_win.height -| 1;
                 while (i > 0) {
                     i -= 1;
-                    const message = channel.messages.items[i];
+                    var message = channel.messages.items[i];
                     // syntax: <target> <message>
 
                     const sender: []const u8 = blk: {
@@ -1744,10 +1744,35 @@ fn draw(self: *App) !void {
                     });
 
                     if (message.time_buf) |buf| {
+                        var date: bool = false;
+                        if (i != 0 and channel.messages.items[i - 1].time != null) {
+                            const time = message.time.?;
+                            const prev = channel.messages.items[i - 1].time.?;
+                            if (time.day != prev.day) {
+                                date = true;
+                                message.time_buf = try std.fmt.bufPrint(
+                                    message.time_buf.?,
+                                    "{d:0>2}/{d:0>2}",
+                                    .{ @intFromEnum(time.month), time.day },
+                                );
+                            }
+                        }
+                        if (i == 0) {
+                            date = true;
+                            message.time_buf = try std.fmt.bufPrint(
+                                message.time_buf.?,
+                                "{d:0>2}/{d:0>2}",
+                                .{ @intFromEnum(message.time.?.month), message.time.?.day },
+                            );
+                        }
+                        const fg: vaxis.Color = if (date)
+                            .default
+                        else
+                            .{ .index = 8 };
                         var time_seg = [_]vaxis.Segment{
                             .{
                                 .text = buf,
-                                .style = .{ .fg = .{ .index = 8 } },
+                                .style = .{ .fg = fg },
                             },
                         };
                         _ = try gutter.print(&time_seg, .{});
