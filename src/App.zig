@@ -1685,10 +1685,6 @@ fn draw(self: *App) !void {
 
                     if (y_off == 0) break;
 
-                    var iter = message.paramIterator();
-                    // target is the channel, and we already handled that
-                    _ = iter.next() orelse continue;
-
                     try self.formatMessageContent(message);
                     defer self.content_segments.clearRetainingCapacity();
                     // print the content first
@@ -1709,20 +1705,34 @@ fn draw(self: *App) !void {
                             .height = .{ .limit = height },
                         },
                     );
-                    if (hasMouse(content_win, self.state.mouse)) |_| {
+                    if (hasMouse(content_win, self.state.mouse)) |mouse| {
+                        var bg_idx: u8 = 8;
+                        if (mouse.type == .press and mouse.button == .middle) {
+                            var list = std.ArrayList(u8).init(self.alloc);
+                            defer list.deinit();
+                            for (self.content_segments.items) |item| {
+                                try list.appendSlice(item.text);
+                            }
+                            try self.vx.copyToSystemClipboard(list.items, self.alloc);
+                            bg_idx = 3;
+                        }
                         content_win.fill(.{
                             .char = .{
                                 .grapheme = " ",
                                 .width = 1,
                             },
                             .style = .{
-                                .bg = .{ .index = 8 },
+                                .bg = .{ .index = bg_idx },
                             },
                         });
                         for (self.content_segments.items) |*item| {
-                            item.style.bg = .{ .index = 8 };
+                            item.style.bg = .{ .index = bg_idx };
                         }
                     }
+                    var iter = message.paramIterator();
+                    // target is the channel, and we already handled that
+                    _ = iter.next() orelse continue;
+
                     const content = iter.next() orelse continue;
                     if (std.mem.indexOf(u8, content, client.config.nick)) |_| {
                         for (self.content_segments.items) |*item| {
