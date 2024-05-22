@@ -7,6 +7,7 @@ const assert = std.debug.assert;
 const base64 = std.base64.standard.Encoder;
 const mem = std.mem;
 
+const Button = @import("Button.zig");
 const irc = @import("irc.zig");
 const lua = @import("lua.zig");
 
@@ -1922,12 +1923,37 @@ fn draw(self: *App) !void {
         // Draw a modal dialog for how to handle multi-line paste
         const multiline_paste_win = vaxis.widgets.alignment.center(win, win.width - 10, win.height - 10);
         const bordered = vaxis.widgets.border.all(multiline_paste_win, .{});
+        bordered.clear();
+        const warning_width: usize = 37;
+        const title_win = multiline_paste_win.child(.{
+            .height = .{ .limit = 2 },
+            .y_off = 1,
+            .x_off = multiline_paste_win.width / 2 - warning_width / 2,
+        });
+        const title_seg = [_]vaxis.Segment{
+            .{
+                .text = "/!\\ Warning: Multiline paste detected",
+                .style = .{
+                    .fg = .{ .index = 3 },
+                    .bold = true,
+                },
+            },
+        };
+        _ = try title_win.print(&title_seg, .{ .wrap = .none });
         var segs = [_]vaxis.Segment{
-            .{ .text = "WARNING: multiline paste detected\n\n" },
             .{ .text = self.paste_buffer.items },
         };
-        bordered.clear();
-        _ = try bordered.print(&segs, .{ .wrap = .word });
+        _ = try bordered.print(&segs, .{ .wrap = .word, .row_offset = 2 });
+        const button: Button = .{
+            .label = "Accept",
+            .style = .{ .bg = .{ .index = 7 } },
+        };
+        try button.draw(bordered.child(.{
+            .x_off = 3,
+            .y_off = bordered.height - 4,
+            .height = .{ .limit = 3 },
+            .width = .{ .limit = 10 },
+        }));
     }
 
     self.state.buffers.count = row;
