@@ -60,12 +60,22 @@ fn connect(lua: *Lua) i32 {
     lua.argCheck(lua_type == .string, 1, "expected a string for field 'server'");
     const server = lua.toString(-1) catch unreachable;
 
+    lua_type = lua.getField(1, "tls");
+    const tls: bool = switch (lua_type) {
+        .nil => true,
+        .boolean => lua.toBoolean(-1),
+        else => lua.raiseErrorStr("expected a boolean for field 'tls'", .{}),
+    };
+    // lua.argCheck(lua_type == .boolean, 1, "expected a bool for field 'tls'");
+    // const tls = lua.toBoolean(-1) catch unreachable;
+
     const cfg: Client.Config = .{
         .server = server,
         .user = user,
         .nick = nick,
         .password = password,
         .real_name = real_name,
+        .tls = tls,
     };
     app.loop.?.postEvent(.{ .connect = cfg });
     return 0;

@@ -444,6 +444,7 @@ pub const Client = struct {
         server: []const u8,
         network_id: ?[]const u8 = null,
         name: ?[]const u8 = null,
+        tls: bool = true,
     };
 
     pub const Capabilities = struct {
@@ -503,9 +504,11 @@ pub const Client = struct {
 
     pub fn deinit(self: *Client) void {
         self.should_close = true;
-        _ = self.client.writeEnd(self.stream, "PING zirc\r\n", true) catch |err| {
-            log.err("couldn't close tls conn: {}", .{err});
-        };
+        if (self.config.tls) {
+            _ = self.client.writeEnd(self.stream, "PING zirc\r\n", true) catch |err| {
+                log.err("couldn't close tls conn: {}", .{err});
+            };
+        }
         self.stream.close();
         // id gets allocated in the main thread. We need to deallocate it here if
         // we have one
@@ -541,6 +544,13 @@ pub const Client = struct {
                 @field(self.caps, field.name) = true;
                 return;
             }
+        }
+    }
+
+    pub fn read(self: *Client, buf: []u8) !usize {
+        switch (self.config.tls) {
+            true => return self.client.read(self.stream, buf),
+            false => return self.stream.read(buf),
         }
     }
 
@@ -582,7 +592,7 @@ pub const Client = struct {
             var start: usize = 0;
 
             while (true) {
-                const n = self.client.read(self.stream, buf[start..]) catch |err| {
+                const n = self.read(buf[start..]) catch |err| {
                     if (err != error.WouldBlock) break;
                     const now = std.time.milliTimestamp();
                     if (now - last_msg > keep_alive + max_rt) {
@@ -599,6 +609,7 @@ pub const Client = struct {
                     }
                     continue;
                 };
+                log.debug("read {d}", .{n});
                 if (n == 0) continue;
                 last_msg = std.time.milliTimestamp();
                 var i: usize = 0;
@@ -639,12 +650,22 @@ pub const Client = struct {
 
     pub fn write(self: *Client, buf: []const u8) !void {
         log.debug("[->{s}] {s}", .{ self.config.name orelse self.config.server, buf[0 .. buf.len - 2] });
-        try self.client.writeAll(self.stream, buf);
+        switch (self.config.tls) {
+            true => try self.client.writeAll(self.stream, buf),
+            false => try self.stream.writeAll(buf),
+        }
     }
 
     pub fn connect(self: *Client) !void {
-        self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, 6697);
-        self.client = try tls.Client.init(self.stream, self.app.bundle, self.config.server);
+        switch (self.config.tls) {
+            true => {
+                self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, 6697);
+                self.client = try tls.Client.init(self.stream, self.app.bundle, self.config.server);
+            },
+            false => {
+                self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, 6667);
+            },
+        }
 
         var buf: [4096]u8 = undefined;
 
