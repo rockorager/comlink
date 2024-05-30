@@ -70,6 +70,7 @@ lua: *Lua,
 
 /// the vaxis instance for our application
 vx: vaxis.Vaxis,
+tty: vaxis.Tty,
 
 loop: ?vaxis.Loop(Event) = null,
 
@@ -125,6 +126,7 @@ pub fn init(alloc: std.mem.Allocator) !App {
         .clients = std.ArrayList(*Client).init(alloc),
         .lua = try Lua.init(&alloc),
         .vx = vx,
+        .tty = try vaxis.Tty.init(),
         .content_segments = std.ArrayList(vaxis.Segment).init(alloc),
         .binds = try std.ArrayList(Bind).initCapacity(alloc, 16),
         .paste_buffer = std.ArrayList(u8).init(alloc),
@@ -177,7 +179,7 @@ pub fn deinit(self: *App) void {
 
     // close vaxis
     {
-        self.vx.deinit(self.alloc);
+        self.vx.deinit(self.alloc, self.tty.anyWriter());
     }
 
     self.lua.deinit();
@@ -218,13 +220,17 @@ fn writeLoop(self: *App) !void {
 
 pub fn run(self: *App) !void {
     // start vaxis
+    const writer = self.tty.anyWriter();
     {
-        self.loop = .{ .vaxis = &self.vx };
-        try self.loop.?.run();
-        try self.vx.enterAltScreen();
-        try self.vx.queryTerminal();
-        try self.vx.setMouseMode(true);
-        try self.vx.setBracketedPaste(true);
+        self.loop = .{
+            .vaxis = &self.vx,
+            .tty = &self.tty,
+        };
+        try self.loop.?.start();
+        try self.vx.enterAltScreen(writer);
+        try self.vx.queryTerminal(writer, 1 * std.time.ns_per_s);
+        try self.vx.setMouseMode(writer, true);
+        try self.vx.setBracketedPaste(writer, true);
     }
 
     // start our write thread
@@ -368,7 +374,7 @@ pub fn run(self: *App) !void {
                     self.state.mouse = mouse;
                     log.debug("mouse event: {}", .{mouse});
                 },
-                .winsize => |ws| try self.vx.resize(self.alloc, ws),
+                .winsize => |ws| try self.vx.resize(self.alloc, writer, ws),
                 .connect => |cfg| {
                     const client = try self.alloc.create(Client);
                     client.* = try Client.init(self.alloc, self, cfg);
@@ -751,7 +757,7 @@ pub fn run(self: *App) !void {
                                 try channel.messages.append(msg);
                                 const content = iter.next() orelse continue;
                                 if (std.mem.indexOf(u8, content, msg.client.config.nick)) |_| {
-                                    try self.vx.notify("zircon", content);
+                                    try self.vx.notify(writer, "zircon", content);
                                 }
                                 const time = msg.time orelse continue;
                                 if (time.instant().unixTimestamp() > channel.last_read)
@@ -1714,7 +1720,7 @@ fn draw(self: *App) !void {
                             for (self.content_segments.items) |item| {
                                 try list.appendSlice(item.text);
                             }
-                            try self.vx.copyToSystemClipboard(list.items, self.alloc);
+                            try self.vx.copyToSystemClipboard(self.tty.anyWriter(), list.items, self.alloc);
                             bg_idx = 3;
                         }
                         content_win.fill(.{
@@ -1958,5 +1964,7 @@ fn draw(self: *App) !void {
 
     self.state.buffers.count = row;
 
-    try self.vx.render();
+    var buffered = self.tty.bufferedWriter();
+    try self.vx.render(buffered.writer().any());
+    try buffered.flush();
 }
