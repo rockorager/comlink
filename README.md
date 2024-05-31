@@ -8,7 +8,8 @@ An experimental IRC client written in zig
 
 Configuration is loaded from `$HOME/.config/comlink/init.lua`
 
-Works best with `soju`
+Works best with `soju`. pico.sh runs a free instance of `soju` and has fantastic
+[documentation](https://pico.sh/irc) on how to get connected
 
 ```zig
 local comlink = require("comlink")
