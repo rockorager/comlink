@@ -1223,7 +1223,7 @@ const Completer = struct {
 
 pub const Command = enum {
     /// a raw irc command. Sent verbatim
-    irc,
+    quote,
     join,
     me,
     msg,
@@ -1235,7 +1235,7 @@ pub const Command = enum {
     /// if we should append a space when completing
     pub fn appendSpace(self: Command) bool {
         return switch (self) {
-            .irc,
+            .quote,
             .join,
             .me,
             .msg,
@@ -1277,7 +1277,7 @@ pub fn handleCommand(self: *App, buffer: Buffer, cmd: []const u8) !void {
         .channel => |channel| channel,
     };
     switch (command) {
-        .irc => {
+        .quote => {
             const start = mem.indexOfScalar(u8, cmd, ' ') orelse return error.InvalidCommand;
             const msg = try std.fmt.bufPrint(
                 &buf,
