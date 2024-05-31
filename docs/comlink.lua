@@ -27,7 +27,7 @@ function comlink.log(msg) end
 --
 ---@enum action
 local Action = {
-	irc = "irc",
+	quote = "quote",
 	me = "me",
 	msg = "msg",
 	next_channel = "next-channel",
