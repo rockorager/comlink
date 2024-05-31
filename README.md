@@ -1,6 +1,7 @@
 # comlink
 
-An experimental IRC client written in zig
+An experimental IRC client written in zig. Join the discussion in #comlink on
+libera.chat.
 
 ![screenshot of comlink](screenshot.png)
 
