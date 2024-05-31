@@ -4,6 +4,17 @@ An experimental IRC client written in zig
 
 ![screenshot of comlink](screenshot.png)
 
+## Installation
+
+`comlink` is written in zig and can be installed using the zig build system,
+version 0.12.0.
+
+```sh
+git clone https://github.com/rockorager/comlink
+cd comlink
+zig build -Doptimize=ReleaseSafe --prefix ~/.local
+```
+
 ## Configuration
 
 Configuration is loaded from `$HOME/.config/comlink/init.lua`
