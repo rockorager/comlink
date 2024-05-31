@@ -44,6 +44,6 @@ comlink.bind("ctrl+c", "quit")
 
 ## Contributing
 
-Patches accepted on the [mailing list](~rockorager/comlink@lists.sr.ht)
+Patches accepted on the [mailing list](https://lists.sr.ht/~rockorager/comlink)
 
 Pull requests accepted on [Github](https://github.com/rockorager/comlink)
