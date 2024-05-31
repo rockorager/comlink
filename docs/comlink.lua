@@ -1,9 +1,9 @@
 ---@meta
 
---- The primary zircon module
+--- The primary comlink module
 --
----@class zircon
-local zircon = {}
+---@class comlink
+local comlink = {}
 
 ---@class ConnectionConfiguration
 --
@@ -16,14 +16,14 @@ local zircon = {}
 ---Set connection configuration
 --
 ---@param cfg ConnectionConfiguration
-function zircon.connect(cfg) end
+function comlink.connect(cfg) end
 
----Log a msg to the zircon logs
+---Log a msg to the comlink logs
 --
 ---@param msg string The message to log
-function zircon.log(msg) end
+function comlink.log(msg) end
 
---- A command for zircon to execute
+--- A command for comlink to execute
 --
 ---@enum action
 local Action = {
@@ -40,6 +40,6 @@ local Action = {
 --
 ---@param key string The key to bind, eg "alt+n", "shift+left"
 ---@param action action The action to perform, eg "quit"
-function zircon.bind(key, action) end
+function comlink.bind(key, action) end
 
-return zircon
+return comlink

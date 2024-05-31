@@ -1,15 +1,15 @@
-#zircon
+# comlink
 
 An experimental IRC client written in zig
 
 ## Configuration
 
-Configuration is loaded from `$HOME/.config/zircon/init.lua`
+Configuration is loaded from `$HOME/.config/comlink/init.lua`
 
-Works best (maybe only?) with `soju`
+Works best with `soju`
 
 ```zig
-local zirc = require("zircon")
+local comlink = require("comlink")
 
 local config = {
 	server = "chat.sr.ht",
@@ -19,5 +19,5 @@ local config = {
 	real_name = "Tim Culverhouse",
 }
 
-zirc.connect(config)
+comlink.connect(config)
 ```

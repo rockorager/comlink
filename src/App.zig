@@ -248,7 +248,7 @@ pub fn run(self: *App) !void {
         _ = try self.lua.getGlobal("package"); // [package]
         _ = self.lua.getField(-1, "preload"); // [package, preload]
         self.lua.pushFunction(ziglua.wrap(lua.preloader)); // [package, preload, function]
-        self.lua.setField(-2, "zircon"); // [package, preload]
+        self.lua.setField(-2, "comlink"); // [package, preload]
         // empty the stack
         self.lua.pop(2); // []
 
@@ -259,7 +259,7 @@ pub fn run(self: *App) !void {
         // load config
         const home = std.posix.getenv("HOME") orelse return error.EnvironmentVariableNotFound;
         var buf: [std.posix.PATH_MAX]u8 = undefined;
-        const path = try std.fmt.bufPrintZ(&buf, "{s}/.config/zircon/init.lua", .{home});
+        const path = try std.fmt.bufPrintZ(&buf, "{s}/.config/comlink/init.lua", .{home});
         switch (ziglua.lang) {
             .luajit, .lua51 => self.lua.loadFile(path) catch return error.LuaError,
             else => self.lua.loadFile(path, .binary_text) catch return error.LuaError,
@@ -757,7 +757,7 @@ pub fn run(self: *App) !void {
                                 try channel.messages.append(msg);
                                 const content = iter.next() orelse continue;
                                 if (std.mem.indexOf(u8, content, msg.client.config.nick)) |_| {
-                                    try self.vx.notify(writer, "zircon", content);
+                                    try self.vx.notify(writer, "comlink", content);
                                 }
                                 const time = msg.time orelse continue;
                                 if (time.instant().unixTimestamp() > channel.last_read)

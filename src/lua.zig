@@ -12,9 +12,9 @@ const Lua = ziglua.Lua;
 pub const registry_index = ziglua.registry_index;
 
 /// global key for the app userdata pointer in the registry
-pub const app_key = "zircon.app";
+pub const app_key = "comlink.app";
 
-/// loads our "zircon" library
+/// loads our "comlink" library
 pub fn preloader(lua: *Lua) i32 {
     const fns = [_]ziglua.FnReg{
         .{ .name = "bind", .func = ziglua.wrap(bind) },
@@ -139,7 +139,7 @@ fn bind(lua: *Lua) i32 {
 /// retrieves the *App lightuserdata from the registry index
 fn getApp(lua: *Lua) *App {
     const lua_type = lua.getField(ziglua.registry_index, app_key); // [userdata]
-    assert(lua_type == .light_userdata); // set by zircon as a lightuserdata
+    assert(lua_type == .light_userdata); // set by comlink as a lightuserdata
     const app = lua.toUserdata(App, -1) catch unreachable; // already asserted
     // as lightuserdata
     return app;
