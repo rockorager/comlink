@@ -22,7 +22,7 @@ Configuration is loaded from `$HOME/.config/comlink/init.lua`
 Works best with `soju`. pico.sh runs a free instance of `soju` and has fantastic
 [documentation](https://pico.sh/irc) on how to get connected
 
-```zig
+```lua
 local comlink = require("comlink")
 
 local config = {
@@ -34,7 +34,11 @@ local config = {
 	tls = true,
 }
 
+-- Pass the server config to connect. Connect to as many servers as you need
 comlink.connect(config)
+
+-- Bind a key to an action
+comlink.bind("ctrl+c", "quit")
 ```
 
 ## Contributing
