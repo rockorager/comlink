@@ -2,6 +2,8 @@
 
 An experimental IRC client written in zig
 
+![screenshot of comlink](screenshot.png)
+
 ## Configuration
 
 Configuration is loaded from `$HOME/.config/comlink/init.lua`
@@ -17,6 +19,7 @@ local config = {
 	nick = "rockorager",
 	password = "password",
 	real_name = "Tim Culverhouse",
+	tls = true,
 }
 
 comlink.connect(config)
