@@ -226,6 +226,7 @@ pub fn run(self: *App) !void {
             .vaxis = &self.vx,
             .tty = &self.tty,
         };
+        try self.loop.?.init();
         try self.loop.?.start();
         try self.vx.enterAltScreen(writer);
         try self.vx.queryTerminal(writer, 1 * std.time.ns_per_s);
