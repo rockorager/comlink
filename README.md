@@ -24,3 +24,9 @@ local config = {
 
 comlink.connect(config)
 ```
+
+## Contributing
+
+Patches accepted on the [mailing list](~rockorager/comlink@lists.sr.ht)
+
+Pull requests accepted on [Github](https://github.com/rockorager/comlink)
