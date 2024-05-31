@@ -1,0 +1,16 @@
+image: alpine/edge
+packages:
+    - git
+secrets:
+    - d48e3c42-9d65-452f-9693-68653a855858 # ssh key for mirroring
+environment:
+    GIT_SSH_COMMAND: ssh -o StrictHostKeyChecking=no
+tasks:
+    - mirror: |
+        # Don't run on GitHub PRs
+        if [ "$BUILD_REASON" = 'github-pr' ]; then
+            exit
+        fi
+
+        git clone --mirror https://git.sr.ht/~rockorager/comlink comlink.git
+        git -C comlink.git push --force --mirror git@github.com:rockorager/comlink
