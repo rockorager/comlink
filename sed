@@ -1,1 +1,0 @@
-error: unrecognized parameter: '-n'
