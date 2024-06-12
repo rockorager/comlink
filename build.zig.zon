@@ -3,20 +3,20 @@
     .version = "0.0.0",
     .dependencies = .{
         .ziglua = .{
-            .url = "git+https://github.com/natecraddock/ziglua#486f51d3acc61d805783f5f07aee34c75ab59a25",
-            .hash = "12208603e0f51fa6ce7201d8e851c5979b6b78887434623ac87a0f2a5a3dd3e75130",
+            .url = "git+https://github.com/natecraddock/ziglua?ref=main#d853aa9450ae568a39ea02d7082e85bafc33f735",
+            .hash = "1220affeb3fe37ef09411b5a213b5fdf9bb6568e9913bade204694648983a8b2776d",
         },
         .vaxis = .{
-            .url = "git+https://github.com/rockorager/libvaxis#49cc8ae7c42956cc9b93832d0eef7ae27a46a413",
-            .hash = "12202fb0c7cd677037c5618738b9dab72238f92ecac2b477292eacd31e4ca622fa96",
+            .url = "git+https://github.com/rockorager/libvaxis?ref=main#8f4ca5b830ac4fd33a5d4604b2c0e910c067a194",
+            .hash = "1220d72e5e0144021e7c1f6a64236229e283bed9ee7ec9450e81e31c5086e89f053d",
         },
         .zeit = .{
-            .url = "git+https://github.com/rockorager/zeit#d5ce6b6b6336b4dc9c0d1d67339dea81fb4d2e77",
-            .hash = "1220242e2867feae2cc8a6a07fa65bdef586f7d9d58a6c7c432abfb53db276973f55",
+            .url = "git+https://github.com/rockorager/zeit?ref=main#d1e9e9b36948eb9e80f1314463333e1051332afd",
+            .hash = "1220478f0d836049cef3e203e665103c0c280b87d3c74b50c8b79c4054a6624498f9",
         },
         .zg = .{
-            .url = "git+https://codeberg.org/dude_the_builder/zg#601c35d17e13b54b4958a883c72efae23ac82119",
-            .hash = "122031d515549a8293045562f6f79708c2a6b9adb2e12c4c99722da9b955062afab8",
+            .url = "git+https://codeberg.org/dude_the_builder/zg?ref=master#689ab6b83d08c02724b99d199d650ff731250998",
+            .hash = "12200d1ce5f9733a9437415d85665ad5fbc85a4d27689fd337fecad8014acffe3aa5",
         },
     },
     .paths = .{""},
