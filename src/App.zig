@@ -748,8 +748,13 @@ pub fn run(self: *App) !void {
                                     std.sort.insertion(Message, channel.messages.items, {}, Message.compareTime);
                                     channel.at_oldest = false;
                                     const time = msg.time orelse continue;
-                                    if (time.instant().unixTimestamp() > channel.last_read)
+                                    if (time.instant().unixTimestamp() > channel.last_read) {
                                         channel.has_unread = true;
+                                        const content = iter.next() orelse continue;
+                                        if (std.mem.indexOf(u8, content, msg.client.config.nick)) |_| {
+                                            channel.has_unread_highlight = true;
+                                        }
+                                    }
                                     break;
                                 }
                             } else {
@@ -757,12 +762,16 @@ pub fn run(self: *App) !void {
                                 var channel = try msg.client.getOrCreateChannel(target);
                                 try channel.messages.append(msg);
                                 const content = iter.next() orelse continue;
+                                var has_highlight = false;
                                 if (std.mem.indexOf(u8, content, msg.client.config.nick)) |_| {
                                     try self.vx.notify(writer, "comlink", content);
+                                    has_highlight = true;
                                 }
                                 const time = msg.time orelse continue;
-                                if (time.instant().unixTimestamp() > channel.last_read)
+                                if (time.instant().unixTimestamp() > channel.last_read) {
+                                    channel.has_unread_highlight = has_highlight;
                                     channel.has_unread = true;
+                                }
                             }
                         },
                     }
@@ -1519,10 +1528,13 @@ fn draw(self: *App) !void {
                     chan_style.bg = .{ .index = 8 };
             }
 
+            const first_seg: vaxis.Segment = if (channel.has_unread_highlight)
+                .{ .text = " ●︎", .style = .{ .fg = .{ .index = 1 } } }
+            else
+                .{ .text = "  " };
+
             var chan_seg = [_]vaxis.Segment{
-                .{
-                    .text = "  ",
-                },
+                first_seg,
                 .{
                     .text = prefix,
                     .style = .{ .fg = .{ .index = 8 } },
@@ -1552,6 +1564,7 @@ fn draw(self: *App) !void {
                 var write_buf: [128]u8 = undefined;
                 if (channel.has_unread) {
                     channel.has_unread = false;
+                    channel.has_unread_highlight = false;
                     const last_msg = channel.messages.getLast();
                     var tag_iter = last_msg.tagIterator();
                     while (tag_iter.next()) |tag| {

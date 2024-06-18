@@ -96,6 +96,7 @@ pub const Channel = struct {
     at_oldest: bool = false,
     last_read: i64 = 0,
     has_unread: bool = false,
+    has_unread_highlight: bool = false,
 
     pub fn deinit(self: *const Channel, alloc: std.mem.Allocator) void {
         alloc.free(self.name);
