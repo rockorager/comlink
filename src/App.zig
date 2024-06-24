@@ -1963,7 +1963,7 @@ fn draw(self: *App) !void {
         var segs = [_]vaxis.Segment{
             .{ .text = self.paste_buffer.items },
         };
-        _ = try bordered.print(&segs, .{ .wrap = .word, .row_offset = 2 });
+        _ = try bordered.print(&segs, .{ .wrap = .grapheme, .row_offset = 2 });
         const button: Button = .{
             .label = "Accept",
             .style = .{ .bg = .{ .index = 7 } },
