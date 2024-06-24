@@ -1158,7 +1158,7 @@ const Completer = struct {
             if (self.selected_idx == null or self.selected_idx.? == 0)
                 self.selected_idx = last_idx
             else
-                self.selected_idx.? -= 1;
+                self.selected_idx.? -|= 1;
         }
         return self.replacementText();
     }
@@ -1813,7 +1813,7 @@ fn draw(self: *App) !void {
 
                     // If we are on the first message, print the sender
                     if (i == 0) {
-                        y_off -= 1;
+                        y_off -|= 1;
                         const user = try client.getOrCreateUser(sender);
                         const sender_win = message_list_win.child(.{
                             .x_off = 6,
