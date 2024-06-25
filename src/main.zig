@@ -1,9 +1,12 @@
 const std = @import("std");
 const App = @import("App.zig");
+const vaxis = @import("vaxis");
 
 const zeit = @import("zeit");
 
 const log = std.log.scoped(.main);
+
+pub const panic = vaxis.panic_handler;
 
 pub var local: zeit.TimeZone = undefined;
 
