@@ -1424,7 +1424,7 @@ fn draw(self: *App) !void {
                 .release => self.state.buffers.resizing = false,
                 else => {},
             }
-        } else if (mouse.col == win.width - self.state.members.width + 1) {
+        } else if (mouse.col == win.width -| self.state.members.width + 1) {
             self.vx.setMouseShape(.@"ew-resize");
             switch (mouse.type) {
                 .press => {
