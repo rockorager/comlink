@@ -81,15 +81,22 @@ fn connect(lua: *Lua) i32 {
     return 0;
 }
 
-/// creates a keybind. Accepts 2 strings
+/// creates a keybind. Accepts one or two string.
+///
+/// The first string is the key binding. The second string is the optional
+/// action. If nil, the key is unbound (if a binding exists). Otherwise, the
+/// provided key is bound to the provided action.
 fn bind(lua: *Lua) i32 {
     const app = getApp(lua);
     lua.argCheck(lua.isString(1), 1, "expected a string");
-    lua.argCheck(lua.isString(2), 1, "expected a string");
+    lua.argCheck(lua.isString(2) or lua.isNil(2), 2, "expected a string or nil");
 
-    // [string string]
-    const key_str = lua.toString(1) catch unreachable; // [string]
-    const action = lua.toString(2) catch unreachable; // []
+    // [string string?]
+    const key_str = lua.toString(1) catch unreachable; // [string?]
+    const action = if (lua.isNil(2))
+        null
+    else
+        lua.toString(2) catch unreachable; // []
 
     var codepoint: ?u21 = null;
     var mods: vaxis.Key.Modifiers = .{};
@@ -116,21 +123,33 @@ fn bind(lua: *Lua) i32 {
         else if (std.mem.eql(u8, "meta", key_txt))
             mods.meta = true;
     }
-    const command = std.meta.stringToEnum(App.Command, action) orelse {
+    const command = if (action) |act| std.meta.stringToEnum(App.Command, act) orelse {
         // var buf: [64]u8 = undefined;
         // const msg = std.fmt.bufPrintZ(&buf, "{s}", .{"not a valid command: %s"}) catch unreachable;
         // lua.raiseErrorStr(msg, .{action});
         // TODO: go back to raise error str when the null terminator is fixed
         lua.raiseError();
-    };
+    } else null;
+
     if (codepoint) |cp| {
-        app.binds.append(.{
-            .key = .{
-                .codepoint = cp,
-                .mods = mods,
-            },
-            .command = command,
-        }) catch lua.raiseError();
+        if (command) |cmd| {
+            // TODO: check that no existing bind with the same key sequence
+            // already exists
+            app.binds.append(.{
+                .key = .{
+                    .codepoint = cp,
+                    .mods = mods,
+                },
+                .command = cmd,
+            }) catch lua.raiseError();
+        } else {
+            for (app.binds.items, 0..) |item, i| {
+                if (item.key.matches(cp, mods)) {
+                    _ = app.binds.swapRemove(i);
+                    break;
+                }
+            }
+        }
         // TODO: go back to raise error str when the null terminator is fixed
     }
     return 0;
