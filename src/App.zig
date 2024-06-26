@@ -1242,6 +1242,7 @@ pub const Command = enum {
     @"prev-channel",
     quit,
     who,
+    names,
 
     /// if we should append a space when completing
     pub fn appendSpace(self: Command) bool {
@@ -1332,6 +1333,11 @@ pub fn handleCommand(self: *App, buffer: Buffer, cmd: []const u8) !void {
                     cmd[e + 1 ..],
                 },
             );
+            return self.queueWrite(client, msg);
+        },
+        .names => {
+            if (channel == null) return error.InvalidCommand;
+            const msg = try std.fmt.bufPrint(&buf, "NAMES {s}\r\n", .{channel.?.name});
             return self.queueWrite(client, msg);
         },
         .@"next-channel" => self.nextChannel(),
