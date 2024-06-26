@@ -394,16 +394,17 @@ pub fn run(self: *App) !void {
                             // syntax: <client> <ACK/NACK> :caps
                             var iter = msg.paramIterator();
                             _ = iter.next() orelse continue; // client
-                            const ack_or_nack = iter.next() orelse continue;
-                            const ack = mem.eql(u8, ack_or_nack, "ACK");
+                            const ack_or_nak = iter.next() orelse continue;
                             const caps = iter.next() orelse continue;
                             var cap_iter = mem.splitScalar(u8, caps, ' ');
                             while (cap_iter.next()) |cap| {
-                                if (ack) {
+                                if (mem.eql(u8, ack_or_nak, "ACK")) {
                                     msg.client.ack(cap);
                                     if (mem.eql(u8, cap, "sasl"))
                                         try self.queueWrite(msg.client, "AUTHENTICATE PLAIN\r\n");
-                                } else log.debug("CAP not supported {s}", .{cap});
+                                } else if (mem.eql(u8, ack_or_nak, "NAK")) {
+                                    log.debug("CAP not supported {s}", .{cap});
+                                }
                             }
                         },
                         .AUTHENTICATE => {
