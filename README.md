@@ -8,7 +8,7 @@ libera.chat.
 ## Installation
 
 `comlink` is written in zig and can be installed using the zig build system,
-version 0.12.0.
+version 0.13.0.
 
 ```sh
 git clone https://github.com/rockorager/comlink
