@@ -506,7 +506,7 @@ pub const Client = struct {
     pub fn deinit(self: *Client) void {
         self.should_close = true;
         if (self.config.tls) {
-            _ = self.client.writeEnd(self.stream, "PING zirc\r\n", true) catch |err| {
+            _ = self.client.writeEnd(self.stream, "PING comlink\r\n", true) catch |err| {
                 log.err("couldn't close tls conn: {}", .{err});
             };
         }
@@ -605,7 +605,7 @@ pub const Client = struct {
                     }
                     if (now - last_msg > keep_alive) {
                         // send a ping
-                        try self.app.queueWrite(self, "PING zirc\r\n");
+                        try self.app.queueWrite(self, "PING comlink\r\n");
                         continue;
                     }
                     continue;
