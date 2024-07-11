@@ -18,6 +18,10 @@
             .url = "git+https://codeberg.org/dude_the_builder/zg?ref=master#689ab6b83d08c02724b99d199d650ff731250998",
             .hash = "12200d1ce5f9733a9437415d85665ad5fbc85a4d27689fd337fecad8014acffe3aa5",
         },
+        .tls = .{
+            .url = "git+https://github.com/ianic/tls.zig#36ae29b0e51fae564222767ffd5d7f60f9a8dd0b",
+            .hash = "1220319a215975c0ac3d251b334bfb915765adf21f7e64904028b1ec5ebcf00ea3cd",
+        },
     },
     .paths = .{""},
 }

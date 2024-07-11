@@ -1,7 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const testing = std.testing;
-const tls = std.crypto.tls;
+const tls = @import("tls");
 
 const vaxis = @import("vaxis");
 const zeit = @import("zeit");
@@ -472,7 +472,7 @@ pub const Client = struct {
 
     alloc: std.mem.Allocator,
     app: *App,
-    client: tls.Client,
+    client: tls.Connection(std.net.Stream),
     stream: std.net.Stream,
     config: Config,
 
@@ -506,7 +506,10 @@ pub const Client = struct {
     pub fn deinit(self: *Client) void {
         self.should_close = true;
         if (self.config.tls) {
-            _ = self.client.writeEnd(self.stream, "PING comlink\r\n", true) catch |err| {
+            _ = self.client.write("PING comlink\r\n") catch |err| {
+                log.err("couldn't close tls conn: {}", .{err});
+            };
+            self.client.close() catch |err| {
                 log.err("couldn't close tls conn: {}", .{err});
             };
         }
@@ -550,7 +553,7 @@ pub const Client = struct {
 
     pub fn read(self: *Client, buf: []u8) !usize {
         switch (self.config.tls) {
-            true => return self.client.read(self.stream, buf),
+            true => return self.client.read(buf),
             false => return self.stream.read(buf),
         }
     }
@@ -652,7 +655,7 @@ pub const Client = struct {
     pub fn write(self: *Client, buf: []const u8) !void {
         log.debug("[->{s}] {s}", .{ self.config.name orelse self.config.server, buf[0 .. buf.len - 2] });
         switch (self.config.tls) {
-            true => try self.client.writeAll(self.stream, buf),
+            true => try self.client.writeAll(buf),
             false => try self.stream.writeAll(buf),
         }
     }
@@ -661,7 +664,10 @@ pub const Client = struct {
         switch (self.config.tls) {
             true => {
                 self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, 6697);
-                self.client = try tls.Client.init(self.stream, self.app.bundle, self.config.server);
+                self.client = try tls.client(self.stream, .{
+                    .host = self.config.server,
+                    .root_ca = self.app.bundle,
+                });
             },
             false => {
                 self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, 6667);

@@ -10,6 +10,11 @@ pub fn build(b: *std.Build) void {
         .lang = .lua54,
     });
 
+    const tls_dep = b.dependency("tls", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const vaxis_dep = b.dependency("vaxis", .{
         .target = target,
         .optimize = optimize,
@@ -27,6 +32,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    exe.root_module.addImport("tls", tls_dep.module("tls"));
     exe.root_module.addImport("ziglua", ziglua_dep.module("ziglua"));
     exe.root_module.addImport("vaxis", vaxis_dep.module("vaxis"));
     exe.root_module.addImport("zeit", zeit_dep.module("zeit"));
