@@ -166,10 +166,6 @@ pub fn init(alloc: std.mem.Allocator) !App {
 pub fn deinit(self: *App) void {
     if (self.deinited) return;
     self.deinited = true;
-    // close vaxis
-    {
-        self.vx.deinit(self.alloc, self.tty.anyWriter());
-    }
 
     // clean up clients
     {
@@ -184,12 +180,20 @@ pub fn deinit(self: *App) void {
     self.lua.deinit();
     self.bundle.deinit(self.alloc);
     // drain the queue
-    while (self.loop.?.queue.tryPop()) |event| {
-        switch (event) {
-            .message => |msg| msg.deinit(self.alloc),
-            else => {},
+    if (self.loop) |*loop| {
+        while (loop.queue.tryPop()) |event| {
+            switch (event) {
+                .message => |msg| msg.deinit(self.alloc),
+                else => {},
+            }
         }
+        loop.stop();
     }
+    // close vaxis
+    {
+        self.vx.deinit(self.alloc, self.tty.anyWriter());
+    }
+    self.tty.deinit();
 
     self.content_segments.deinit();
     if (self.completer) |*completer| completer.deinit();
