@@ -166,6 +166,10 @@ pub fn init(alloc: std.mem.Allocator) !App {
 pub fn deinit(self: *App) void {
     if (self.deinited) return;
     self.deinited = true;
+    // close vaxis
+    {
+        self.vx.deinit(self.alloc, self.tty.anyWriter());
+    }
 
     // clean up clients
     {
@@ -175,11 +179,6 @@ pub fn deinit(self: *App) void {
             self.alloc.destroy(client);
         }
         self.clients.deinit();
-    }
-
-    // close vaxis
-    {
-        self.vx.deinit(self.alloc, self.tty.anyWriter());
     }
 
     self.lua.deinit();
