@@ -514,7 +514,14 @@ pub fn run(self: *App) !void {
                             const user_ptr = try msg.client.getOrCreateUser(nick);
                             if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
                             var channel = try msg.client.getOrCreateChannel(channel_name);
-                            try channel.addMember(user_ptr);
+
+                            const prefix = for (flags) |c| {
+                                if (std.mem.indexOfScalar(u8, msg.client.supports.prefix, c)) |_| {
+                                    break c;
+                                }
+                            } else ' ';
+
+                            try channel.addMember(user_ptr, .{ .prefix = prefix });
                         },
                         .RPL_WHOSPCRPL => {
                             // syntax: <client> <channel> <nick> <flags>
@@ -527,7 +534,14 @@ pub fn run(self: *App) !void {
                             const user_ptr = try msg.client.getOrCreateUser(nick);
                             if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
                             var channel = try msg.client.getOrCreateChannel(channel_name);
-                            try channel.addMember(user_ptr);
+
+                            const prefix = for (flags) |c| {
+                                if (std.mem.indexOfScalar(u8, msg.client.supports.prefix, c)) |_| {
+                                    break c;
+                                }
+                            } else ' ';
+
+                            try channel.addMember(user_ptr, .{ .prefix = prefix });
                         },
                         .RPL_ENDOFWHO => {
                             // syntax: <client> <mask> :End of WHO list
@@ -548,17 +562,23 @@ pub fn run(self: *App) !void {
                             var channel = try msg.client.getOrCreateChannel(channel_name);
                             var name_iter = std.mem.splitScalar(u8, names, ' ');
                             while (name_iter.next()) |name| {
-                                const has_prefix = for (msg.client.supports.prefix) |ch| {
-                                    if (name[0] == ch) break true;
-                                } else false;
+                                const nick, const prefix = for (msg.client.supports.prefix) |ch| {
+                                    if (name[0] == ch) {
+                                        break .{ name[1..], name[0] };
+                                    }
+                                } else
+                                    .{ name, ' ' };
 
-                                if (has_prefix) log.debug("HAS PREFIX {s}", .{name});
-                                const user_ptr = if (has_prefix)
-                                    try msg.client.getOrCreateUser(name[1..])
-                                else
-                                    try msg.client.getOrCreateUser(name);
-                                try channel.addMember(user_ptr);
+                                if (prefix != ' ') {
+                                    log.debug("HAS PREFIX {s}", .{name});
+                                }
+
+                                const user_ptr = try msg.client.getOrCreateUser(nick);
+
+                                try channel.addMember(user_ptr, .{ .prefix = prefix, .sort = false });
                             }
+
+                            channel.sortMembers();
                         },
                         .RPL_ENDOFNAMES => {
                             // syntax: <client> <channel> :End of /NAMES list
@@ -648,8 +668,8 @@ pub fn run(self: *App) !void {
                             var channel = try msg.client.getOrCreateChannel(target);
                             const user_ptr = try msg.client.getOrCreateUser(target);
                             const me_ptr = try msg.client.getOrCreateUser(msg.client.config.nick);
-                            try channel.addMember(user_ptr);
-                            try channel.addMember(me_ptr);
+                            try channel.addMember(user_ptr, .{});
+                            try channel.addMember(me_ptr, .{});
                             // we set who_requested so we don't try to request
                             // who on DMs
                             channel.who_requested = true;
@@ -677,7 +697,7 @@ pub fn run(self: *App) !void {
                             if (mem.eql(u8, user.nick, msg.client.config.nick))
                                 try self.requestHistory(msg.client, .after, channel)
                             else
-                                try channel.addMember(user);
+                                try channel.addMember(user, .{});
                         },
                         .MARKREAD => {
                             var iter = msg.paramIterator();
@@ -1194,17 +1214,17 @@ const Completer = struct {
     pub fn findMatches(self: *Completer, chan: *irc.Channel) !void {
         if (self.options.items.len > 0) return;
         const alloc = self.options.allocator;
-        var members = std.ArrayList(*irc.User).init(alloc);
+        var members = std.ArrayList(irc.Channel.Member).init(alloc);
         defer members.deinit();
         for (chan.members.items) |member| {
-            if (std.ascii.startsWithIgnoreCase(member.nick, self.word)) {
+            if (std.ascii.startsWithIgnoreCase(member.user.nick, self.word)) {
                 try members.append(member);
             }
         }
-        std.sort.insertion(*irc.User, members.items, chan, irc.Channel.compareRecentMessages);
+        std.sort.insertion(irc.Channel.Member, members.items, chan, irc.Channel.compareRecentMessages);
         self.options = try std.ArrayList([]const u8).initCapacity(alloc, members.items.len);
         for (members.items) |member| {
-            try self.options.append(member.nick);
+            try self.options.append(member.user.nick);
         }
     }
 
@@ -1367,8 +1387,8 @@ pub fn whox(self: *App, client: *Client, channel: *irc.Channel) !void {
     {
         const other = try client.getOrCreateUser(channel.name);
         const me = try client.getOrCreateUser(client.config.nick);
-        try channel.addMember(other);
-        try channel.addMember(me);
+        try channel.addMember(other, .{});
+        try channel.addMember(me, .{});
         return;
     }
     // Only use WHO if we have WHOX and away-notify. Without
@@ -1615,20 +1635,20 @@ fn draw(self: *App) !void {
                 self.state.members.scroll_offset = @min(self.state.members.scroll_offset, channel.members.items.len -| member_list_win.height);
 
                 var member_row: usize = 0;
-                for (channel.members.items) |member| {
+                for (channel.members.items) |*member| {
                     defer member_row += 1;
                     if (member_row < self.state.members.scroll_offset) continue;
                     var member_seg = [_]vaxis.Segment{
                         .{
-                            .text = " ",
+                            .text = std.mem.asBytes(&member.prefix),
                         },
                         .{
-                            .text = member.nick,
+                            .text = member.user.nick,
                             .style = .{
-                                .fg = if (member.away)
+                                .fg = if (member.user.away)
                                     .{ .index = 8 }
                                 else
-                                    member.color,
+                                    member.user.color,
                             },
                         },
                     };

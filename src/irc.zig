@@ -84,7 +84,7 @@ pub const Channel = struct {
     client: *Client,
     name: []const u8,
     topic: ?[]const u8 = null,
-    members: std.ArrayList(*User),
+    members: std.ArrayList(Member),
     in_flight: struct {
         who: bool = false,
         names: bool = false,
@@ -97,6 +97,22 @@ pub const Channel = struct {
     last_read: i64 = 0,
     has_unread: bool = false,
     has_unread_highlight: bool = false,
+
+    pub const Member = struct {
+        user: *User,
+
+        /// Highest channel membership prefix (or empty space if no prefix)
+        prefix: u8,
+
+        pub fn compare(_: void, lhs: Member, rhs: Member) bool {
+            return if (lhs.prefix != ' ' and rhs.prefix == ' ')
+                true
+            else if (lhs.prefix == ' ' and rhs.prefix != ' ')
+                false
+            else
+                std.ascii.orderIgnoreCase(lhs.user.nick, rhs.user.nick).compare(.lt);
+        }
+    };
 
     pub fn deinit(self: *const Channel, alloc: std.mem.Allocator) void {
         alloc.free(self.name);
@@ -114,7 +130,7 @@ pub const Channel = struct {
         return std.ascii.orderIgnoreCase(lhs.name, rhs.name).compare(std.math.CompareOperator.lt);
     }
 
-    pub fn compareRecentMessages(self: *Channel, lhs: *User, rhs: *User) bool {
+    pub fn compareRecentMessages(self: *Channel, lhs: Member, rhs: Member) bool {
         var l: i64 = 0;
         var r: i64 = 0;
         var iter = std.mem.reverseIterator(self.messages.items);
@@ -123,10 +139,10 @@ pub const Channel = struct {
                 const bang = std.mem.indexOfScalar(u8, source, '!') orelse source.len;
                 const nick = source[0..bang];
 
-                if (l == 0 and msg.time != null and std.mem.eql(u8, lhs.nick, nick)) {
+                if (l == 0 and msg.time != null and std.mem.eql(u8, lhs.user.nick, nick)) {
                     log.debug("L!!", .{});
                     l = msg.time.?.instant().unixTimestamp();
-                } else if (r == 0 and msg.time != null and std.mem.eql(u8, rhs.nick, nick))
+                } else if (r == 0 and msg.time != null and std.mem.eql(u8, rhs.user.nick, nick))
                     r = msg.time.?.instant().unixTimestamp();
             }
             if (l > 0 and r > 0) break;
@@ -135,20 +151,35 @@ pub const Channel = struct {
     }
 
     pub fn sortMembers(self: *Channel) void {
-        std.sort.insertion(*User, self.members.items, {}, User.compare);
+        std.sort.insertion(Member, self.members.items, {}, Member.compare);
     }
 
-    pub fn addMember(self: *Channel, user: *User) !void {
-        for (self.members.items) |member| {
-            if (user == member) return;
+    pub fn addMember(self: *Channel, user: *User, args: struct {
+        prefix: ?u8 = null,
+        sort: bool = true,
+    }) !void {
+        if (args.prefix) |p| {
+            log.debug("adding member: nick={s}, prefix={c}", .{user.nick, p});
         }
-        try self.members.append(user);
-        self.sortMembers();
+        for (self.members.items) |*member| {
+            if (user == member.user) {
+                // Update the prefix for an existing member if the prefix is
+                // known
+                if (args.prefix) |p| member.prefix = p;
+                return;
+            }
+        }
+
+        try self.members.append(.{ .user = user, .prefix = args.prefix orelse ' ' });
+
+        if (args.sort) {
+            self.sortMembers();
+        }
     }
 
     pub fn removeMember(self: *Channel, user: *User) void {
         for (self.members.items, 0..) |member, i| {
-            if (user == member) {
+            if (user == member.user) {
                 _ = self.members.orderedRemove(i);
                 return;
             }
@@ -163,10 +194,6 @@ pub const User = struct {
 
     pub fn deinit(self: *const User, alloc: std.mem.Allocator) void {
         alloc.free(self.nick);
-    }
-
-    pub fn compare(_: void, lhs: *User, rhs: *User) bool {
-        return std.ascii.orderIgnoreCase(lhs.nick, rhs.nick).compare(std.math.CompareOperator.lt);
     }
 };
 
@@ -709,7 +736,7 @@ pub const Client = struct {
         }
         const channel: Channel = .{
             .name = try self.alloc.dupe(u8, name),
-            .members = std.ArrayList(*User).init(self.alloc),
+            .members = std.ArrayList(Channel.Member).init(self.alloc),
             .messages = std.ArrayList(Message).init(self.alloc),
             .client = self,
         };
