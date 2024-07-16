@@ -1532,7 +1532,9 @@ fn draw(self: *App) !void {
                     self.loop.?.postEvent(.redraw);
                 }
             }
-            var chan_style: vaxis.Style = if (row == self.state.buffers.selected_idx)
+
+            const is_current = row == self.state.buffers.selected_idx;
+            var chan_style: vaxis.Style = if (is_current)
                 .{
                     .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
                     .reverse = true,
@@ -1590,7 +1592,7 @@ fn draw(self: *App) !void {
                         .style = chan_style,
                     },
                 );
-            if (row == self.state.buffers.selected_idx) {
+            if (is_current) {
                 var write_buf: [128]u8 = undefined;
                 if (channel.has_unread) {
                     channel.has_unread = false;
@@ -1617,6 +1619,17 @@ fn draw(self: *App) !void {
                     },
                 };
                 _ = try topic_win.print(&topic_seg, .{ .wrap = .none });
+
+                {
+                    var buf: [64]u8 = undefined;
+                    const title = std.fmt.bufPrint(&buf, "{s} - comlink", .{channel.name}) catch title: {
+                        // If the channel name is too long to fit in our buffer just truncate
+                        const len = @min(buf.len, channel.name.len);
+                        @memcpy(buf[0..len], channel.name[0..len]);
+                        break :title buf[0..len];
+                    };
+                    try self.vx.setTitle(self.tty.anyWriter(), title);
+                }
 
                 if (hasMouse(member_list_win, self.state.mouse)) |mouse| {
                     switch (mouse.button) {
