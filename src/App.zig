@@ -1686,6 +1686,7 @@ fn draw(self: *App) !void {
                 });
 
                 var prev_sender: ?[]const u8 = null;
+                var prev_time: ?zeit.Time = null;
                 var i: usize = channel.messages.items.len -| self.state.messages.scroll_offset;
                 var y_off: usize = message_list_win.height -| 1;
                 while (i > 0) {
@@ -1701,13 +1702,25 @@ fn draw(self: *App) !void {
                         break :blk src[0..l];
                     };
                     {
-                        // If this sender is not the same as the previous printed
-                        // message, then we'll print the previous sender and keep
-                        // going
+                        // If this sender is not the same as the previous
+                        // printed message OR if the previous message was sent
+                        // more than some interval ago, then we'll print the
+                        // previous sender and keep going
                         defer prev_sender = sender;
-                        if (prev_sender != null and
-                            !mem.eql(u8, sender, prev_sender.?) and
-                            y_off > 0)
+                        defer prev_time = message.time;
+
+                        const time_gap: bool = time_gap: {
+                            // We are iterating through the messages in reverse,
+                            // so the timestamp of the "previous" message is
+                            // greater than the timestamp of the current message
+                            const t1 = if (message.time) |t| t.instant().timestamp else break :time_gap false;
+                            const t2 = if (prev_time) |t| t.instant().timestamp else break :time_gap false;
+                            break :time_gap @divTrunc(t2 - t1, std.time.ns_per_min) > 5;
+                        };
+
+                        if (y_off > 0 and
+                            prev_sender != null and
+                            (time_gap or !mem.eql(u8, sender, prev_sender.?)))
                         {
                             y_off -|= 1;
                             const user = try client.getOrCreateUser(prev_sender.?);
