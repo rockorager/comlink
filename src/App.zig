@@ -189,10 +189,7 @@ pub fn deinit(self: *App) void {
         }
         loop.stop();
     }
-    // close vaxis
-    {
-        self.vx.deinit(self.alloc, self.tty.anyWriter());
-    }
+    self.vx.deinit(self.alloc, self.tty.anyWriter());
     self.tty.deinit();
 
     self.content_segments.deinit();
@@ -566,8 +563,7 @@ pub fn run(self: *App) !void {
                                     if (name[0] == ch) {
                                         break .{ name[1..], name[0] };
                                     }
-                                } else
-                                    .{ name, ' ' };
+                                } else .{ name, ' ' };
 
                                 if (prefix != ' ') {
                                     log.debug("HAS PREFIX {s}", .{name});
