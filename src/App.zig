@@ -154,6 +154,13 @@ pub fn init(alloc: std.mem.Allocator) !App {
         },
         .command = .@"next-channel",
     });
+    try app.binds.append(.{
+        .key = .{
+            .codepoint = 'l',
+            .mods = .{ .ctrl = true },
+        },
+        .command = .redraw,
+    });
 
     // Get our system tls certs
     try app.bundle.rescan(alloc);
@@ -299,6 +306,7 @@ pub fn run(self: *App) !void {
                                 .quit => self.should_quit = true,
                                 .@"next-channel" => self.nextChannel(),
                                 .@"prev-channel" => self.prevChannel(),
+                                .redraw => self.vx.queueRefresh(),
                                 else => {},
                             }
                             break;
@@ -1274,6 +1282,7 @@ pub const Command = enum {
     names,
     part,
     close,
+    redraw,
 
     /// if we should append a space when completing
     pub fn appendSpace(self: Command) bool {
@@ -1403,6 +1412,7 @@ pub fn handleCommand(self: *App, buffer: Buffer, cmd: []const u8) !void {
             );
             return self.queueWrite(client, msg);
         },
+        .redraw => self.vx.queueRefresh(),
     }
 }
 
