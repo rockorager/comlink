@@ -786,7 +786,7 @@ pub fn run(self: *App) !void {
                                 if (std.mem.indexOf(u8, content, msg.client.config.nick)) |_| {
                                     var buf: [64]u8 = undefined;
                                     const title_or_err = if (msg.source) |source|
-                                        std.fmt.bufPrint(&buf, "{s} - {s}", .{channel.name, source })
+                                        std.fmt.bufPrint(&buf, "{s} - {s}", .{ channel.name, source })
                                     else
                                         std.fmt.bufPrint(&buf, "{s}", .{channel.name});
                                     const title = title_or_err catch title: {
@@ -1272,6 +1272,8 @@ pub const Command = enum {
     quit,
     who,
     names,
+    part,
+    close,
 
     /// if we should append a space when completing
     pub fn appendSpace(self: Command) bool {
@@ -1280,6 +1282,8 @@ pub const Command = enum {
             .join,
             .me,
             .msg,
+            .part,
+            .close,
             => true,
             else => false,
         };
@@ -1379,6 +1383,22 @@ pub fn handleCommand(self: *App, buffer: Buffer, cmd: []const u8) !void {
                 "WHO {s}\r\n",
                 .{
                     channel.?.name,
+                },
+            );
+            return self.queueWrite(client, msg);
+        },
+        .part, .close => {
+            if (channel == null) return error.InvalidCommand;
+            var it = std.mem.tokenizeScalar(u8, cmd, ' ');
+
+            // Skip command
+            _ = it.next();
+
+            const msg = try std.fmt.bufPrint(
+                &buf,
+                "PART {s}\r\n",
+                .{
+                    it.next() orelse channel.?.name,
                 },
             );
             return self.queueWrite(client, msg);
