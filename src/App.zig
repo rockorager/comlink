@@ -784,7 +784,17 @@ pub fn run(self: *App) !void {
                                 const content = iter.next() orelse continue;
                                 var has_highlight = false;
                                 if (std.mem.indexOf(u8, content, msg.client.config.nick)) |_| {
-                                    try self.vx.notify(writer, "comlink", content);
+                                    var buf: [64]u8 = undefined;
+                                    const title_or_err = if (msg.source) |source|
+                                        std.fmt.bufPrint(&buf, "{s} - {s}", .{channel.name, source })
+                                    else
+                                        std.fmt.bufPrint(&buf, "{s}", .{channel.name});
+                                    const title = title_or_err catch title: {
+                                        const len = @min(buf.len, channel.name.len);
+                                        @memcpy(buf[0..len], channel.name[0..len]);
+                                        break :title buf[0..len];
+                                    };
+                                    try self.vx.notify(writer, title, content);
                                     has_highlight = true;
                                 }
                                 const time = msg.time orelse continue;
