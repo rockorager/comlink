@@ -159,7 +159,7 @@ pub const Channel = struct {
         sort: bool = true,
     }) !void {
         if (args.prefix) |p| {
-            log.debug("adding member: nick={s}, prefix={c}", .{user.nick, p});
+            log.debug("adding member: nick={s}, prefix={c}", .{ user.nick, p });
         }
         for (self.members.items) |*member| {
             if (user == member.user) {
@@ -622,7 +622,7 @@ pub const Client = struct {
             var last_msg: i64 = std.time.milliTimestamp();
             var start: usize = 0;
 
-            while (true) {
+            while (!self.should_close) {
                 const n = self.read(buf[start..]) catch |err| {
                     if (err != error.WouldBlock) break;
                     const now = std.time.milliTimestamp();
