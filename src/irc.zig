@@ -1,12 +1,12 @@
 const std = @import("std");
-const assert = std.debug.assert;
-const testing = std.testing;
+const comlink = @import("comlink.zig");
 const tls = @import("tls");
-
 const vaxis = @import("vaxis");
 const zeit = @import("zeit");
 
-const comlink = @import("comlink.zig");
+const testing = std.testing;
+
+const assert = std.debug.assert;
 
 const log = std.log.scoped(.irc);
 

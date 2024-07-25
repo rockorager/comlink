@@ -1,7 +1,7 @@
 const std = @import("std");
-const ziglua = @import("ziglua");
-const vaxis = @import("vaxis");
 const comlink = @import("comlink.zig");
+const vaxis = @import("vaxis");
+const ziglua = @import("ziglua");
 
 const irc = comlink.irc;
 const App = comlink.App;
