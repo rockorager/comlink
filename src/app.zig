@@ -66,13 +66,6 @@ pub const App = struct {
     /// The tty we are talking to
     tty: vaxis.Tty,
 
-    loop: ?vaxis.Loop(Event) = null,
-    /// our queue of writes
-    write_queue: ?vaxis.Queue(union(enum) {
-        write: comlink.WriteRequest,
-        join,
-    }, 128) = .{},
-
     state: State = .{},
 
     content_segments: std.ArrayList(vaxis.Segment),
@@ -153,18 +146,7 @@ pub const App = struct {
             self.clients.deinit();
         }
 
-        self.lua.deinit();
         self.bundle.deinit(self.alloc);
-        // drain the queue
-        if (self.loop) |*loop| {
-            while (loop.queue.tryPop()) |event| {
-                switch (event) {
-                    .message => |msg| msg.deinit(self.alloc),
-                    else => {},
-                }
-            }
-            loop.stop();
-        }
         self.vx.deinit(self.alloc, self.tty.anyWriter());
         self.tty.deinit();
 
@@ -176,83 +158,46 @@ pub const App = struct {
         self.env.deinit();
     }
 
-    /// push a write request into the queue. The request should include the trailing
-    /// '\r\n'. queueWrite will dupe the message and free after processing.
-    pub fn queueWrite(self: *App, client: *irc.Client, msg: []const u8) !void {
-        if (self.write_queue) |*queue| {
-            queue.push(.{ .write = .{
-                .client = client,
-                .msg = try self.alloc.dupe(u8, msg),
-            } });
-        }
-    }
-
-    /// this loop is run in a separate thread and handles writes to all clients.
-    /// Message content is deallocated when the write request is completed
-    fn writeLoop(self: *App) !void {
-        log.debug("starting write thread", .{});
-        while (true) {
-            const req = if (self.write_queue) |*queue| queue.pop() else return;
-            switch (req) {
-                .write => |w| {
-                    try w.client.write(w.msg);
-                    self.alloc.free(w.msg);
-                },
-                .join => {
-                    if (self.write_queue) |*queue| {
-                        while (queue.tryPop()) |r| {
-                            switch (r) {
-                                .write => |w| self.alloc.free(w.msg),
-                                else => {},
-                            }
-                        }
-                        self.write_queue = null;
-                        return;
-                    }
-                },
-            }
-        }
-    }
-
-    fn startLoop(self: *App) !void {
+    pub fn run(self: *App) !void {
         const writer = self.tty.anyWriter();
-        self.loop = .{
-            .vaxis = &self.vx,
-            .tty = &self.tty,
-        };
-        if (self.loop) |*loop| {
-            try loop.init();
-            try loop.start();
-        } else unreachable;
+
+        var loop: comlink.EventLoop = .{ .vaxis = &self.vx, .tty = &self.tty };
+        try loop.init();
+        try loop.start();
+        defer {
+            // Need to deinit lua before our loop goes out of scope
+            self.lua.deinit();
+            while (loop.queue.tryPop()) |event| {
+                switch (event) {
+                    .message => |msg| msg.deinit(self.alloc),
+                    else => {},
+                }
+            }
+            loop.stop();
+        }
 
         try self.vx.enterAltScreen(writer);
         try self.vx.queryTerminal(writer, 1 * std.time.ns_per_s);
         try self.vx.setMouseMode(writer, true);
         try self.vx.setBracketedPaste(writer, true);
-    }
-
-    pub fn run(self: *App) !void {
-        try self.startLoop();
-        const writer = self.tty.anyWriter();
 
         // start our write thread
-        const write_thread = try std.Thread.spawn(.{}, App.writeLoop, .{self});
+        var write_queue: comlink.WriteQueue = .{};
+        const write_thread = try std.Thread.spawn(.{}, writeLoop, .{&write_queue});
         defer {
-            if (self.write_queue) |*queue| {
-                queue.push(.join);
-                write_thread.join();
-            }
+            write_queue.push(.join);
+            write_thread.join();
         }
 
         // initialize lua state
-        try lua.init(self);
+        try lua.init(self, &loop);
 
         var input = TextInput.init(self.alloc, &self.vx.unicode);
         defer input.deinit();
 
         loop: while (!self.should_quit) {
-            self.loop.?.pollEvent();
-            while (self.loop.?.tryEvent()) |event| {
+            loop.pollEvent();
+            while (loop.tryEvent()) |event| {
                 switch (event) {
                     .redraw => {},
                     .key_press => |key| {
@@ -323,7 +268,7 @@ pub const App = struct {
                                                 content,
                                             },
                                         );
-                                        try self.queueWrite(channel.client, msg);
+                                        try channel.client.queueWrite(msg);
                                     },
                                     .client => log.err("can't send message to client", .{}),
                                 }
@@ -359,8 +304,8 @@ pub const App = struct {
                     .winsize => |ws| try self.vx.resize(self.alloc, writer, ws),
                     .connect => |cfg| {
                         const client = try self.alloc.create(irc.Client);
-                        client.* = try irc.Client.init(self.alloc, self, cfg);
-                        const client_read_thread = try std.Thread.spawn(.{}, irc.Client.readLoop, .{client});
+                        client.* = try irc.Client.init(self.alloc, self, &write_queue, cfg);
+                        const client_read_thread = try std.Thread.spawn(.{}, irc.Client.readLoop, .{ client, &loop });
                         client_read_thread.detach();
                         try self.clients.append(client);
                     },
@@ -382,7 +327,7 @@ pub const App = struct {
                                     if (mem.eql(u8, ack_or_nak, "ACK")) {
                                         msg.client.ack(cap);
                                         if (mem.eql(u8, cap, "sasl"))
-                                            try self.queueWrite(msg.client, "AUTHENTICATE PLAIN\r\n");
+                                            try msg.client.queueWrite("AUTHENTICATE PLAIN\r\n");
                                     } else if (mem.eql(u8, ack_or_nak, "NAK")) {
                                         log.debug("CAP not supported {s}", .{cap});
                                     }
@@ -412,16 +357,16 @@ pub const App = struct {
                                         "AUTHENTICATE {s}\r\n",
                                         .{encoded},
                                     );
-                                    try self.queueWrite(msg.client, auth);
+                                    try msg.client.queueWrite(auth);
                                     if (config.network_id) |id| {
                                         const bind = try std.fmt.bufPrint(
                                             &buf,
                                             "BOUNCER BIND {s}\r\n",
                                             .{id},
                                         );
-                                        try self.queueWrite(msg.client, bind);
+                                        try msg.client.queueWrite(bind);
                                     }
-                                    try self.queueWrite(msg.client, "CAP END\r\n");
+                                    try msg.client.queueWrite("CAP END\r\n");
                                 }
                             },
                             .RPL_WELCOME => {
@@ -439,7 +384,7 @@ pub const App = struct {
                                     "CHATHISTORY TARGETS timestamp={s} timestamp={s} 50\r\n",
                                     .{ now_fmt, past_fmt },
                                 );
-                                try self.queueWrite(msg.client, targets);
+                                try msg.client.queueWrite(targets);
                             },
                             .RPL_YOURHOST => {},
                             .RPL_CREATED => {},
@@ -596,7 +541,7 @@ pub const App = struct {
                                         var cfg = msg.client.config;
                                         cfg.network_id = try self.alloc.dupe(u8, id);
                                         cfg.name = name;
-                                        self.loop.?.postEvent(.{ .connect = cfg });
+                                        loop.postEvent(.{ .connect = cfg });
                                     }
                                 }
                             },
@@ -656,8 +601,8 @@ pub const App = struct {
                                     "MARKREAD {s}\r\n",
                                     .{channel.name},
                                 );
-                                try self.queueWrite(msg.client, mark_read);
-                                try self.requestHistory(msg.client, .after, channel);
+                                try msg.client.queueWrite(mark_read);
+                                try msg.client.requestHistory(.after, channel);
                             },
                             .JOIN => {
                                 // get the user
@@ -672,7 +617,7 @@ pub const App = struct {
 
                                 // If it's our nick, we request chat history
                                 if (mem.eql(u8, user.nick, msg.client.config.nick))
-                                    try self.requestHistory(msg.client, .after, channel)
+                                    try msg.client.requestHistory(.after, channel)
                                 else
                                     try channel.addMember(user, .{});
                             },
@@ -832,7 +777,7 @@ pub const App = struct {
                     "{s}\r\n",
                     .{cmd[start + 1 ..]},
                 );
-                return self.queueWrite(client, msg);
+                return client.queueWrite(msg);
             },
             .join => {
                 const start = std.mem.indexOfScalar(u8, cmd, ' ') orelse return error.InvalidCommand;
@@ -843,7 +788,7 @@ pub const App = struct {
                         cmd[start + 1 ..],
                     },
                 );
-                return self.queueWrite(client, msg);
+                return client.queueWrite(msg);
             },
             .me => {
                 if (channel == null) return error.InvalidCommand;
@@ -855,7 +800,7 @@ pub const App = struct {
                         cmd[4..],
                     },
                 );
-                return self.queueWrite(client, msg);
+                return client.queueWrite(msg);
             },
             .msg => {
                 //syntax: /msg <nick> <msg>
@@ -869,12 +814,12 @@ pub const App = struct {
                         cmd[e + 1 ..],
                     },
                 );
-                return self.queueWrite(client, msg);
+                return client.queueWrite(msg);
             },
             .names => {
                 if (channel == null) return error.InvalidCommand;
                 const msg = try std.fmt.bufPrint(&buf, "NAMES {s}\r\n", .{channel.?.name});
-                return self.queueWrite(client, msg);
+                return client.queueWrite(msg);
             },
             .@"next-channel" => self.nextChannel(),
             .@"prev-channel" => self.prevChannel(),
@@ -888,7 +833,7 @@ pub const App = struct {
                         channel.?.name,
                     },
                 );
-                return self.queueWrite(client, msg);
+                return client.queueWrite(msg);
             },
             .part, .close => {
                 if (channel == null) return error.InvalidCommand;
@@ -904,47 +849,9 @@ pub const App = struct {
                         it.next() orelse channel.?.name,
                     },
                 );
-                return self.queueWrite(client, msg);
+                return client.queueWrite(msg);
             },
             .redraw => self.vx.queueRefresh(),
-        }
-    }
-
-    pub fn whox(self: *App, client: *irc.Client, channel: *irc.Channel) !void {
-        channel.who_requested = true;
-        if (channel.name.len > 0 and
-            channel.name[0] != '#')
-        {
-            const other = try client.getOrCreateUser(channel.name);
-            const me = try client.getOrCreateUser(client.config.nick);
-            try channel.addMember(other, .{});
-            try channel.addMember(me, .{});
-            return;
-        }
-        // Only use WHO if we have WHOX and away-notify. Without
-        // WHOX, we can get rate limited on eg. libera. Without
-        // away-notify, our list will become stale
-        if (client.supports.whox and
-            client.caps.@"away-notify" and
-            !channel.in_flight.who)
-        {
-            var write_buf: [64]u8 = undefined;
-            channel.in_flight.who = true;
-            const who = try std.fmt.bufPrint(
-                &write_buf,
-                "WHO {s} %cnf\r\n",
-                .{channel.name},
-            );
-            try self.queueWrite(client, who);
-        } else {
-            var write_buf: [64]u8 = undefined;
-            channel.in_flight.names = true;
-            const names = try std.fmt.bufPrint(
-                &write_buf,
-                "NAMES {s}\r\n",
-                .{channel.name},
-            );
-            try self.queueWrite(client, names);
         }
     }
 
@@ -1059,7 +966,6 @@ pub const App = struct {
                 if (channel_win.hasMouse(self.state.mouse)) |mouse| {
                     if (mouse.type == .press and mouse.button == .left) {
                         self.state.buffers.selected_idx = row;
-                        self.loop.?.postEvent(.redraw);
                     }
                 }
 
@@ -1139,10 +1045,10 @@ pub const App = struct {
                                     tag.value,
                                 },
                             );
-                            try self.queueWrite(client, mark_read);
+                            try client.queueWrite(mark_read);
                         }
                     }
-                    if (!channel.who_requested) try self.whox(client, channel);
+                    if (!channel.who_requested) try client.whox(channel);
                     var topic_seg = [_]vaxis.Segment{
                         .{
                             .text = channel.topic orelse "",
@@ -1424,7 +1330,7 @@ pub const App = struct {
 
                         // if we are on the oldest message, request more history
                         if (i == 0 and !channel.at_oldest) {
-                            try self.requestHistory(client, .before, channel);
+                            try client.requestHistory(.before, channel);
                         }
                     }
                     {
@@ -1569,59 +1475,6 @@ pub const App = struct {
         try buffered.flush();
     }
 
-    /// fetch the history for the provided channel.
-    fn requestHistory(self: *App, client: *irc.Client, cmd: irc.ChatHistoryCommand, channel: *irc.Channel) !void {
-        if (channel.history_requested) return;
-
-        channel.history_requested = true;
-
-        var buf: [128]u8 = undefined;
-        if (channel.messages.items.len == 0) {
-            const hist = try std.fmt.bufPrint(
-                &buf,
-                "CHATHISTORY LATEST {s} * 50\r\n",
-                .{channel.name},
-            );
-            channel.history_requested = true;
-            try self.queueWrite(client, hist);
-            return;
-        }
-
-        switch (cmd) {
-            .before => {
-                assert(channel.messages.items.len > 0);
-                const first = channel.messages.items[0];
-                var tag_iter = first.tagIterator();
-                const time = while (tag_iter.next()) |tag| {
-                    if (mem.eql(u8, tag.key, "time")) break tag.value;
-                } else return error.NoTimeTag;
-                const hist = try std.fmt.bufPrint(
-                    &buf,
-                    "CHATHISTORY BEFORE {s} timestamp={s} 50\r\n",
-                    .{ channel.name, time },
-                );
-                channel.history_requested = true;
-                try self.queueWrite(client, hist);
-            },
-            .after => {
-                assert(channel.messages.items.len > 0);
-                const last = channel.messages.getLast();
-                var tag_iter = last.tagIterator();
-                const time = while (tag_iter.next()) |tag| {
-                    if (mem.eql(u8, tag.key, "time")) break tag.value;
-                } else return error.NoTimeTag;
-                const hist = try std.fmt.bufPrint(
-                    &buf,
-                    // we request 500 because we have no
-                    // idea how long we've been offline
-                    "CHATHISTORY AFTER {s} timestamp={s} 500\r\n",
-                    .{ channel.name, time },
-                );
-                channel.history_requested = true;
-                try self.queueWrite(client, hist);
-            },
-        }
-    }
     /// generate vaxis.Segments for the message content
     fn formatMessageContent(self: *App, msg: irc.Message) !void {
         const ColorState = enum {
@@ -1943,4 +1796,28 @@ fn hasMouse(win: vaxis.Window, mouse: ?vaxis.Mouse) ?vaxis.Mouse {
         event.col < (win.x_off + win.width) and
         event.row >= win.y_off and
         event.row < (win.y_off + win.height)) return event else return null;
+}
+
+/// this loop is run in a separate thread and handles writes to all clients.
+/// Message content is deallocated when the write request is completed
+fn writeLoop(queue: *comlink.WriteQueue) !void {
+    log.debug("starting write thread", .{});
+    while (true) {
+        const req = queue.pop();
+        switch (req) {
+            .write => |w| {
+                try w.client.write(w.msg);
+                w.allocator.free(w.msg);
+            },
+            .join => {
+                while (queue.tryPop()) |r| {
+                    switch (r) {
+                        .write => |w| w.allocator.free(w.msg),
+                        else => {},
+                    }
+                }
+                return;
+            },
+        }
+    }
 }

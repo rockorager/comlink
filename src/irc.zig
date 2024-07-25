@@ -519,8 +519,9 @@ pub const Client = struct {
     supports: ISupport = .{},
 
     batches: std.StringHashMap(*Channel),
+    write_queue: *comlink.WriteQueue,
 
-    pub fn init(alloc: std.mem.Allocator, app: *comlink.App, cfg: Config) !Client {
+    pub fn init(alloc: std.mem.Allocator, app: *comlink.App, wq: *comlink.WriteQueue, cfg: Config) !Client {
         return .{
             .alloc = alloc,
             .app = app,
@@ -530,6 +531,7 @@ pub const Client = struct {
             .channels = std.ArrayList(Channel).init(alloc),
             .users = std.StringHashMap(*User).init(alloc),
             .batches = std.StringHashMap(*Channel).init(alloc),
+            .write_queue = wq,
         };
     }
 
@@ -588,7 +590,7 @@ pub const Client = struct {
         }
     }
 
-    pub fn readLoop(self: *Client) !void {
+    pub fn readLoop(self: *Client, loop: *comlink.EventLoop) !void {
         var delay: u64 = 1 * std.time.ns_per_s;
 
         while (!self.should_close) {
@@ -633,12 +635,12 @@ pub const Client = struct {
                         // reconnect??
                         self.status = .disconnected;
                         self.stream.close();
-                        self.app.loop.?.postEvent(.redraw);
+                        loop.postEvent(.redraw);
                         break;
                     }
                     if (now - last_msg > keep_alive) {
                         // send a ping
-                        try self.app.queueWrite(self, "PING comlink\r\n");
+                        try self.queueWrite("PING comlink\r\n");
                         continue;
                     }
                     continue;
@@ -664,7 +666,7 @@ pub const Client = struct {
                             .{ time.hour, time.minute },
                         );
                     }
-                    self.app.loop.?.postEvent(.{ .message = msg });
+                    loop.postEvent(.{ .message = msg });
                 }
                 if (i != n) {
                     // we had a part of a line read. Copy it to the beginning of the
@@ -680,6 +682,16 @@ pub const Client = struct {
                 );
             }
         }
+    }
+
+    /// push a write request into the queue. The request should include the trailing
+    /// '\r\n'. queueWrite will dupe the message and free after processing.
+    pub fn queueWrite(self: *Client, msg: []const u8) !void {
+        self.write_queue.push(.{ .write = .{
+            .client = self,
+            .msg = try self.alloc.dupe(u8, msg),
+            .allocator = self.alloc,
+        } });
     }
 
     pub fn write(self: *Client, buf: []const u8) !void {
@@ -706,7 +718,7 @@ pub const Client = struct {
 
         var buf: [4096]u8 = undefined;
 
-        try self.app.queueWrite(self, "CAP LS 302\r\n");
+        try self.queueWrite("CAP LS 302\r\n");
 
         const cap_names = std.meta.fieldNames(Capabilities);
         for (cap_names) |cap| {
@@ -715,7 +727,7 @@ pub const Client = struct {
                 "CAP REQ :{s}\r\n",
                 .{cap},
             );
-            try self.app.queueWrite(self, cap_req);
+            try self.queueWrite(cap_req);
         }
 
         const nick = try std.fmt.bufPrint(
@@ -723,14 +735,14 @@ pub const Client = struct {
             "NICK {s}\r\n",
             .{self.config.nick},
         );
-        try self.app.queueWrite(self, nick);
+        try self.queueWrite(nick);
 
         const user = try std.fmt.bufPrint(
             &buf,
             "USER {s} 0 * {s}\r\n",
             .{ self.config.user, self.config.real_name },
         );
-        try self.app.queueWrite(self, user);
+        try self.queueWrite(user);
     }
 
     pub fn getOrCreateChannel(self: *Client, name: []const u8) !*Channel {
@@ -768,6 +780,98 @@ pub const Client = struct {
             try self.users.put(user.nick, user);
             return user;
         };
+    }
+
+    pub fn whox(self: *Client, channel: *Channel) !void {
+        channel.who_requested = true;
+        if (channel.name.len > 0 and
+            channel.name[0] != '#')
+        {
+            const other = try self.getOrCreateUser(channel.name);
+            const me = try self.getOrCreateUser(self.config.nick);
+            try channel.addMember(other, .{});
+            try channel.addMember(me, .{});
+            return;
+        }
+        // Only use WHO if we have WHOX and away-notify. Without
+        // WHOX, we can get rate limited on eg. libera. Without
+        // away-notify, our list will become stale
+        if (self.supports.whox and
+            self.caps.@"away-notify" and
+            !channel.in_flight.who)
+        {
+            var write_buf: [64]u8 = undefined;
+            channel.in_flight.who = true;
+            const who = try std.fmt.bufPrint(
+                &write_buf,
+                "WHO {s} %cnf\r\n",
+                .{channel.name},
+            );
+            try self.queueWrite(who);
+        } else {
+            var write_buf: [64]u8 = undefined;
+            channel.in_flight.names = true;
+            const names = try std.fmt.bufPrint(
+                &write_buf,
+                "NAMES {s}\r\n",
+                .{channel.name},
+            );
+            try self.queueWrite(names);
+        }
+    }
+
+    /// fetch the history for the provided channel.
+    pub fn requestHistory(self: *Client, cmd: ChatHistoryCommand, channel: *Channel) !void {
+        if (channel.history_requested) return;
+
+        channel.history_requested = true;
+
+        var buf: [128]u8 = undefined;
+        if (channel.messages.items.len == 0) {
+            const hist = try std.fmt.bufPrint(
+                &buf,
+                "CHATHISTORY LATEST {s} * 50\r\n",
+                .{channel.name},
+            );
+            channel.history_requested = true;
+            try self.queueWrite(hist);
+            return;
+        }
+
+        switch (cmd) {
+            .before => {
+                assert(channel.messages.items.len > 0);
+                const first = channel.messages.items[0];
+                var tag_iter = first.tagIterator();
+                const time = while (tag_iter.next()) |tag| {
+                    if (std.mem.eql(u8, tag.key, "time")) break tag.value;
+                } else return error.NoTimeTag;
+                const hist = try std.fmt.bufPrint(
+                    &buf,
+                    "CHATHISTORY BEFORE {s} timestamp={s} 50\r\n",
+                    .{ channel.name, time },
+                );
+                channel.history_requested = true;
+                try self.queueWrite(hist);
+            },
+            .after => {
+                assert(channel.messages.items.len > 0);
+                const last = channel.messages.getLast();
+                var tag_iter = last.tagIterator();
+                const time = while (tag_iter.next()) |tag| {
+                    if (std.mem.eql(u8, tag.key, "time")) break tag.value;
+                } else return error.NoTimeTag;
+                const hist = try std.fmt.bufPrint(
+                    &buf,
+                    // we request 500 because we have no
+                    // idea how long we've been offline
+                    "CHATHISTORY AFTER {s} timestamp={s} 500\r\n",
+                    .{ channel.name, time },
+                );
+                channel.history_requested = true;
+                try self.queueWrite(hist);
+            },
+        }
     }
 };
 

@@ -1,11 +1,14 @@
-const vaxis = @import("vaxis");
+const std = @import("std");
 const app = @import("app.zig");
 const completer = @import("completer.zig");
+const vaxis = @import("vaxis");
 pub const irc = @import("irc.zig");
 pub const lua = @import("lua.zig");
 
 pub const App = app.App;
 pub const Completer = completer.Completer;
+pub const EventLoop = vaxis.Loop(Event);
+pub const WriteQueue = vaxis.Queue(WriteEvent, 64);
 
 pub const Bind = struct {
     key: vaxis.Key,
@@ -55,8 +58,12 @@ pub const Event = union(enum) {
     paste_end,
 };
 
-/// A message to queue to our write thread
-pub const WriteRequest = struct {
-    client: *irc.Client,
-    msg: []const u8,
+/// An event our write thread will handle
+pub const WriteEvent = union(enum) {
+    write: struct {
+        client: *irc.Client,
+        msg: []const u8,
+        allocator: std.mem.Allocator,
+    },
+    join,
 };

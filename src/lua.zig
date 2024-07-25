@@ -6,6 +6,7 @@ const ziglua = @import("ziglua");
 const irc = comlink.irc;
 const App = comlink.App;
 const Client = irc.Client;
+const EventLoop = comlink.EventLoop;
 const Lua = ziglua.Lua;
 
 const assert = std.debug.assert;
@@ -16,7 +17,10 @@ const registry_index = ziglua.registry_index;
 /// global key for the app userdata pointer in the registry
 const app_key = "comlink.app";
 
-pub fn init(app: *App) !void {
+/// global key for the loop userdata pointer
+const loop_key = "comlink.loop";
+
+pub fn init(app: *App, loop: *comlink.EventLoop) !void {
     var lua = app.lua;
     // load standard libraries
     lua.openLibs();
@@ -32,6 +36,9 @@ pub fn init(app: *App) !void {
     // keep a reference to our app in the lua state
     lua.pushLightUserdata(app); // [userdata]
     lua.setField(registry_index, app_key); // []
+    // keep a reference to our loop in the lua state
+    lua.pushLightUserdata(loop); // [userdata]
+    lua.setField(registry_index, loop_key); // []
 
     // load config
     const home = app.env.get("HOME") orelse return error.EnvironmentVariableNotFound;
@@ -105,12 +112,8 @@ fn connect(lua: *Lua) i32 {
         .tls = tls,
     };
 
-    const app = getApp(lua);
-    if (app.loop) |*loop| {
-        loop.postEvent(.{ .connect = cfg });
-    } else {
-        lua.raiseErrorStr("no event loop", .{});
-    }
+    const loop = getLoop(lua);
+    loop.postEvent(.{ .connect = cfg });
     return 0;
 }
 
@@ -193,7 +196,15 @@ fn getApp(lua: *Lua) *App {
     const lua_type = lua.getField(ziglua.registry_index, app_key); // [userdata]
     assert(lua_type == .light_userdata); // set by comlink as a lightuserdata
     const app = lua.toUserdata(App, -1) catch unreachable; // already asserted
-    assert(app.loop != null);
     // as lightuserdata
     return app;
+}
+
+/// retrieves the *Loop lightuserdata from the registry index
+fn getLoop(lua: *Lua) *EventLoop {
+    const lua_type = lua.getField(ziglua.registry_index, loop_key); // [userdata]
+    assert(lua_type == .light_userdata); // set by comlink as a lightuserdata
+    const loop = lua.toUserdata(comlink.EventLoop, -1) catch unreachable; // already asserted
+    // as lightuserdata
+    return loop;
 }
