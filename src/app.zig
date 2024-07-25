@@ -55,6 +55,8 @@ pub const App = struct {
     clients: std.ArrayList(*irc.Client),
     /// if we have already called deinit
     deinited: bool = false,
+    /// Process environment
+    env: std.process.EnvMap,
     /// Our lua state
     lua: *Lua,
     /// Local timezone
@@ -83,11 +85,11 @@ pub const App = struct {
     /// initialize vaxis, lua state
     pub fn init(alloc: std.mem.Allocator) !App {
         const vx = try vaxis.init(alloc, .{});
-        var env = try std.process.getEnvMap(alloc);
-        defer env.deinit();
+        const env = try std.process.getEnvMap(alloc);
         var app: App = .{
             .alloc = alloc,
             .clients = std.ArrayList(*irc.Client).init(alloc),
+            .env = env,
             .lua = try Lua.init(&alloc),
             .vx = vx,
             .tty = try vaxis.Tty.init(),
@@ -168,6 +170,7 @@ pub const App = struct {
         self.binds.deinit();
         self.paste_buffer.deinit();
         self.tz.deinit();
+        self.env.deinit();
     }
 
     /// push a write request into the queue. The request should include the trailing
