@@ -2,11 +2,11 @@ const std = @import("std");
 const comlink = @import("comlink.zig");
 const vaxis = @import("vaxis");
 
-const log = std.log.scoped(.comlink);
+const log = std.log.scoped(.main);
 
 pub const panic = vaxis.panic_handler;
 
-pub fn main() !u8 {
+pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
         const deinit_status = gpa.deinit();
@@ -28,16 +28,13 @@ pub fn main() !u8 {
                 const msg = app.lua.toString(-1) catch "";
                 const duped = app.alloc.dupe(u8, msg) catch "";
                 defer app.alloc.free(duped);
-
-                app.deinit();
                 log.err("{s}", .{duped});
-
-                return 101; // 101 is a lua error
+                app.deinit();
+                return err;
             },
             else => return err,
         }
     };
-    return 0;
 }
 
 test {

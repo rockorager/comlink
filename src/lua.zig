@@ -51,11 +51,6 @@ pub fn init(app: *App, loop: *comlink.EventLoop) !void {
     lua.protectedCall(0, ziglua.mult_return, 0) catch return error.LuaError;
 }
 
-pub fn clearLoop(lua: *Lua) void {
-    lua.pushNil();
-    lua.setField(registry_index, loop_key);
-}
-
 /// loads our "comlink" library
 pub fn preloader(lua: *Lua) i32 {
     const fns = [_]ziglua.FnReg{
@@ -165,10 +160,11 @@ fn bind(lua: *Lua) i32 {
             mods.meta = true;
     }
     const command = if (action) |act| std.meta.stringToEnum(comlink.Command, act) orelse {
-        var buf: [256]u8 = undefined;
-        const act_truncated = if (act.len > 200) act[0..200] else act;
-        const msg = std.fmt.bufPrintZ(&buf, "invalid command: '{s}'", .{act_truncated}) catch unreachable;
-        lua.raiseErrorStr(msg, .{});
+        // var buf: [64]u8 = undefined;
+        // const msg = std.fmt.bufPrintZ(&buf, "{s}", .{"not a valid command: %s"}) catch unreachable;
+        // lua.raiseErrorStr(msg, .{action});
+        // TODO: go back to raise error str when the null terminator is fixed
+        lua.raiseError();
     } else null;
 
     if (codepoint) |cp| {

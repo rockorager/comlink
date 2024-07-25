@@ -156,7 +156,6 @@ pub const App = struct {
         self.paste_buffer.deinit();
         self.tz.deinit();
         self.env.deinit();
-        self.lua.deinit();
     }
 
     pub fn run(self: *App) !void {
@@ -166,7 +165,8 @@ pub const App = struct {
         try loop.init();
         try loop.start();
         defer {
-            lua.clearLoop(self.lua);
+            // Need to deinit lua before our loop goes out of scope
+            self.lua.deinit();
             while (loop.queue.tryPop()) |event| {
                 switch (event) {
                     .message => |msg| msg.deinit(self.alloc),
