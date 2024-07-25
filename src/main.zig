@@ -20,7 +20,9 @@ pub fn main() !void {
     }
     const alloc = gpa.allocator();
 
-    local = try zeit.local(alloc);
+    var env = try std.process.getEnvMap(alloc);
+    defer env.deinit();
+    local = try zeit.local(alloc, &env);
     defer local.deinit();
 
     var app = try App.init(alloc);
