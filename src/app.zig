@@ -68,7 +68,10 @@ pub const App = struct {
 
     loop: ?vaxis.Loop(Event) = null,
     /// our queue of writes
-    write_queue: vaxis.Queue(WriteRequest, 128) = .{},
+    write_queue: ?vaxis.Queue(union(enum) {
+        write: comlink.WriteRequest,
+        join,
+    }, 128) = .{},
 
     state: State = .{},
 
@@ -176,10 +179,12 @@ pub const App = struct {
     /// push a write request into the queue. The request should include the trailing
     /// '\r\n'. queueWrite will dupe the message and free after processing.
     pub fn queueWrite(self: *App, client: *irc.Client, msg: []const u8) !void {
-        self.write_queue.push(.{
-            .client = client,
-            .msg = try self.alloc.dupe(u8, msg),
-        });
+        if (self.write_queue) |*queue| {
+            queue.push(.{ .write = .{
+                .client = client,
+                .msg = try self.alloc.dupe(u8, msg),
+            } });
+        }
     }
 
     /// this loop is run in a separate thread and handles writes to all clients.
@@ -187,27 +192,48 @@ pub const App = struct {
     fn writeLoop(self: *App) !void {
         log.debug("starting write thread", .{});
         while (true) {
-            var req = self.write_queue.pop();
-            try req.client.write(req.msg);
-            self.alloc.free(req.msg);
+            const req = if (self.write_queue) |*queue| queue.pop() else return;
+            switch (req) {
+                .write => |w| {
+                    try w.client.write(w.msg);
+                    self.alloc.free(w.msg);
+                },
+                .join => {
+                    if (self.write_queue) |*queue| {
+                        while (queue.tryPop()) |r| {
+                            switch (r) {
+                                .write => |w| self.alloc.free(w.msg),
+                                else => {},
+                            }
+                        }
+                        self.write_queue = null;
+                        return;
+                    }
+                },
+            }
         }
     }
 
-    pub fn run(self: *App) !void {
-        // start vaxis
+    fn startLoop(self: *App) !void {
         const writer = self.tty.anyWriter();
-        {
-            self.loop = .{
-                .vaxis = &self.vx,
-                .tty = &self.tty,
-            };
-            try self.loop.?.init();
-            try self.loop.?.start();
-            try self.vx.enterAltScreen(writer);
-            try self.vx.queryTerminal(writer, 1 * std.time.ns_per_s);
-            try self.vx.setMouseMode(writer, true);
-            try self.vx.setBracketedPaste(writer, true);
-        }
+        self.loop = .{
+            .vaxis = &self.vx,
+            .tty = &self.tty,
+        };
+        if (self.loop) |*loop| {
+            try loop.init();
+            try loop.start();
+        } else unreachable;
+
+        try self.vx.enterAltScreen(writer);
+        try self.vx.queryTerminal(writer, 1 * std.time.ns_per_s);
+        try self.vx.setMouseMode(writer, true);
+        try self.vx.setBracketedPaste(writer, true);
+    }
+
+    pub fn run(self: *App) !void {
+        try self.startLoop();
+        const writer = self.tty.anyWriter();
 
         // start our write thread
         {
