@@ -216,7 +216,7 @@ pub const App = struct {
                             }
                             const text = key.text orelse continue :loop;
                             try self.paste_buffer.appendSlice(text);
-                            continue :loop;
+                            continue;
                         }
                         for (self.binds.items) |bind| {
                             if (key.matches(bind.key.codepoint, bind.key.mods)) {
