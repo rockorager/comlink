@@ -168,6 +168,7 @@ pub const App = struct {
         if (self.completer) |*completer| completer.deinit();
         self.binds.deinit();
         self.paste_buffer.deinit();
+        self.tz.deinit();
     }
 
     /// push a write request into the queue. The request should include the trailing
