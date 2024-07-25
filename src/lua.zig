@@ -38,7 +38,6 @@ fn log(lua: *Lua) i32 {
 
 /// connects to a client. Accepts a table
 fn connect(lua: *Lua) i32 {
-    var app = getApp(lua);
     lua.argCheck(lua.isTable(1), 1, "expected a table");
 
     // [table]
@@ -68,8 +67,6 @@ fn connect(lua: *Lua) i32 {
         .boolean => lua.toBoolean(-1),
         else => lua.raiseErrorStr("expected a boolean for field 'tls'", .{}),
     };
-    // lua.argCheck(lua_type == .boolean, 1, "expected a bool for field 'tls'");
-    // const tls = lua.toBoolean(-1) catch unreachable;
 
     const cfg: Client.Config = .{
         .server = server,
@@ -79,7 +76,13 @@ fn connect(lua: *Lua) i32 {
         .real_name = real_name,
         .tls = tls,
     };
-    app.loop.?.postEvent(.{ .connect = cfg });
+
+    const app = getApp(lua);
+    if (app.loop) |*loop| {
+        loop.postEvent(.{ .connect = cfg });
+    } else {
+        lua.raiseErrorStr("no event loop", .{});
+    }
     return 0;
 }
 
