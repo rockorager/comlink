@@ -85,6 +85,8 @@ pub const App = struct {
     /// initialize vaxis, lua state
     pub fn init(alloc: std.mem.Allocator) !App {
         const vx = try vaxis.init(alloc, .{});
+        var env = try std.process.getEnvMap(alloc);
+        defer env.deinit();
         var app: App = .{
             .alloc = alloc,
             .clients = std.ArrayList(*irc.Client).init(alloc),
@@ -95,7 +97,7 @@ pub const App = struct {
             .binds = try std.ArrayList(Bind).initCapacity(alloc, 16),
             .paste_buffer = std.ArrayList(u8).init(alloc),
             .input = vaxis.widgets.TextInput.init(alloc, &vx.unicode),
-            .tz = try zeit.local(alloc, null),
+            .tz = try zeit.local(alloc, &env),
         };
 
         try app.binds.append(.{
