@@ -1,12 +1,14 @@
 const std = @import("std");
-const assert = std.debug.assert;
 const ziglua = @import("ziglua");
 const vaxis = @import("vaxis");
+const comlink = @import("comlink.zig");
 
-const App = @import("App.zig");
-const irc = @import("irc.zig");
+const irc = comlink.irc;
+const App = comlink.App;
 const Client = irc.Client;
 const Lua = ziglua.Lua;
+
+const assert = std.debug.assert;
 
 /// lua constant for the REGISTRYINDEX table
 pub const registry_index = ziglua.registry_index;
@@ -123,7 +125,7 @@ fn bind(lua: *Lua) i32 {
         else if (std.mem.eql(u8, "meta", key_txt))
             mods.meta = true;
     }
-    const command = if (action) |act| std.meta.stringToEnum(App.Command, act) orelse {
+    const command = if (action) |act| std.meta.stringToEnum(comlink.Command, act) orelse {
         // var buf: [64]u8 = undefined;
         // const msg = std.fmt.bufPrintZ(&buf, "{s}", .{"not a valid command: %s"}) catch unreachable;
         // lua.raiseErrorStr(msg, .{action});
@@ -160,6 +162,7 @@ fn getApp(lua: *Lua) *App {
     const lua_type = lua.getField(ziglua.registry_index, app_key); // [userdata]
     assert(lua_type == .light_userdata); // set by comlink as a lightuserdata
     const app = lua.toUserdata(App, -1) catch unreachable; // already asserted
+    assert(app.loop != null);
     // as lightuserdata
     return app;
 }

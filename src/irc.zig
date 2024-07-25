@@ -6,13 +6,16 @@ const tls = @import("tls");
 const vaxis = @import("vaxis");
 const zeit = @import("zeit");
 
-const App = @import("App.zig");
-const comlink = @import("main.zig");
+const comlink = @import("comlink.zig");
 
 const log = std.log.scoped(.irc);
 
 pub const maximum_message_size = 512;
 
+pub const Buffer = union(enum) {
+    client: *Client,
+    channel: *Channel,
+};
 pub const Command = enum {
     RPL_WELCOME, // 001
     RPL_YOURHOST, // 002
@@ -310,7 +313,7 @@ pub const Message = struct {
                 if (!std.mem.eql(u8, tag.key, "time")) continue;
                 const instant = try zeit.instant(.{
                     .source = .{ .iso8601 = tag.value },
-                    .timezone = &comlink.local,
+                    .timezone = &client.app.tz,
                 });
 
                 break :blk instant.time();
@@ -498,7 +501,7 @@ pub const Client = struct {
     };
 
     alloc: std.mem.Allocator,
-    app: *App,
+    app: *comlink.App,
     client: tls.Connection(std.net.Stream),
     stream: std.net.Stream,
     config: Config,
@@ -517,7 +520,7 @@ pub const Client = struct {
 
     batches: std.StringHashMap(*Channel),
 
-    pub fn init(alloc: std.mem.Allocator, app: *App, cfg: Config) !Client {
+    pub fn init(alloc: std.mem.Allocator, app: *comlink.App, cfg: Config) !Client {
         return .{
             .alloc = alloc,
             .app = app,
@@ -861,6 +864,11 @@ pub fn caseFold(a: []const u8, b: []const u8) bool {
     }
     return true;
 }
+
+pub const ChatHistoryCommand = enum {
+    before,
+    after,
+};
 
 test "caseFold" {
     try testing.expect(caseFold("a", "A"));
