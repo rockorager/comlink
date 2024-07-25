@@ -80,8 +80,6 @@ pub const App = struct {
 
     paste_buffer: std.ArrayList(u8),
 
-    input: vaxis.widgets.TextInput = undefined,
-
     /// initialize vaxis, lua state
     pub fn init(alloc: std.mem.Allocator) !App {
         const vx = try vaxis.init(alloc, .{});
@@ -96,7 +94,6 @@ pub const App = struct {
             .content_segments = std.ArrayList(vaxis.Segment).init(alloc),
             .binds = try std.ArrayList(Bind).initCapacity(alloc, 16),
             .paste_buffer = std.ArrayList(u8).init(alloc),
-            .input = vaxis.widgets.TextInput.init(alloc, &vx.unicode),
             .tz = try zeit.local(alloc, &env),
         };
 
@@ -243,7 +240,8 @@ pub const App = struct {
             self.lua.protectedCall(0, ziglua.mult_return, 0) catch return error.LuaError;
         }
 
-        defer self.input.deinit();
+        var input = TextInput.init(self.alloc, &self.vx.unicode);
+        defer input.deinit();
 
         loop: while (!self.should_quit) {
             self.loop.?.pollEvent();
@@ -284,23 +282,23 @@ pub const App = struct {
                             // cycling through the options
                             if (self.completer) |*completer| {
                                 const line = completer.next();
-                                self.input.clearRetainingCapacity();
-                                try self.input.insertSliceAtCursor(line);
+                                input.clearRetainingCapacity();
+                                try input.insertSliceAtCursor(line);
                             } else {
                                 var completion_buf: [irc.maximum_message_size]u8 = undefined;
-                                const content = self.input.sliceToCursor(&completion_buf);
+                                const content = input.sliceToCursor(&completion_buf);
                                 self.completer = try Completer.init(self.alloc, content);
                             }
                         } else if (key.matches(vaxis.Key.tab, .{ .shift = true })) {
                             if (self.completer) |*completer| {
                                 const line = completer.prev();
-                                self.input.clearRetainingCapacity();
-                                try self.input.insertSliceAtCursor(line);
+                                input.clearRetainingCapacity();
+                                try input.insertSliceAtCursor(line);
                             }
                         } else if (key.matches(vaxis.Key.enter, .{})) {
-                            if (self.input.buf.realLength() == 0) continue;
+                            if (input.buf.realLength() == 0) continue;
                             const buffer = self.selectedBuffer() orelse @panic("no buffer");
-                            const content = try self.input.toOwnedSlice();
+                            const content = try input.toOwnedSlice();
                             defer self.alloc.free(content);
                             if (content[0] == '/')
                                 self.handleCommand(buffer, content) catch |err| {
@@ -333,7 +331,7 @@ pub const App = struct {
                                 self.completer = null;
                             }
                             log.debug("{}", .{key});
-                            try self.input.update(.{ .key_press = key });
+                            try input.update(.{ .key_press = key });
                         }
                     },
                     .paste_start => self.state.paste.pasting = true,
@@ -342,7 +340,7 @@ pub const App = struct {
                         if (self.state.paste.has_newline) {
                             log.warn("NEWLINE", .{});
                         } else {
-                            try self.input.insertSliceAtCursor(self.paste_buffer.items);
+                            try input.insertSliceAtCursor(self.paste_buffer.items);
                             defer self.paste_buffer.clearAndFree();
                         }
                     },
@@ -785,7 +783,7 @@ pub const App = struct {
                 }
             }
 
-            try self.draw();
+            try self.draw(&input);
         }
     }
     pub fn nextChannel(self: *App) void {
@@ -956,7 +954,7 @@ pub const App = struct {
         return null;
     }
 
-    fn draw(self: *App) !void {
+    fn draw(self: *App, input: *TextInput) !void {
 
         // reset window state
         const win = self.vx.window();
@@ -1500,7 +1498,7 @@ pub const App = struct {
         // PRIVMSG <channel_name> :<message>\r\n = 12 bytes of overhead
         const max_len = irc.maximum_message_size - buf_name_len - 12;
         var len_buf: [7]u8 = undefined;
-        const msg_len = self.input.buf.realLength();
+        const msg_len = input.buf.realLength();
         _ = try std.fmt.bufPrint(&len_buf, "{d: >3}/{d}", .{ msg_len, max_len });
 
         var len_segs = [_]vaxis.Segment{
@@ -1518,7 +1516,7 @@ pub const App = struct {
         };
 
         _ = try len_win.print(&len_segs, .{});
-        self.input.draw(input_win);
+        input.draw(input_win);
 
         if (self.state.paste.showDialog()) {
             // Draw a modal dialog for how to handle multi-line paste
