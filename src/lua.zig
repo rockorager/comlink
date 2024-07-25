@@ -11,10 +11,38 @@ const Lua = ziglua.Lua;
 const assert = std.debug.assert;
 
 /// lua constant for the REGISTRYINDEX table
-pub const registry_index = ziglua.registry_index;
+const registry_index = ziglua.registry_index;
 
 /// global key for the app userdata pointer in the registry
-pub const app_key = "comlink.app";
+const app_key = "comlink.app";
+
+pub fn init(app: *App) !void {
+    var lua = app.lua;
+    // load standard libraries
+    lua.openLibs();
+
+    // preload our library
+    _ = try lua.getGlobal("package"); // [package]
+    _ = lua.getField(-1, "preload"); // [package, preload]
+    lua.pushFunction(ziglua.wrap(preloader)); // [package, preload, function]
+    lua.setField(-2, "comlink"); // [package, preload]
+    // empty the stack
+    lua.pop(2); // []
+
+    // keep a reference to our app in the lua state
+    lua.pushLightUserdata(app); // [userdata]
+    lua.setField(registry_index, app_key); // []
+
+    // load config
+    const home = app.env.get("HOME") orelse return error.EnvironmentVariableNotFound;
+    var buf: [std.posix.PATH_MAX]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&buf, "{s}/.config/comlink/init.lua", .{home});
+    switch (ziglua.lang) {
+        .luajit, .lua51 => lua.loadFile(path) catch return error.LuaError,
+        else => lua.loadFile(path, .binary_text) catch return error.LuaError,
+    }
+    lua.protectedCall(0, ziglua.mult_return, 0) catch return error.LuaError;
+}
 
 /// loads our "comlink" library
 pub fn preloader(lua: *Lua) i32 {

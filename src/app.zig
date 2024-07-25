@@ -236,38 +236,16 @@ pub const App = struct {
         const writer = self.tty.anyWriter();
 
         // start our write thread
-        {
-            const write_thread = try std.Thread.spawn(.{}, App.writeLoop, .{self});
-            write_thread.detach();
+        const write_thread = try std.Thread.spawn(.{}, App.writeLoop, .{self});
+        defer {
+            if (self.write_queue) |*queue| {
+                queue.push(.join);
+                write_thread.join();
+            }
         }
 
         // initialize lua state
-        {
-            // load standard libraries
-            self.lua.openLibs();
-
-            // preload our library
-            _ = try self.lua.getGlobal("package"); // [package]
-            _ = self.lua.getField(-1, "preload"); // [package, preload]
-            self.lua.pushFunction(ziglua.wrap(lua.preloader)); // [package, preload, function]
-            self.lua.setField(-2, "comlink"); // [package, preload]
-            // empty the stack
-            self.lua.pop(2); // []
-
-            // keep a reference to our app in the lua state
-            self.lua.pushLightUserdata(self); // [userdata]
-            self.lua.setField(lua.registry_index, lua.app_key); // []
-
-            // load config
-            const home = std.posix.getenv("HOME") orelse return error.EnvironmentVariableNotFound;
-            var buf: [std.posix.PATH_MAX]u8 = undefined;
-            const path = try std.fmt.bufPrintZ(&buf, "{s}/.config/comlink/init.lua", .{home});
-            switch (ziglua.lang) {
-                .luajit, .lua51 => self.lua.loadFile(path) catch return error.LuaError,
-                else => self.lua.loadFile(path, .binary_text) catch return error.LuaError,
-            }
-            self.lua.protectedCall(0, ziglua.mult_return, 0) catch return error.LuaError;
-        }
+        try lua.init(self);
 
         var input = TextInput.init(self.alloc, &self.vx.unicode);
         defer input.deinit();
