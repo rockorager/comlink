@@ -315,10 +315,7 @@ const Client = struct {
 
     fn name(lua: *Lua) i32 {
         const client = getClient(lua); // []
-        if (client.config.name) |n| {
-            _ = lua.pushString(n); // [string]
-            return 1; // []
-        }
-        return 0;
+        _ = lua.pushString(client.config.name orelse ""); // [string]
+        return 1; // []
     }
 };
