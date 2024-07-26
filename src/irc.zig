@@ -476,6 +476,7 @@ pub const Client = struct {
         network_id: ?[]const u8 = null,
         name: ?[]const u8 = null,
         tls: bool = true,
+        lua_table: i32,
     };
 
     pub const Capabilities = struct {

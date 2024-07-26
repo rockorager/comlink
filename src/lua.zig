@@ -5,7 +5,6 @@ const ziglua = @import("ziglua");
 
 const irc = comlink.irc;
 const App = comlink.App;
-const Client = irc.Client;
 const EventLoop = comlink.EventLoop;
 const Lua = ziglua.Lua;
 
@@ -19,6 +18,9 @@ const app_key = "comlink.app";
 
 /// global key for the loop userdata pointer
 const loop_key = "comlink.loop";
+
+/// active client key. This gets replaced with the client context during callbacks
+const client_key = "comlink.client";
 
 pub fn init(app: *App, loop: *comlink.EventLoop) !void {
     var lua = app.lua;
@@ -64,8 +66,7 @@ pub fn preloader(lua: *Lua) i32 {
 }
 
 fn log(lua: *Lua) i32 {
-    lua.argCheck(lua.isString(1), 1, "expected a string");
-    // [string]
+    lua.argCheck(lua.isString(1), 1, "expected a string"); // [string]
     const msg = lua.toString(1) catch unreachable; // []
     std.log.scoped(.lua).info("{s}", .{msg});
     return 0;
@@ -80,41 +81,55 @@ fn connect(lua: *Lua) i32 {
     lua.argCheck(lua_type == .string, 1, "expected a string for field 'user'");
     const user = lua.toString(-1) catch unreachable; // [table]
 
-    lua_type = lua.getField(1, "nick");
+    lua_type = lua.getField(1, "nick"); // [table,string]
     lua.argCheck(lua_type == .string, 1, "expected a string for field 'nick'");
-    const nick = lua.toString(-1) catch unreachable;
+    const nick = lua.toString(-1) catch unreachable; // [table]
 
-    lua_type = lua.getField(1, "password");
+    lua_type = lua.getField(1, "password"); // [table, string]
     lua.argCheck(lua_type == .string, 1, "expected a string for field 'password'");
-    const password = lua.toString(-1) catch unreachable;
+    const password = lua.toString(-1) catch unreachable; // [table]
 
-    lua_type = lua.getField(1, "real_name");
+    lua_type = lua.getField(1, "real_name"); // [table, string]
     lua.argCheck(lua_type == .string, 1, "expected a string for field 'real_name'");
-    const real_name = lua.toString(-1) catch unreachable;
+    const real_name = lua.toString(-1) catch unreachable; // [table]
 
-    lua_type = lua.getField(1, "server");
+    lua_type = lua.getField(1, "server"); // [table, string]
     lua.argCheck(lua_type == .string, 1, "expected a string for field 'server'");
-    const server = lua.toString(-1) catch unreachable;
+    const server = lua.toString(-1) catch unreachable; // [table]
 
-    lua_type = lua.getField(1, "tls");
+    lua_type = lua.getField(1, "tls"); // [table, boolean|nil]
     const tls: bool = switch (lua_type) {
-        .nil => true,
-        .boolean => lua.toBoolean(-1),
+        .nil => blk: {
+            lua.pop(1); // [table]
+            break :blk true;
+        },
+        .boolean => lua.toBoolean(-1), // [table]
         else => lua.raiseErrorStr("expected a boolean for field 'tls'", .{}),
     };
 
-    const cfg: Client.Config = .{
+    lua.pop(1); // []
+
+    Client.initTable(lua); // [table]
+    const table_ref = lua.ref(registry_index) catch {
+        lua.raiseErrorStr("couldn't ref client table", .{});
+    };
+
+    const cfg: irc.Client.Config = .{
         .server = server,
         .user = user,
         .nick = nick,
         .password = password,
         .real_name = real_name,
         .tls = tls,
+        .lua_table = table_ref,
     };
 
-    const loop = getLoop(lua);
+    const loop = getLoop(lua); // []
     loop.postEvent(.{ .connect = cfg });
-    return 0;
+
+    // put the table back on the stack
+    Client.getTable(lua, table_ref); // [table]
+    return 1; // []
 }
 
 /// creates a keybind. Accepts one or two string.
@@ -193,7 +208,7 @@ fn bind(lua: *Lua) i32 {
 
 /// retrieves the *App lightuserdata from the registry index
 fn getApp(lua: *Lua) *App {
-    const lua_type = lua.getField(ziglua.registry_index, app_key); // [userdata]
+    const lua_type = lua.getField(registry_index, app_key); // [userdata]
     assert(lua_type == .light_userdata); // set by comlink as a lightuserdata
     const app = lua.toUserdata(App, -1) catch unreachable; // already asserted
     // as lightuserdata
@@ -202,9 +217,87 @@ fn getApp(lua: *Lua) *App {
 
 /// retrieves the *Loop lightuserdata from the registry index
 fn getLoop(lua: *Lua) *EventLoop {
-    const lua_type = lua.getField(ziglua.registry_index, loop_key); // [userdata]
+    const lua_type = lua.getField(registry_index, loop_key); // [userdata]
     assert(lua_type == .light_userdata); // set by comlink as a lightuserdata
     const loop = lua.toUserdata(comlink.EventLoop, -1) catch unreachable; // already asserted
     // as lightuserdata
     return loop;
 }
+
+fn getClient(lua: *Lua) *irc.Client {
+    const lua_type = lua.getField(registry_index, client_key); // [userdata]
+    assert(lua_type == .light_userdata); // set by comlink as a lightuserdata
+    const client = lua.toUserdata(irc.Client, -1) catch unreachable; // already asserted
+    // as lightuserdata
+    return client;
+}
+
+/// The on_connect event is emitted when we complete registration and receive a RPL_WELCOME message
+pub fn onConnect(lua: *Lua, client: *irc.Client) !void {
+    lua.pushLightUserdata(client); // [light_userdata]
+    lua.setField(registry_index, client_key); // []
+
+    Client.getTable(lua, client.config.lua_table); // [table]
+    const lua_type = lua.getField(1, "on_connect"); // [table, type]
+    switch (lua_type) {
+        .function => {
+            // Push the table to the top since it is our argument to the function
+            lua.pushValue(1); // [table, function, table]
+            lua.protectedCall(1, 0, 0) catch return error.LuaError; // [table]
+            // clear the stack
+            lua.pop(1); // []
+        },
+        else => {},
+    }
+}
+
+// Client function namespace
+const Client = struct {
+    /// initialize a table for a client and pushes it on the stack
+    fn initTable(lua: *Lua) void {
+        const fns = [_]ziglua.FnReg{
+            .{ .name = "join", .func = ziglua.wrap(Client.join) },
+            .{ .name = "name", .func = ziglua.wrap(Client.name) },
+        };
+        lua.newLibTable(&fns); // [table]
+        lua.setFuncs(&fns, 0); // [table]
+
+        lua.pushNil(); // [table, nil]
+        lua.setField(1, "on_connect"); // [table]
+    }
+
+    /// retrieve a client table and push it on the stack
+    fn getTable(lua: *Lua, i: i32) void {
+        const lua_type = lua.rawGetIndex(registry_index, i); // [table]
+        if (lua_type != .table)
+            lua.raiseErrorStr("couldn't get client table", .{});
+    }
+
+    /// exectute a join command
+    fn join(lua: *Lua) i32 {
+        const client = getClient(lua);
+        lua.argCheck(lua.isString(1), 1, "expected a string"); // [string]
+        const channel = lua.toString(1) catch unreachable; // []
+        assert(channel.len < 120); // channel name too long
+        var buf: [128]u8 = undefined;
+
+        const msg = std.fmt.bufPrint(
+            &buf,
+            "JOIN {s}\r\n",
+            .{channel},
+        ) catch lua.raiseErrorStr("channel name too long", .{});
+
+        client.queueWrite(msg) catch lua.raiseErrorStr("couldn't queue write", .{});
+
+        return 0;
+    }
+
+    fn name(lua: *Lua) i32 {
+        const client = getClient(lua); // []
+        if (client.config.name) |n| {
+            _ = lua.pushString(n); // [string]
+            return 1; // []
+        }
+        return 0;
+    }
+};

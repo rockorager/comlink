@@ -385,6 +385,8 @@ pub const App = struct {
                                     .{ now_fmt, past_fmt },
                                 );
                                 try msg.client.queueWrite(targets);
+                                // on_connect callback
+                                try lua.onConnect(self.lua, msg.client);
                             },
                             .RPL_YOURHOST => {},
                             .RPL_CREATED => {},
