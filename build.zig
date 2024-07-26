@@ -38,6 +38,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("zeit", zeit_dep.module("zeit"));
 
     b.installArtifact(exe);
+    b.installFile("docs/comlink.lua", "share/comlink/lua/comlink.lua");
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
