@@ -1,12 +1,12 @@
 ---@meta
 
 --- The primary comlink module
---
+---
 ---@class comlink
 local comlink = {}
 
 ---@class ConnectionConfiguration
---
+---
 ---@field server string The server to connect to, eg "chat.sr.ht"
 ---@field user string Username for server connection
 ---@field nick string Nick to use when connecting via SASL to IRC
@@ -14,18 +14,31 @@ local comlink = {}
 ---@field real_name string Real name of user
 ---@field tls boolean Whether to encrypt connections
 
+---A connection to a server
+---
+---@class Connection
+---
+---@field on_connect fun(conn: Connection) Called after successful connection to the server
+local conn = {}
+
+---Returns the name of the connection
+---
+---@return string name Name of the connection
+function conn.name() end
+
 ---Set connection configuration
---
+---
 ---@param cfg ConnectionConfiguration
+---@return Connection
 function comlink.connect(cfg) end
 
 ---Log a msg to the comlink logs
---
+---
 ---@param msg string The message to log
 function comlink.log(msg) end
 
 --- A command for comlink to execute
---
+---
 ---@enum action
 local Action = {
 	quote = "quote",
@@ -34,13 +47,20 @@ local Action = {
 	next_channel = "next-channel",
 	prev_channel = "prev-channel",
 	quit = "quit",
+	redraw = "redraw",
 	who = "who",
 }
 
 ---Bind a key
---
+---
 ---@param key string The key to bind, eg "alt+n", "shift+left"
 ---@param action action The action to perform, eg "quit"
 function comlink.bind(key, action) end
+
+---Send a system notification
+---
+---@param title string Title of the notification
+---@param body string Body of the notification
+function comlink.notify(title, body) end
 
 return comlink
