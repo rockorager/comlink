@@ -6,6 +6,13 @@ const log = std.log.scoped(.main);
 
 pub const panic = vaxis.panic_handler;
 
+pub const std_options: std.Options = .{
+    .log_scope_levels = &.{
+        .{ .scope = .vaxis, .level = .warn },
+        .{ .scope = .vaxis_parser, .level = .warn },
+    },
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
