@@ -7,8 +7,8 @@
             .hash = "1220affeb3fe37ef09411b5a213b5fdf9bb6568e9913bade204694648983a8b2776d",
         },
         .vaxis = .{
-            .url = "git+https://github.com/rockorager/libvaxis?ref=main#20bbb257277d55a87daa0f63211fea8ff5dc088d",
-            .hash = "1220af6b2fc928a3fee7d0ca5085176be85d46fa59c8742c2b2ef32245a3dfcd9e60",
+            .url = "git+https://github.com/rockorager/libvaxis?ref=main#d36ab043caf7cbb24cae1bd0346dd6b654df0653",
+            .hash = "12206c252ee00b9dd0214989dfa35a6eea29ac7d65d4053817f161f4c23b6e09dd89",
         },
         .zeit = .{
             .url = "git+https://github.com/rockorager/zeit?ref=v0.2.0#afa89d65999cdd31adb324b7c492598fd5e295b9",
