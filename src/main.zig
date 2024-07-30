@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const comlink = @import("comlink.zig");
 const vaxis = @import("vaxis");
 
@@ -12,6 +13,24 @@ pub const std_options: std.Options = .{
         .{ .scope = .vaxis_parser, .level = .warn },
     },
 };
+
+/// Called after receiving a terminating signal
+fn cleanUp(sig: c_int) callconv(.C) void {
+    if (vaxis.Tty.global_tty) |gty| {
+        const reset: []const u8 = vaxis.ctlseqs.csi_u_pop ++
+            vaxis.ctlseqs.mouse_reset ++
+            vaxis.ctlseqs.bp_reset ++
+            vaxis.ctlseqs.rmcup;
+
+        gty.anyWriter().writeAll(reset) catch {};
+
+        gty.deinit();
+    }
+    if (sig < 255 and sig >= 0)
+        std.process.exit(@as(u8, @intCast(sig)))
+    else
+        std.process.exit(1);
+}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -28,6 +47,24 @@ pub fn main() !void {
 
     var app = try comlink.App.init(alloc);
     defer app.deinit();
+
+    // Handle termination signals
+    switch (builtin.os.tag) {
+        .windows => {},
+        else => {
+            var action: std.posix.Sigaction = .{
+                .handler = .{ .handler = cleanUp },
+                .mask = switch (builtin.os.tag) {
+                    .macos => 0,
+                    else => std.posix.empty_sigset,
+                },
+                .flags = 0,
+            };
+            try std.posix.sigaction(std.posix.SIG.INT, &action, null);
+            try std.posix.sigaction(std.posix.SIG.TERM, &action, null);
+        },
+    }
+
     app.run() catch |err| {
         switch (err) {
             // ziglua errors
