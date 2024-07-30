@@ -1697,29 +1697,36 @@ pub const App = struct {
                                     } else break;
                                 },
                                 .consume => {
-                                    if (b1 == ' ') {
-                                        try self.content_segments.append(.{
-                                            .text = content[h_start..i],
-                                            .style = .{
-                                                .fg = .{ .index = 4 },
-                                            },
-                                            .link = .{
-                                                .uri = content[h_start..i],
-                                            },
-                                        });
-                                        start = i;
-                                        break;
-                                    } else if (i == content.len - 1) {
-                                        try self.content_segments.append(.{
-                                            .text = content[h_start..],
-                                            .style = .{
-                                                .fg = .{ .index = 4 },
-                                            },
-                                            .link = .{
-                                                .uri = content[h_start..],
-                                            },
-                                        });
-                                        return;
+                                    switch (b1) {
+                                        0x00...0x20, 0x7F => {
+                                            try self.content_segments.append(.{
+                                                .text = content[h_start..i],
+                                                .style = .{
+                                                    .fg = .{ .index = 4 },
+                                                },
+                                                .link = .{
+                                                    .uri = content[h_start..i],
+                                                },
+                                            });
+                                            start = i;
+                                            // backup one
+                                            i -= 1;
+                                            break;
+                                        },
+                                        else => {
+                                            if (i == content.len) {
+                                                try self.content_segments.append(.{
+                                                    .text = content[h_start..],
+                                                    .style = .{
+                                                        .fg = .{ .index = 4 },
+                                                    },
+                                                    .link = .{
+                                                        .uri = content[h_start..],
+                                                    },
+                                                });
+                                                return;
+                                            }
+                                        },
                                     }
                                 },
                             }
