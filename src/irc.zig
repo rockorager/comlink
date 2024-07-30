@@ -538,7 +538,7 @@ pub const Client = struct {
 
     pub fn deinit(self: *Client) void {
         self.should_close = true;
-        if (self.config.tls) {
+        if (self.config.tls and self.status == .connected) {
             _ = self.client.write("PING comlink\r\n") catch |err| {
                 log.err("couldn't close tls conn: {}", .{err});
             };
