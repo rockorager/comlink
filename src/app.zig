@@ -1694,6 +1694,7 @@ pub const App = struct {
                                             .text = content[start..h_start],
                                             .style = style,
                                         });
+                                        start = h_start;
                                     } else break;
                                 },
                                 .consume => {
