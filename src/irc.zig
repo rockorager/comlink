@@ -544,7 +544,8 @@ pub const Client = struct {
             self.write("PING comlink\r\n") catch |err|
                 log.err("couldn't close tls conn: {}", .{err});
             if (self.thread) |thread| {
-                thread.join();
+                thread.detach();
+                self.thread = null;
             }
         }
         // id gets allocated in the main thread. We need to deallocate it here if

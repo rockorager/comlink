@@ -38,9 +38,11 @@ fn cleanUp(sig: c_int) callconv(.C) void {
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
-        const deinit_status = gpa.deinit();
-        if (deinit_status == .leak) {
-            std.log.err("memory leak", .{});
+        if (builtin.mode == .Debug) {
+            const deinit_status = gpa.deinit();
+            if (deinit_status == .leak) {
+                std.log.err("memory leak", .{});
+            }
         }
     }
     const alloc = gpa.allocator();
