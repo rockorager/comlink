@@ -162,8 +162,6 @@ pub const App = struct {
         try loop.init();
         try loop.start();
         defer {
-            // Need to deinit lua before our loop goes out of scope
-            lua_state.deinit();
             while (loop.queue.tryPop()) |event| {
                 switch (event) {
                     .message => |msg| msg.deinit(self.alloc),

@@ -45,12 +45,6 @@ pub fn main() !void {
     }
     const alloc = gpa.allocator();
 
-    var env = try std.process.getEnvMap(alloc);
-    defer env.deinit();
-
-    var app = try comlink.App.init(alloc);
-    defer app.deinit();
-
     // Handle termination signals
     switch (builtin.os.tag) {
         .windows => {},
@@ -69,6 +63,10 @@ pub fn main() !void {
     }
 
     const lua = try Lua.init(&alloc);
+    defer lua.deinit();
+
+    var app = try comlink.App.init(alloc);
+    defer app.deinit();
 
     app.run(lua) catch |err| {
         switch (err) {
