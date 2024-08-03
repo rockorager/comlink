@@ -126,6 +126,7 @@ const Comlink = struct {
             .{ .name = "log", .func = ziglua.wrap(log) },
             .{ .name = "notify", .func = ziglua.wrap(notify) },
             .{ .name = "add_command", .func = ziglua.wrap(addCommand) },
+            .{ .name = "selected_channel", .func = ziglua.wrap(Comlink.selectedChannel) },
         };
         lua.newLibTable(&fns); // [table]
         lua.setFuncs(&fns, 0); // [table]
@@ -306,6 +307,61 @@ const Comlink = struct {
         const ref = lua.ref(registry_index) catch lua.raiseErrorStr("couldn't ref function", .{});
         const cmd = lua.toString(1) catch unreachable;
         comlink.Command.user_commands.put(cmd, ref) catch lua.raiseErrorStr("out of memory", .{});
+        return 0;
+    }
+
+    fn selectedChannel(lua: *Lua) i32 {
+        const app = getApp(lua);
+        if (app.selectedBuffer()) |buf| {
+            switch (buf) {
+                .client => {},
+                .channel => |chan| {
+                    Channel.initTable(lua, chan); // [table]
+                    return 1;
+                },
+            }
+        }
+        lua.pushNil(); // [nil]
+        return 1;
+    }
+};
+
+const Channel = struct {
+    fn initTable(lua: *Lua, channel: *irc.Channel) void {
+        const fns = [_]ziglua.FnReg{
+            .{ .name = "send_msg", .func = ziglua.wrap(Channel.sendMsg) },
+        };
+        lua.newLibTable(&fns); // [table]
+        lua.setFuncs(&fns, 0); // [table]
+
+        lua.pushLightUserdata(channel); // [table, lightuserdata]
+        lua.setField(1, "_ptr"); // [table]
+    }
+
+    fn sendMsg(lua: *Lua) i32 {
+        lua.argCheck(lua.isTable(1), 1, "expected a table"); // [table]
+        lua.argCheck(lua.isString(2), 2, "expected a string"); // [table,string]
+        const msg = lua.toString(2) catch unreachable;
+        lua.pop(1); // [table]
+        const lua_type = lua.getField(1, "_ptr"); // [table, lightuserdata]
+        lua.argCheck(lua_type == .light_userdata, 2, "expected lightuserdata");
+        const channel = lua.toUserdata(irc.Channel, 2) catch unreachable;
+        lua.pop(1); // [table]
+
+        if (msg.len > 0 and msg[0] == '/') {
+            const app = getApp(lua);
+            app.handleCommand(lua, .{ .channel = channel }, msg) catch
+                lua.raiseErrorStr("couldn't handle command", .{});
+            return 0;
+        }
+
+        var buf: [1024]u8 = undefined;
+        const msg_final = std.fmt.bufPrint(
+            &buf,
+            "PRIVMSG {s} :{s}\r\n",
+            .{ channel.name, msg },
+        ) catch lua.raiseErrorStr("out of memory", .{});
+        channel.client.queueWrite(msg_final) catch lua.raiseErrorStr("out of memory", .{});
         return 0;
     }
 };

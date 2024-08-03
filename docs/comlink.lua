@@ -69,4 +69,20 @@ function comlink.notify(title, body) end
 ---@param fn fun(cmdline: string) Callback for the command. Receives the commandline as enterred, with the name removed, then any leading or trailing whitespace removed
 function comlink.add_command(name, fn) end
 
+---Get the currently selected buffer
+---
+---@return Channel|nil
+function comlink.selected_channel() end
+
+---A channel.
+---
+---@class Channel
+local channel = {}
+
+---Send a message to the channel. If the message begins with a '/', it will be processed as a command. This allows for sending of "/me <msg>" style messages from lua
+---
+---@param chan Channel buffer to send the message to
+---@param msg string message to send
+function channel.send_msg(chan, msg) end
+
 return comlink
