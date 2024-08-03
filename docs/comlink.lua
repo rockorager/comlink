@@ -12,7 +12,7 @@ local comlink = {}
 ---@field nick string Nick to use when connecting via SASL to IRC
 ---@field password string Password for server
 ---@field real_name string Real name of user
----@field tls boolean Whether to encrypt connections
+---@field tls? boolean Whether to encrypt connections
 
 ---A connection to a server
 ---
