@@ -54,7 +54,7 @@ local Action = {
 ---Bind a key
 ---
 ---@param key string The key to bind, eg "alt+n", "shift+left"
----@param action action The action to perform, eg "quit"
+---@param action action|function The action to perform, eg "quit"
 function comlink.bind(key, action) end
 
 ---Send a system notification
