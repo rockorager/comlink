@@ -81,8 +81,14 @@ local channel = {}
 
 ---Send a message to the channel. If the message begins with a '/', it will be processed as a command. This allows for sending of "/me <msg>" style messages from lua
 ---
----@param chan Channel buffer to send the message to
+---@param chan Channel this channel
 ---@param msg string message to send
 function channel.send_msg(chan, msg) end
+
+---Get the name of the channel
+---
+---@param chan Channel // this channel
+---@return string name name of the channel
+function channel.name(chan) end
 
 return comlink

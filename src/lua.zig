@@ -330,6 +330,7 @@ const Channel = struct {
     fn initTable(lua: *Lua, channel: *irc.Channel) void {
         const fns = [_]ziglua.FnReg{
             .{ .name = "send_msg", .func = ziglua.wrap(Channel.sendMsg) },
+            .{ .name = "name", .func = ziglua.wrap(Channel.name) },
         };
         lua.newLibTable(&fns); // [table]
         lua.setFuncs(&fns, 0); // [table]
@@ -363,6 +364,16 @@ const Channel = struct {
         ) catch lua.raiseErrorStr("out of memory", .{});
         channel.client.queueWrite(msg_final) catch lua.raiseErrorStr("out of memory", .{});
         return 0;
+    }
+
+    fn name(lua: *Lua) i32 {
+        lua.argCheck(lua.isTable(1), 1, "expected a table"); // [table]
+        const lua_type = lua.getField(1, "_ptr"); // [table, lightuserdata]
+        lua.argCheck(lua_type == .light_userdata, 2, "expected lightuserdata");
+        const channel = lua.toUserdata(irc.Channel, 2) catch unreachable;
+        lua.pop(2); // []
+        _ = lua.pushString(channel.name); // [string]
+        return 1;
     }
 };
 
