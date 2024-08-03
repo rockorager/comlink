@@ -100,7 +100,6 @@ pub fn onConnect(lua: *Lua, client: *irc.Client) !void {
 
 pub fn execFn(lua: *Lua, func: i32) !void {
     const lua_type = lua.rawGetIndex(registry_index, func); // function
-    std.log.err("ref: {d}", .{func});
     switch (lua_type) {
         .function => lua.protectedCall(0, 0, 0) catch return error.LuaError,
         else => std.debug.panic("not a function {}", .{lua_type}),
