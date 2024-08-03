@@ -301,8 +301,7 @@ pub const App = struct {
                     .connect => |cfg| {
                         const client = try self.alloc.create(irc.Client);
                         client.* = try irc.Client.init(self.alloc, self, &write_queue, cfg);
-                        const client_read_thread = try std.Thread.spawn(.{}, irc.Client.readLoop, .{ client, &loop });
-                        client_read_thread.detach();
+                        client.thread = try std.Thread.spawn(.{}, irc.Client.readLoop, .{ client, &loop });
                         try self.clients.append(client);
                     },
                     .message => |msg| {

@@ -522,6 +522,8 @@ pub const Client = struct {
     batches: std.StringHashMap(*Channel),
     write_queue: *comlink.WriteQueue,
 
+    thread: ?std.Thread = null,
+
     pub fn init(alloc: std.mem.Allocator, app: *comlink.App, wq: *comlink.WriteQueue, cfg: Config) !Client {
         return .{
             .alloc = alloc,
@@ -538,16 +540,12 @@ pub const Client = struct {
 
     pub fn deinit(self: *Client) void {
         self.should_close = true;
-        if (self.config.tls and self.status == .connected) {
-            _ = self.client.write("PING comlink\r\n") catch |err| {
-                log.err("couldn't close tls conn: {}", .{err});
-            };
-            self.client.close() catch |err| {
-                log.err("couldn't close tls conn: {}", .{err});
-            };
-        }
         if (self.status == .connected) {
-            self.stream.close();
+            self.write("PING comlink\r\n") catch |err|
+                log.err("couldn't close tls conn: {}", .{err});
+            if (self.thread) |thread| {
+                thread.join();
+            }
         }
         // id gets allocated in the main thread. We need to deallocate it here if
         // we have one
@@ -630,14 +628,13 @@ pub const Client = struct {
             var last_msg: i64 = std.time.milliTimestamp();
             var start: usize = 0;
 
-            while (!self.should_close) {
+            while (true) {
                 const n = self.read(buf[start..]) catch |err| {
                     if (err != error.WouldBlock) break;
                     const now = std.time.milliTimestamp();
                     if (now - last_msg > keep_alive + max_rt) {
                         // reconnect??
                         self.status = .disconnected;
-                        self.stream.close();
                         loop.postEvent(.redraw);
                         break;
                     }
@@ -648,6 +645,7 @@ pub const Client = struct {
                     }
                     continue;
                 };
+                if (self.should_close) return;
                 log.debug("read {d}", .{n});
                 if (n == 0) continue;
                 last_msg = std.time.milliTimestamp();
