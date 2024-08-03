@@ -15,7 +15,7 @@ pub const Bind = struct {
     command: Command,
 };
 
-pub const Command = enum {
+pub const Command = union(enum) {
     /// a raw irc command. Sent verbatim
     quote,
     join,
@@ -29,6 +29,27 @@ pub const Command = enum {
     part,
     close,
     redraw,
+    lua_function: i32,
+
+    /// only contains void commands
+    const map = std.StaticStringMap(Command).initComptime(.{
+        .{ "quote", .quote },
+        .{ "join", .join },
+        .{ "me", .me },
+        .{ "msg", .msg },
+        .{ "next-channel", .@"next-channel" },
+        .{ "prev-channel", .@"prev-channel" },
+        .{ "quit", .quit },
+        .{ "who", .who },
+        .{ "names", .names },
+        .{ "part", .part },
+        .{ "close", .close },
+        .{ "redraw", .redraw },
+    });
+
+    pub fn fromString(str: []const u8) ?Command {
+        return map.get(str);
+    }
 
     /// if we should append a space when completing
     pub fn appendSpace(self: Command) bool {

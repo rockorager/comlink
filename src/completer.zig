@@ -69,7 +69,7 @@ pub const Completer = struct {
         if (self.cmd) {
             self.buf[0] = '/';
             @memcpy(self.buf[1 .. 1 + replacement.len], replacement);
-            const append_space = if (std.meta.stringToEnum(Command, replacement)) |cmd|
+            const append_space = if (Command.fromString(replacement)) |cmd|
                 cmd.appendSpace()
             else
                 true;

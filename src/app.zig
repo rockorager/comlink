@@ -220,6 +220,7 @@ pub const App = struct {
                                     .@"next-channel" => self.nextChannel(),
                                     .@"prev-channel" => self.prevChannel(),
                                     .redraw => self.vx.queueRefresh(),
+                                    .lua_function => |ref| try lua.execFn(lua_state, ref),
                                     else => {},
                                 }
                                 break;
@@ -755,7 +756,7 @@ pub const App = struct {
         const command: comlink.Command = blk: {
             const start: u1 = if (cmd[0] == '/') 1 else 0;
             const end = mem.indexOfScalar(u8, cmd, ' ') orelse cmd.len;
-            break :blk std.meta.stringToEnum(comlink.Command, cmd[start..end]) orelse return error.UnknownCommand;
+            break :blk comlink.Command.fromString(cmd[start..end]) orelse return error.UnknownCommand;
         };
         var buf: [1024]u8 = undefined;
         const client: *irc.Client = switch (buffer) {
@@ -849,6 +850,7 @@ pub const App = struct {
                 return client.queueWrite(msg);
             },
             .redraw => self.vx.queueRefresh(),
+            .lua_function => {}, // we don't handle these from the text-input
         }
     }
 

@@ -57,6 +57,7 @@ fn getApp(lua: *Lua) *App {
     const lua_type = lua.getField(registry_index, app_key); // [userdata]
     assert(lua_type == .light_userdata); // set by comlink as a lightuserdata
     const app = lua.toUserdata(App, -1) catch unreachable; // already asserted
+    lua.pop(1); // []
     // as lightuserdata
     return app;
 }
@@ -97,6 +98,15 @@ pub fn onConnect(lua: *Lua, client: *irc.Client) !void {
     }
 }
 
+pub fn execFn(lua: *Lua, func: i32) !void {
+    const lua_type = lua.rawGetIndex(registry_index, func); // function
+    std.log.err("ref: {d}", .{func});
+    switch (lua_type) {
+        .function => lua.protectedCall(0, 0, 0) catch return error.LuaError,
+        else => std.debug.panic("not a function {}", .{lua_type}),
+    }
+}
+
 /// Comlink function namespace
 const Comlink = struct {
     /// loads our "comlink" library
@@ -120,14 +130,10 @@ const Comlink = struct {
     fn bind(lua: *Lua) i32 {
         const app = getApp(lua);
         lua.argCheck(lua.isString(1), 1, "expected a string");
-        lua.argCheck(lua.isString(2) or lua.isNil(2), 2, "expected a string or nil");
+        lua.argCheck(lua.isString(2) or lua.isNil(2) or lua.isFunction(2), 2, "expected a string, a function, or nil");
 
-        // [string string?]
-        const key_str = lua.toString(1) catch unreachable; // [string?]
-        const action = if (lua.isNil(2))
-            null
-        else
-            lua.toString(2) catch unreachable; // []
+        // [string {string,function,nil}]
+        const key_str = lua.toString(1) catch unreachable;
 
         var codepoint: ?u21 = null;
         var mods: vaxis.Key.Modifiers = .{};
@@ -154,34 +160,47 @@ const Comlink = struct {
             else if (std.mem.eql(u8, "meta", key_txt))
                 mods.meta = true;
         }
-        const command = if (action) |act| std.meta.stringToEnum(comlink.Command, act) orelse {
-            // var buf: [64]u8 = undefined;
-            // const msg = std.fmt.bufPrintZ(&buf, "{s}", .{"not a valid command: %s"}) catch unreachable;
-            // lua.raiseErrorStr(msg, .{action});
-            // TODO: go back to raise error str when the null terminator is fixed
-            lua.raiseError();
-        } else null;
 
-        if (codepoint) |cp| {
-            if (command) |cmd| {
-                // TODO: check that no existing bind with the same key sequence
-                // already exists
-                app.binds.append(.{
-                    .key = .{
-                        .codepoint = cp,
-                        .mods = mods,
-                    },
-                    .command = cmd,
-                }) catch lua.raiseError();
-            } else {
+        const cp = codepoint orelse lua.raiseErrorStr("invalid keybind", .{});
+
+        const cmd: comlink.Command = switch (lua.typeOf(2)) {
+            .string => blk: {
+                const cmd_str = lua.toString(2) catch unreachable;
+                const cmd = comlink.Command.fromString(cmd_str) orelse
+                    lua.raiseErrorStr("unknown command", .{});
+                break :blk cmd;
+            },
+            .function => blk: {
+                const ref = lua.ref(registry_index) catch
+                    lua.raiseErrorStr("couldn't ref keybind function", .{});
+                const cmd: comlink.Command = .{ .lua_function = ref };
+                break :blk cmd;
+            },
+            .nil => {
+                // remove the keybind
                 for (app.binds.items, 0..) |item, i| {
                     if (item.key.matches(cp, mods)) {
                         _ = app.binds.swapRemove(i);
                         break;
                     }
                 }
+                return 0;
+            },
+            else => unreachable,
+        };
+
+        // replace an existing bind if we have one
+        for (app.binds.items) |*item| {
+            if (item.key.matches(cp, mods)) {
+                item.command = cmd;
+                break;
             }
-            // TODO: go back to raise error str when the null terminator is fixed
+        } else {
+            // otherwise add a new bind
+            app.binds.append(.{
+                .key = .{ .codepoint = cp, .mods = mods },
+                .command = cmd,
+            }) catch lua.raiseErrorStr("out of memory", .{});
         }
         return 0;
     }
