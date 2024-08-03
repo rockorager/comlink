@@ -99,10 +99,20 @@ pub fn onConnect(lua: *Lua, client: *irc.Client) !void {
 }
 
 pub fn execFn(lua: *Lua, func: i32) !void {
-    const lua_type = lua.rawGetIndex(registry_index, func); // function
+    const lua_type = lua.rawGetIndex(registry_index, func); // [function]
     switch (lua_type) {
         .function => lua.protectedCall(0, 0, 0) catch return error.LuaError,
-        else => std.debug.panic("not a function {}", .{lua_type}),
+        else => lua.raiseErrorStr("not a function", .{}),
+    }
+}
+
+pub fn execUserCommand(lua: *Lua, cmdline: []const u8, func: i32) !void {
+    const lua_type = lua.rawGetIndex(registry_index, func); // [function]
+    _ = lua.pushString(cmdline); // [function, string]
+
+    switch (lua_type) {
+        .function => lua.protectedCall(1, 0, 0) catch return error.LuaError,
+        else => lua.raiseErrorStr("not a function", .{}),
     }
 }
 

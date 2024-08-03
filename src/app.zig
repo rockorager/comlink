@@ -757,8 +757,10 @@ pub const App = struct {
             const end = mem.indexOfScalar(u8, cmd, ' ') orelse cmd.len;
             if (comlink.Command.fromString(cmd[start..end])) |builtin|
                 break :blk builtin;
-            if (comlink.Command.user_commands.get(cmd[start..end])) |ref|
-                return lua.execFn(lua_state, ref);
+            if (comlink.Command.user_commands.get(cmd[start..end])) |ref| {
+                const str = if (end == cmd.len) "" else std.mem.trim(u8, cmd[end..], " ");
+                return lua.execUserCommand(lua_state, str, ref);
+            }
             return error.UnknownCommand;
         };
         var buf: [1024]u8 = undefined;

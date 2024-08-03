@@ -66,7 +66,7 @@ function comlink.notify(title, body) end
 ---Add a custom command to comlink
 ---
 ---@param name string Name of the command
----@param fn function Function to call when command is enterred
+---@param fn fun(cmdline: string) Callback for the command. Receives the commandline as enterred, with the name removed, then any leading or trailing whitespace removed
 function comlink.add_command(name, fn) end
 
 return comlink
