@@ -98,6 +98,21 @@ pub fn onConnect(lua: *Lua, client: *irc.Client) !void {
     }
 }
 
+pub fn onMessage(lua: *Lua, client: *irc.Client, channel: []const u8, sender: []const u8, msg: []const u8) !void {
+    Client.getTable(lua, client.config.lua_table); // [table]
+    const lua_type = lua.getField(1, "on_message"); // [table, type]
+    switch (lua_type) {
+        .function => {
+            // Push the table to the top since it is our argument to the function
+            _ = lua.pushString(channel); // [function,string]
+            _ = lua.pushString(sender); // [function,string,string]
+            _ = lua.pushString(msg); // [function,string,string,string]
+            lua.protectedCall(3, 0, 0) catch return error.LuaError;
+        },
+        else => {},
+    }
+}
+
 pub fn execFn(lua: *Lua, func: i32) !void {
     const lua_type = lua.rawGetIndex(registry_index, func); // [function]
     switch (lua_type) {

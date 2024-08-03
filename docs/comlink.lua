@@ -19,6 +19,7 @@ local comlink = {}
 ---@class Connection
 ---
 ---@field on_connect fun(conn: Connection) Called after successful connection to the server
+---@field on_message fun(channel: string, sender: string, msg: string) Called after receiving a PRIVMSG
 local conn = {}
 
 ---Returns the name of the connection

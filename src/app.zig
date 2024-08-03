@@ -706,6 +706,16 @@ pub const App = struct {
                                     try channel.messages.append(msg);
                                     const content = iter.next() orelse continue;
                                     var has_highlight = false;
+                                    {
+                                        const sender: []const u8 = blk: {
+                                            const src = msg.source orelse break :blk "";
+                                            const l = std.mem.indexOfScalar(u8, src, '!') orelse
+                                                std.mem.indexOfScalar(u8, src, '@') orelse
+                                                src.len;
+                                            break :blk src[0..l];
+                                        };
+                                        try lua.onMessage(lua_state, msg.client, channel.name, sender, content);
+                                    }
                                     if (std.mem.indexOf(u8, content, msg.client.config.nick)) |_| {
                                         var buf: [64]u8 = undefined;
                                         const title_or_err = if (msg.source) |source|
