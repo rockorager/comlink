@@ -2,6 +2,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const comlink = @import("comlink.zig");
 const vaxis = @import("vaxis");
+const ziglua = @import("ziglua");
+
+const Lua = ziglua.Lua;
 
 const log = std.log.scoped(.main);
 
@@ -65,15 +68,16 @@ pub fn main() !void {
         },
     }
 
-    app.run() catch |err| {
+    const lua = try Lua.init(&alloc);
+
+    app.run(lua) catch |err| {
         switch (err) {
             // ziglua errors
             error.LuaError => {
-                const msg = app.lua.toString(-1) catch "";
-                const duped = app.alloc.dupe(u8, msg) catch "";
-                defer app.alloc.free(duped);
+                const msg = lua.toString(-1) catch "";
+                const duped = alloc.dupe(u8, msg) catch "";
+                defer alloc.free(duped);
                 log.err("{s}", .{duped});
-                app.deinit();
                 return err;
             },
             else => return err,

@@ -57,8 +57,6 @@ pub const App = struct {
     deinited: bool = false,
     /// Process environment
     env: std.process.EnvMap,
-    /// Our lua state
-    lua: *Lua,
     /// Local timezone
     tz: zeit.TimeZone,
     /// Instance of vaxis
@@ -86,7 +84,6 @@ pub const App = struct {
             .alloc = alloc,
             .clients = std.ArrayList(*irc.Client).init(alloc),
             .env = env,
-            .lua = try Lua.init(&alloc),
             .vx = vx,
             .tty = try vaxis.Tty.init(),
             .content_segments = std.ArrayList(vaxis.Segment).init(alloc),
@@ -158,7 +155,7 @@ pub const App = struct {
         self.env.deinit();
     }
 
-    pub fn run(self: *App) !void {
+    pub fn run(self: *App, lua_state: *Lua) !void {
         const writer = self.tty.anyWriter();
 
         var loop: comlink.EventLoop = .{ .vaxis = &self.vx, .tty = &self.tty };
@@ -166,7 +163,7 @@ pub const App = struct {
         try loop.start();
         defer {
             // Need to deinit lua before our loop goes out of scope
-            self.lua.deinit();
+            lua_state.deinit();
             while (loop.queue.tryPop()) |event| {
                 switch (event) {
                     .message => |msg| msg.deinit(self.alloc),
@@ -190,7 +187,7 @@ pub const App = struct {
         }
 
         // initialize lua state
-        try lua.init(self, &loop);
+        try lua.init(self, lua_state, &loop);
 
         var input = TextInput.init(self.alloc, &self.vx.unicode);
         defer input.deinit();
@@ -386,7 +383,7 @@ pub const App = struct {
                                 );
                                 try msg.client.queueWrite(targets);
                                 // on_connect callback
-                                try lua.onConnect(self.lua, msg.client);
+                                try lua.onConnect(lua_state, msg.client);
                             },
                             .RPL_YOURHOST => {},
                             .RPL_CREATED => {},

@@ -546,7 +546,9 @@ pub const Client = struct {
                 log.err("couldn't close tls conn: {}", .{err});
             };
         }
-        self.stream.close();
+        if (self.status == .connected) {
+            self.stream.close();
+        }
         // id gets allocated in the main thread. We need to deallocate it here if
         // we have one
         if (self.config.network_id) |id| self.alloc.free(id);

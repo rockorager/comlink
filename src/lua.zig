@@ -22,8 +22,7 @@ const loop_key = "comlink.loop";
 /// active client key. This gets replaced with the client context during callbacks
 const client_key = "comlink.client";
 
-pub fn init(app: *App, loop: *comlink.EventLoop) !void {
-    var lua = app.lua;
+pub fn init(app: *App, lua: *Lua, loop: *comlink.EventLoop) !void {
     // load standard libraries
     lua.openLibs();
 
