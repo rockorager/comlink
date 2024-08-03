@@ -115,6 +115,7 @@ const Comlink = struct {
             .{ .name = "connect", .func = ziglua.wrap(connect) },
             .{ .name = "log", .func = ziglua.wrap(log) },
             .{ .name = "notify", .func = ziglua.wrap(notify) },
+            .{ .name = "add_command", .func = ziglua.wrap(addCommand) },
         };
         lua.newLibTable(&fns); // [table]
         lua.setFuncs(&fns, 0); // [table]
@@ -285,6 +286,16 @@ const Comlink = struct {
         lua.pop(2); // []
         app.vx.notify(app.tty.anyWriter(), title, body) catch
             lua.raiseErrorStr("couldn't write notification", .{});
+        return 0;
+    }
+
+    /// Add a user command to the command list
+    fn addCommand(lua: *Lua) i32 {
+        lua.argCheck(lua.isString(1), 1, "expected a string"); // [string, function]
+        lua.argCheck(lua.isFunction(2), 2, "expected a function"); // [string, function]
+        const ref = lua.ref(registry_index) catch lua.raiseErrorStr("couldn't ref function", .{});
+        const cmd = lua.toString(1) catch unreachable;
+        comlink.Command.user_commands.put(cmd, ref) catch lua.raiseErrorStr("out of memory", .{});
         return 0;
     }
 };

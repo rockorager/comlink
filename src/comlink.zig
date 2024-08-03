@@ -31,6 +31,8 @@ pub const Command = union(enum) {
     redraw,
     lua_function: i32,
 
+    pub var user_commands: std.StringHashMap(i32) = undefined;
+
     /// only contains void commands
     const map = std.StaticStringMap(Command).initComptime(.{
         .{ "quote", .quote },

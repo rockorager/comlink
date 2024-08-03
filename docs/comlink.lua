@@ -63,4 +63,10 @@ function comlink.bind(key, action) end
 ---@param body string Body of the notification
 function comlink.notify(title, body) end
 
+---Add a custom command to comlink
+---
+---@param name string Name of the command
+---@param fn function Function to call when command is enterred
+function comlink.add_command(name, fn) end
+
 return comlink

@@ -64,6 +64,9 @@ pub fn main() !void {
         },
     }
 
+    comlink.Command.user_commands = std.StringHashMap(i32).init(alloc);
+    defer comlink.Command.user_commands.deinit();
+
     const lua = try Lua.init(&alloc);
     defer lua.deinit();
 

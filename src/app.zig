@@ -249,7 +249,7 @@ pub const App = struct {
                             const content = try input.toOwnedSlice();
                             defer self.alloc.free(content);
                             if (content[0] == '/')
-                                self.handleCommand(buffer, content) catch |err| {
+                                self.handleCommand(lua_state, buffer, content) catch |err| {
                                     log.err("couldn't handle command: {}", .{err});
                                 }
                             else {
@@ -751,11 +751,15 @@ pub const App = struct {
     }
 
     /// handle a command
-    pub fn handleCommand(self: *App, buffer: irc.Buffer, cmd: []const u8) !void {
+    pub fn handleCommand(self: *App, lua_state: *Lua, buffer: irc.Buffer, cmd: []const u8) !void {
         const command: comlink.Command = blk: {
             const start: u1 = if (cmd[0] == '/') 1 else 0;
             const end = mem.indexOfScalar(u8, cmd, ' ') orelse cmd.len;
-            break :blk comlink.Command.fromString(cmd[start..end]) orelse return error.UnknownCommand;
+            if (comlink.Command.fromString(cmd[start..end])) |builtin|
+                break :blk builtin;
+            if (comlink.Command.user_commands.get(cmd[start..end])) |ref|
+                return lua.execFn(lua_state, ref);
+            return error.UnknownCommand;
         };
         var buf: [1024]u8 = undefined;
         const client: *irc.Client = switch (buffer) {

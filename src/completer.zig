@@ -109,8 +109,15 @@ pub const Completer = struct {
         self.cmd = true;
         const commands = std.meta.fieldNames(Command);
         for (commands) |cmd| {
+            if (std.mem.eql(u8, cmd, "lua_function")) continue;
             if (std.ascii.startsWithIgnoreCase(cmd, self.word[1..])) {
                 try self.options.append(cmd);
+            }
+        }
+        var iter = Command.user_commands.keyIterator();
+        while (iter.next()) |cmd| {
+            if (std.ascii.startsWithIgnoreCase(cmd.*, self.word[1..])) {
+                try self.options.append(cmd.*);
             }
         }
     }
