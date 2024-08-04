@@ -26,13 +26,41 @@ pub fn init(app: *App, lua: *Lua, loop: *comlink.EventLoop) !void {
     // load standard libraries
     lua.openLibs();
 
-    // preload our library
     _ = try lua.getGlobal("package"); // [package]
-    _ = lua.getField(-1, "preload"); // [package, preload]
+    _ = lua.getField(1, "preload"); // [package, preload]
     lua.pushFunction(ziglua.wrap(Comlink.preloader)); // [package, preload, function]
-    lua.setField(-2, "comlink"); // [package, preload]
+    lua.setField(2, "comlink"); // [package, preload]
+    lua.pop(1); // [package]
+    _ = lua.getField(1, "path"); // [package, string]
+    const package_path = try lua.toString(2);
+    lua.pop(1); // [package]
+
+    // set package.path
+    {
+        var buf: [std.posix.PATH_MAX]u8 = undefined;
+        var fba = std.heap.FixedBufferAllocator.init(&buf);
+        const alloc = fba.allocator();
+        const prefix = blk: {
+            if (app.env.get("XDG_CONFIG_HOME")) |cfg|
+                break :blk try std.fs.path.join(alloc, &.{ cfg, "comlink" });
+            if (app.env.get("HOME")) |home|
+                break :blk try std.fs.path.join(alloc, &.{ home, ".config/comlink" });
+            return error.NoConfigFile;
+        };
+        const base = try std.fs.path.join(app.alloc, &.{ prefix, "?.lua" });
+        defer app.alloc.free(base);
+        const one = try std.fs.path.join(app.alloc, &.{ prefix, "lua/?.lua" });
+        defer app.alloc.free(one);
+        const two = try std.fs.path.join(app.alloc, &.{ prefix, "lua/?/init.lua" });
+        defer app.alloc.free(two);
+        const new_pkg_path = try std.mem.join(app.alloc, ";", &.{ package_path, base, one, two });
+        _ = lua.pushString(new_pkg_path); // [package, string]
+        lua.setField(1, "path"); // [package];
+        defer app.alloc.free(new_pkg_path);
+    }
+
     // empty the stack
-    lua.pop(2); // []
+    lua.pop(1); // []
 
     // keep a reference to our app in the lua state
     lua.pushLightUserdata(app); // [userdata]
@@ -42,9 +70,17 @@ pub fn init(app: *App, lua: *Lua, loop: *comlink.EventLoop) !void {
     lua.setField(registry_index, loop_key); // []
 
     // load config
-    const home = app.env.get("HOME") orelse return error.EnvironmentVariableNotFound;
     var buf: [std.posix.PATH_MAX]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&buf, "{s}/.config/comlink/init.lua", .{home});
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    const alloc = fba.allocator();
+    const path = blk: {
+        if (app.env.get("XDG_CONFIG_HOME")) |cfg|
+            break :blk try std.fs.path.joinZ(alloc, &.{ cfg, "comlink/init.lua" });
+        if (app.env.get("HOME")) |home|
+            break :blk try std.fs.path.joinZ(alloc, &.{ home, ".config/comlink/init.lua" });
+        unreachable;
+    };
+
     switch (ziglua.lang) {
         .luajit, .lua51 => lua.loadFile(path) catch return error.LuaError,
         else => lua.loadFile(path, .binary_text) catch return error.LuaError,
