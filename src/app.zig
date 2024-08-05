@@ -295,7 +295,6 @@ pub const App = struct {
                     .focus_out => self.state.mouse = null,
                     .mouse => |mouse| {
                         self.state.mouse = mouse;
-                        log.debug("mouse event: {}", .{mouse});
                     },
                     .winsize => |ws| try self.vx.resize(self.alloc, writer, ws),
                     .connect => |cfg| {
