@@ -16,6 +16,7 @@ pub const Buffer = union(enum) {
     client: *Client,
     channel: *Channel,
 };
+
 pub const Command = enum {
     RPL_WELCOME, // 001
     RPL_YOURHOST, // 002

@@ -162,7 +162,13 @@ pub fn execUserCommand(lua: *Lua, cmdline: []const u8, func: i32) !void {
     _ = lua.pushString(cmdline); // [function, string]
 
     switch (lua_type) {
-        .function => lua.protectedCall(1, 0, 0) catch return error.LuaError,
+        .function => lua.protectedCall(1, 0, 0) catch |err| {
+            const msg = lua.toString(-1) catch {
+                std.log.err("{}", .{err});
+                return error.LuaError;
+            };
+            std.log.err("{s}", .{msg});
+        },
         else => lua.raiseErrorStr("not a function", .{}),
     }
 }
