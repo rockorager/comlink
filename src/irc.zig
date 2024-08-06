@@ -152,7 +152,6 @@ pub const Channel = struct {
                 const nick = source[0..bang];
 
                 if (l == 0 and msg.time() != null and std.mem.eql(u8, lhs.user.nick, nick)) {
-                    log.debug("L!!", .{});
                     l = msg.time().?.unixTimestamp();
                 } else if (r == 0 and msg.time() != null and std.mem.eql(u8, rhs.user.nick, nick))
                     r = msg.time().?.unixTimestamp();
