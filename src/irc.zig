@@ -3,14 +3,22 @@ const comlink = @import("comlink.zig");
 const tls = @import("tls");
 const vaxis = @import("vaxis");
 const zeit = @import("zeit");
+const bytepool = @import("pool.zig");
 
 const testing = std.testing;
+
+pub const MessagePool = bytepool.BytePool(max_raw_msg_size * 4);
+pub const Slice = MessagePool.Slice;
 
 const assert = std.debug.assert;
 
 const log = std.log.scoped(.irc);
 
+/// maximum size message we can write
 pub const maximum_message_size = 512;
+
+/// maximum size message we can receive
+const max_raw_msg_size = 512 + 8191; // see modernircdocs
 
 pub const Buffer = union(enum) {
     client: *Client,
@@ -125,7 +133,7 @@ pub const Channel = struct {
             alloc.free(topic);
         }
         for (self.messages.items) |msg| {
-            msg.deinit(alloc);
+            alloc.free(msg.bytes);
         }
         self.messages.deinit();
     }
@@ -139,15 +147,15 @@ pub const Channel = struct {
         var r: i64 = 0;
         var iter = std.mem.reverseIterator(self.messages.items);
         while (iter.next()) |msg| {
-            if (msg.source) |source| {
+            if (msg.source()) |source| {
                 const bang = std.mem.indexOfScalar(u8, source, '!') orelse source.len;
                 const nick = source[0..bang];
 
-                if (l == 0 and msg.time != null and std.mem.eql(u8, lhs.user.nick, nick)) {
+                if (l == 0 and msg.time() != null and std.mem.eql(u8, lhs.user.nick, nick)) {
                     log.debug("L!!", .{});
-                    l = msg.time.?.instant().unixTimestamp();
-                } else if (r == 0 and msg.time != null and std.mem.eql(u8, rhs.user.nick, nick))
-                    r = msg.time.?.instant().unixTimestamp();
+                    l = msg.time().?.unixTimestamp();
+                } else if (r == 0 and msg.time() != null and std.mem.eql(u8, rhs.user.nick, nick))
+                    r = msg.time().?.unixTimestamp();
             }
             if (l > 0 and r > 0) break;
         }
@@ -203,24 +211,7 @@ pub const User = struct {
 
 /// an irc message
 pub const Message = struct {
-    client: *Client,
-    src: []const u8,
-    tags: ?[]const u8,
-    source: ?[]const u8,
-    command: Command,
-    params: ?[]const u8,
-    time: ?zeit.Time = null,
-    time_buf: ?[]u8 = null,
-
-    pub fn compareTime(_: void, lhs: Message, rhs: Message) bool {
-        const lhs_t = lhs.time orelse return false;
-        const rhs_t = rhs.time orelse return false;
-
-        const rhs_instant = rhs_t.instant();
-        const lhs_instant = lhs_t.instant();
-
-        return lhs_instant.timestamp < rhs_instant.timestamp;
-    }
+    bytes: []const u8,
 
     pub const ParamIterator = struct {
         params: ?[]const u8,
@@ -266,18 +257,17 @@ pub const Message = struct {
     };
 
     pub const TagIterator = struct {
-        tags: ?[]const u8,
+        tags: []const u8,
         index: usize = 0,
 
         // tags are a list of key=value pairs delimited by semicolons.
         // key[=value] [; key[=value]]
         pub fn next(self: *TagIterator) ?Tag {
-            const tags = self.tags orelse return null;
-            if (self.index >= tags.len) return null;
+            if (self.index >= self.tags.len) return null;
 
             // find next delimiter
-            const end = std.mem.indexOfScalarPos(u8, tags, self.index, ';') orelse tags.len;
-            var kv_delim = std.mem.indexOfScalarPos(u8, tags, self.index, '=') orelse end;
+            const end = std.mem.indexOfScalarPos(u8, self.tags, self.index, ';') orelse self.tags.len;
+            var kv_delim = std.mem.indexOfScalarPos(u8, self.tags, self.index, '=') orelse end;
             // it's possible to have tags like this:
             //     @bot;account=botaccount;+typing=active
             // where the first tag doesn't have a value. Guard against the
@@ -287,183 +277,141 @@ pub const Message = struct {
             defer self.index = end + 1;
 
             return .{
-                .key = tags[self.index..kv_delim],
-                .value = if (end == kv_delim) "" else tags[kv_delim + 1 .. end],
+                .key = self.tags[self.index..kv_delim],
+                .value = if (end == kv_delim) "" else self.tags[kv_delim + 1 .. end],
             };
         }
     };
 
-    pub fn init(src: []const u8, client: *Client) !Message {
+    pub fn tagIterator(msg: Message) TagIterator {
+        const src = msg.bytes;
+        if (src[0] != '@') return .{ .tags = "" };
+
+        assert(src.len > 1);
+        const n = std.mem.indexOfScalarPos(u8, src, 1, ' ') orelse src.len;
+        return .{ .tags = src[1..n] };
+    }
+
+    pub fn source(msg: Message) ?[]const u8 {
+        const src = msg.bytes;
         var i: usize = 0;
-        const tags: ?[]const u8 = blk: {
-            if (src[i] != '@') break :blk null;
-            const n = std.mem.indexOfScalarPos(u8, src, i, ' ') orelse return error.InvalidMessage;
-            const tags = src[i + 1 .. n];
-            i = n;
-            // consume whitespace
-            while (i < src.len) : (i += 1) {
-                if (src[i] != ' ') break;
-            }
-            break :blk tags;
-        };
 
-        const instant: ?zeit.Time = blk: {
-            if (tags == null) break :blk null;
-            var tag_iter = TagIterator{ .tags = tags };
-            while (tag_iter.next()) |tag| {
-                if (!std.mem.eql(u8, tag.key, "time")) continue;
-                const instant = try zeit.instant(.{
-                    .source = .{ .iso8601 = tag.value },
-                    .timezone = &client.app.tz,
-                });
-
-                break :blk instant.time();
-            } else break :blk null;
-        };
-
-        const source: ?[]const u8 = blk: {
-            if (src[i] != ':') break :blk null;
-            const n = std.mem.indexOfScalarPos(u8, src, i, ' ') orelse return error.InvalidMessage;
-            const source = src[i + 1 .. n];
-            i = n;
-            // consume whitespace
-            while (i < src.len) : (i += 1) {
-                if (src[i] != ' ') break;
-            }
-            break :blk source;
-        };
-
-        const n = std.mem.indexOfScalarPos(u8, src, i, ' ') orelse src.len;
-
-        const cmd = Command.parse(src[i..n]);
-
-        i = n;
+        // get past tags
+        if (src[0] == '@') {
+            assert(src.len > 1);
+            i = std.mem.indexOfScalarPos(u8, src, 1, ' ') orelse return null;
+        }
 
         // consume whitespace
         while (i < src.len) : (i += 1) {
             if (src[i] != ' ') break;
         }
 
-        const params: ?[]const u8 = if (i == src.len) null else src[i..src.len];
+        // Start of source
+        if (src[i] == ':') {
+            assert(src.len > i);
+            i += 1;
+            const end = std.mem.indexOfScalarPos(u8, src, i, ' ') orelse src.len;
+            return src[i..end];
+        }
 
-        return .{
-            .src = src,
-            .tags = tags,
-            .source = source,
-            .command = cmd,
-            .params = params,
-            .client = client,
-            .time = instant,
-        };
+        return null;
     }
 
-    pub fn deinit(msg: Message, alloc: std.mem.Allocator) void {
-        alloc.free(msg.src);
-        if (msg.time_buf) |buf| alloc.free(buf);
+    pub fn command(msg: Message) Command {
+        const src = msg.bytes;
+        var i: usize = 0;
+
+        // get past tags
+        if (src[0] == '@') {
+            assert(src.len > 1);
+            i = std.mem.indexOfScalarPos(u8, src, 1, ' ') orelse return .unknown;
+        }
+        // consume whitespace
+        while (i < src.len) : (i += 1) {
+            if (src[i] != ' ') break;
+        }
+
+        // get past source
+        if (src[i] == ':') {
+            assert(src.len > i);
+            i += 1;
+            i = std.mem.indexOfScalarPos(u8, src, i, ' ') orelse return .unknown;
+        }
+        // consume whitespace
+        while (i < src.len) : (i += 1) {
+            if (src[i] != ' ') break;
+        }
+
+        assert(src.len > i);
+        // Find next space
+        const end = std.mem.indexOfScalarPos(u8, src, i, ' ') orelse src.len;
+        return Command.parse(src[i..end]);
     }
 
     pub fn paramIterator(msg: Message) ParamIterator {
-        return .{ .params = msg.params };
-    }
-
-    pub fn tagIterator(msg: Message) TagIterator {
-        return .{ .tags = msg.tags };
-    }
-
-    test "simple message" {
-        const msg = try Message.init("JOIN");
-
-        try testing.expect(msg.tags == null);
-        try testing.expect(msg.source == null);
-        try testing.expectEqualStrings("JOIN", msg.command);
-        try testing.expect(msg.params == null);
-    }
-
-    test "simple message with extra whitespace" {
-        const msg = try Message.init("JOIN       ");
-
-        try testing.expect(msg.tags == null);
-        try testing.expect(msg.source == null);
-        try testing.expectEqualStrings("JOIN", msg.command);
-        try testing.expect(msg.params == null);
-    }
-
-    test "well formed message with tags, source, params" {
-        const msg = try Message.init("@key=value :example.chat JOIN abc def");
-
-        try testing.expectEqualStrings("key=value", msg.tags.?);
-        try testing.expectEqualStrings("example.chat", msg.source.?);
-        try testing.expectEqualStrings("JOIN", msg.command);
-        try testing.expectEqualStrings("abc def", msg.params.?);
-    }
-
-    test "message with tags, source, params and extra whitespace" {
-        const msg = try Message.init("@key=value   :example.chat    JOIN    abc def");
-
-        try testing.expectEqualStrings("key=value", msg.tags.?);
-        try testing.expectEqualStrings("example.chat", msg.source.?);
-        try testing.expectEqualStrings("JOIN", msg.command);
-        try testing.expectEqualStrings("abc def", msg.params.?);
-    }
-
-    test "param iterator: simple list" {
-        var iter: Message.ParamIterator = .{ .params = "a b c" };
+        const src = msg.bytes;
         var i: usize = 0;
-        while (iter.next()) |param| {
-            switch (i) {
-                0 => try testing.expectEqualStrings("a", param),
-                1 => try testing.expectEqualStrings("b", param),
-                2 => try testing.expectEqualStrings("c", param),
-                else => return error.TooManyParams,
-            }
-            i += 1;
+
+        // get past tags
+        if (src[0] == '@') {
+            i = std.mem.indexOfScalarPos(u8, src, 0, ' ') orelse return .{ .params = "" };
         }
-        try testing.expect(i == 3);
+        // consume whitespace
+        while (i < src.len) : (i += 1) {
+            if (src[i] != ' ') break;
+        }
+
+        // get past source
+        if (src[i] == ':') {
+            assert(src.len > i);
+            i += 1;
+            i = std.mem.indexOfScalarPos(u8, src, i, ' ') orelse return .{ .params = "" };
+        }
+        // consume whitespace
+        while (i < src.len) : (i += 1) {
+            if (src[i] != ' ') break;
+        }
+
+        // get past command
+        i = std.mem.indexOfScalarPos(u8, src, i, ' ') orelse return .{ .params = "" };
+
+        assert(src.len > i);
+        return .{ .params = src[i + 1 ..] };
     }
 
-    test "param iterator: trailing colon" {
-        var iter: Message.ParamIterator = .{ .params = "* LS :" };
-        var i: usize = 0;
-        while (iter.next()) |param| {
-            switch (i) {
-                0 => try testing.expectEqualStrings("*", param),
-                1 => try testing.expectEqualStrings("LS", param),
-                2 => try testing.expectEqualStrings("", param),
-                else => return error.TooManyParams,
-            }
-            i += 1;
+    /// Returns the value of the tag 'key', if present
+    pub fn getTag(self: Message, key: []const u8) ?[]const u8 {
+        var tag_iter = self.tagIterator();
+        while (tag_iter.next()) |tag| {
+            if (!std.mem.eql(u8, tag.key, key)) continue;
+            return tag.value;
         }
-        try testing.expect(i == 3);
+        return null;
     }
 
-    test "param iterator: colon" {
-        var iter: Message.ParamIterator = .{ .params = "* LS :sasl multi-prefix" };
-        var i: usize = 0;
-        while (iter.next()) |param| {
-            switch (i) {
-                0 => try testing.expectEqualStrings("*", param),
-                1 => try testing.expectEqualStrings("LS", param),
-                2 => try testing.expectEqualStrings("sasl multi-prefix", param),
-                else => return error.TooManyParams,
-            }
-            i += 1;
-        }
-        try testing.expect(i == 3);
+    pub fn time(self: Message) ?zeit.Instant {
+        const val = self.getTag("time") orelse return null;
+
+        // Return null if we can't parse the time
+        const instant = zeit.instant(.{
+            .source = .{ .iso8601 = val },
+            .timezone = &zeit.utc,
+        }) catch return null;
+
+        return instant;
     }
 
-    test "param iterator: colon and leading colon" {
-        var iter: Message.ParamIterator = .{ .params = "* LS ::)" };
-        var i: usize = 0;
-        while (iter.next()) |param| {
-            switch (i) {
-                0 => try testing.expectEqualStrings("*", param),
-                1 => try testing.expectEqualStrings("LS", param),
-                2 => try testing.expectEqualStrings(":)", param),
-                else => return error.TooManyParams,
-            }
-            i += 1;
-        }
-        try testing.expect(i == 3);
+    pub fn localTime(self: Message, tz: *const zeit.TimeZone) ?zeit.Instant {
+        const utc = self.time() orelse return null;
+        return utc.in(tz);
+    }
+
+    pub fn compareTime(_: void, lhs: Message, rhs: Message) bool {
+        const lhs_time = lhs.time() orelse return false;
+        const rhs_time = rhs.time() orelse return false;
+
+        return lhs_time.timestamp < rhs_time.timestamp;
     }
 };
 
@@ -615,6 +563,11 @@ pub const Client = struct {
 
             var buf: [16_384]u8 = undefined;
 
+            // 4x max size. We will almost always be *way* under our maximum size, so we will have a
+            // lot more potential messages than just 4
+            var pool: MessagePool = .{};
+            pool.init();
+
             errdefer |err| {
                 log.err("client: {s} error: {}", .{ self.config.network_id.?, err });
             }
@@ -654,22 +607,12 @@ pub const Client = struct {
                 var i: usize = 0;
                 while (std.mem.indexOfPos(u8, buf[0 .. n + start], i, "\r\n")) |idx| {
                     defer i = idx + 2;
-                    const line = try self.alloc.dupe(u8, buf[i..idx]);
+                    const buffer = pool.alloc(idx - i);
+                    // const line = try self.alloc.dupe(u8, buf[i..idx]);
+                    @memcpy(buffer.slice(), buf[i..idx]);
                     assert(std.mem.eql(u8, buf[idx .. idx + 2], "\r\n"));
-                    log.debug("[<-{s}] {s}", .{ self.config.name orelse self.config.server, line });
-                    var msg = Message.init(line, self) catch |err| {
-                        log.err("[{s}] invalid message {}", .{ self.config.name orelse self.config.server, err });
-                        self.alloc.free(line);
-                        continue;
-                    };
-                    if (msg.time) |time| {
-                        msg.time_buf = try std.fmt.allocPrint(
-                            self.alloc,
-                            "{d:0>2}:{d:0>2}",
-                            .{ time.hour, time.minute },
-                        );
-                    }
-                    loop.postEvent(.{ .message = msg });
+                    log.debug("[<-{s}] {s}", .{ self.config.name orelse self.config.server, buffer.slice() });
+                    loop.postEvent(.{ .irc = .{ .client = self, .msg = buffer } });
                 }
                 if (i != n) {
                     // we had a part of a line read. Copy it to the beginning of the
@@ -980,4 +923,126 @@ pub const ChatHistoryCommand = enum {
 test "caseFold" {
     try testing.expect(caseFold("a", "A"));
     try testing.expect(caseFold("aBcDeFgH", "abcdefgh"));
+}
+
+test "simple message" {
+    const msg: Message = .{ .bytes = "JOIN" };
+    try testing.expect(msg.command() == .JOIN);
+}
+
+test "simple message with extra whitespace" {
+    const msg: Message = .{ .bytes = "JOIN      " };
+    try testing.expect(msg.command() == .JOIN);
+}
+
+test "well formed message with tags, source, params" {
+    const msg: Message = .{ .bytes = "@key=value :example.chat JOIN abc def" };
+
+    var tag_iter = msg.tagIterator();
+    const tag = tag_iter.next();
+    try testing.expect(tag != null);
+    try testing.expectEqualStrings("key", tag.?.key);
+    try testing.expectEqualStrings("value", tag.?.value);
+    try testing.expect(tag_iter.next() == null);
+
+    const source = msg.source();
+    try testing.expect(source != null);
+    try testing.expectEqualStrings("example.chat", source.?);
+    try testing.expect(msg.command() == .JOIN);
+
+    var param_iter = msg.paramIterator();
+    const p1 = param_iter.next();
+    const p2 = param_iter.next();
+    try testing.expect(p1 != null);
+    try testing.expect(p2 != null);
+    try testing.expectEqualStrings("abc", p1.?);
+    try testing.expectEqualStrings("def", p2.?);
+
+    try testing.expect(param_iter.next() == null);
+}
+
+test "message with tags, source, params and extra whitespace" {
+    const msg: Message = .{ .bytes = "@key=value        :example.chat        JOIN    abc def" };
+
+    var tag_iter = msg.tagIterator();
+    const tag = tag_iter.next();
+    try testing.expect(tag != null);
+    try testing.expectEqualStrings("key", tag.?.key);
+    try testing.expectEqualStrings("value", tag.?.value);
+    try testing.expect(tag_iter.next() == null);
+
+    const source = msg.source();
+    try testing.expect(source != null);
+    try testing.expectEqualStrings("example.chat", source.?);
+    try testing.expect(msg.command() == .JOIN);
+
+    var param_iter = msg.paramIterator();
+    const p1 = param_iter.next();
+    const p2 = param_iter.next();
+    try testing.expect(p1 != null);
+    try testing.expect(p2 != null);
+    try testing.expectEqualStrings("abc", p1.?);
+    try testing.expectEqualStrings("def", p2.?);
+
+    try testing.expect(param_iter.next() == null);
+}
+
+test "param iterator: simple list" {
+    var iter: Message.ParamIterator = .{ .params = "a b c" };
+    var i: usize = 0;
+    while (iter.next()) |param| {
+        switch (i) {
+            0 => try testing.expectEqualStrings("a", param),
+            1 => try testing.expectEqualStrings("b", param),
+            2 => try testing.expectEqualStrings("c", param),
+            else => return error.TooManyParams,
+        }
+        i += 1;
+    }
+    try testing.expect(i == 3);
+}
+
+test "param iterator: trailing colon" {
+    var iter: Message.ParamIterator = .{ .params = "* LS :" };
+    var i: usize = 0;
+    while (iter.next()) |param| {
+        switch (i) {
+            0 => try testing.expectEqualStrings("*", param),
+            1 => try testing.expectEqualStrings("LS", param),
+            2 => try testing.expectEqualStrings("", param),
+            else => return error.TooManyParams,
+        }
+        i += 1;
+    }
+    try testing.expect(i == 3);
+}
+
+test "param iterator: colon" {
+    var iter: Message.ParamIterator = .{ .params = "* LS :sasl multi-prefix" };
+    var i: usize = 0;
+    while (iter.next()) |param| {
+        switch (i) {
+            0 => try testing.expectEqualStrings("*", param),
+            1 => try testing.expectEqualStrings("LS", param),
+            2 => try testing.expectEqualStrings("sasl multi-prefix", param),
+            else => return error.TooManyParams,
+        }
+        i += 1;
+    }
+    try testing.expect(i == 3);
+}
+
+test "param iterator: colon and leading colon" {
+    var iter: Message.ParamIterator = .{ .params = "* LS ::)" };
+    var i: usize = 0;
+    while (iter.next()) |param| {
+        switch (i) {
+            0 => try testing.expectEqualStrings("*", param),
+            1 => try testing.expectEqualStrings("LS", param),
+            2 => try testing.expectEqualStrings(":)", param),
+            else => return error.TooManyParams,
+        }
+        i += 1;
+    }
+    try testing.expect(i == 3);
 }

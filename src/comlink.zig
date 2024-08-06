@@ -74,11 +74,16 @@ pub const Event = union(enum) {
     mouse: vaxis.Mouse,
     winsize: vaxis.Winsize,
     focus_out,
-    message: irc.Message,
+    irc: IrcEvent,
     connect: irc.Client.Config,
     redraw,
     paste_start,
     paste_end,
+};
+
+pub const IrcEvent = struct {
+    client: *irc.Client,
+    msg: irc.Slice,
 };
 
 /// An event our write thread will handle

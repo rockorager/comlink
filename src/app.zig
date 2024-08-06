@@ -161,15 +161,7 @@ pub const App = struct {
         var loop: comlink.EventLoop = .{ .vaxis = &self.vx, .tty = &self.tty };
         try loop.init();
         try loop.start();
-        defer {
-            while (loop.queue.tryPop()) |event| {
-                switch (event) {
-                    .message => |msg| msg.deinit(self.alloc),
-                    else => {},
-                }
-            }
-            loop.stop();
-        }
+        defer loop.stop();
 
         try self.vx.enterAltScreen(writer);
         try self.vx.queryTerminal(writer, 1 * std.time.ns_per_s);
@@ -303,12 +295,11 @@ pub const App = struct {
                         client.thread = try std.Thread.spawn(.{}, irc.Client.readLoop, .{ client, &loop });
                         try self.clients.append(client);
                     },
-                    .message => |msg| {
-                        var keep_message: bool = false;
-                        defer {
-                            if (!keep_message) msg.deinit(self.alloc);
-                        }
-                        switch (msg.command) {
+                    .irc => |irc_event| {
+                        const msg: irc.Message = .{ .bytes = irc_event.msg.slice() };
+                        const client = irc_event.client;
+                        defer irc_event.msg.deinit();
+                        switch (msg.command()) {
                             .unknown => {},
                             .CAP => {
                                 // syntax: <client> <ACK/NACK> :caps
@@ -319,9 +310,9 @@ pub const App = struct {
                                 var cap_iter = mem.splitScalar(u8, caps, ' ');
                                 while (cap_iter.next()) |cap| {
                                     if (mem.eql(u8, ack_or_nak, "ACK")) {
-                                        msg.client.ack(cap);
+                                        client.ack(cap);
                                         if (mem.eql(u8, cap, "sasl"))
-                                            try msg.client.queueWrite("AUTHENTICATE PLAIN\r\n");
+                                            try client.queueWrite("AUTHENTICATE PLAIN\r\n");
                                     } else if (mem.eql(u8, ack_or_nak, "NAK")) {
                                         log.debug("CAP not supported {s}", .{cap});
                                     }
@@ -334,7 +325,7 @@ pub const App = struct {
                                     // AUTHENTICATE info
                                     if (!mem.eql(u8, param, "+")) continue;
                                     var buf: [4096]u8 = undefined;
-                                    const config = msg.client.config;
+                                    const config = client.config;
                                     const sasl = try std.fmt.bufPrint(
                                         &buf,
                                         "{s}\x00{s}\x00{s}",
@@ -351,16 +342,16 @@ pub const App = struct {
                                         "AUTHENTICATE {s}\r\n",
                                         .{encoded},
                                     );
-                                    try msg.client.queueWrite(auth);
+                                    try client.queueWrite(auth);
                                     if (config.network_id) |id| {
                                         const bind = try std.fmt.bufPrint(
                                             &buf,
                                             "BOUNCER BIND {s}\r\n",
                                             .{id},
                                         );
-                                        try msg.client.queueWrite(bind);
+                                        try client.queueWrite(bind);
                                     }
-                                    try msg.client.queueWrite("CAP END\r\n");
+                                    try client.queueWrite("CAP END\r\n");
                                 }
                             },
                             .RPL_WELCOME => {
@@ -378,9 +369,9 @@ pub const App = struct {
                                     "CHATHISTORY TARGETS timestamp={s} timestamp={s} 50\r\n",
                                     .{ now_fmt, past_fmt },
                                 );
-                                try msg.client.queueWrite(targets);
+                                try client.queueWrite(targets);
                                 // on_connect callback
-                                try lua.onConnect(lua_state, msg.client);
+                                try lua.onConnect(lua_state, client);
                             },
                             .RPL_YOURHOST => {},
                             .RPL_CREATED => {},
@@ -391,7 +382,7 @@ pub const App = struct {
                                 _ = iter.next() orelse continue; // client
                                 while (iter.next()) |token| {
                                     if (mem.eql(u8, token, "WHOX"))
-                                        msg.client.supports.whox = true
+                                        client.supports.whox = true
                                     else if (mem.startsWith(u8, token, "PREFIX")) {
                                         const prefix = blk: {
                                             const idx = mem.indexOfScalar(u8, token, ')') orelse
@@ -399,7 +390,7 @@ pub const App = struct {
                                                 break :blk try self.alloc.dupe(u8, "@+");
                                             break :blk try self.alloc.dupe(u8, token[idx + 1 ..]);
                                         };
-                                        msg.client.supports.prefix = prefix;
+                                        client.supports.prefix = prefix;
                                     }
                                 }
                             },
@@ -411,7 +402,7 @@ pub const App = struct {
                                 const channel_name = iter.next() orelse continue :loop; // channel
                                 const topic = iter.next() orelse continue :loop; // topic
 
-                                var channel = try msg.client.getOrCreateChannel(channel_name);
+                                var channel = try client.getOrCreateChannel(channel_name);
                                 if (channel.topic) |old_topic| {
                                     self.alloc.free(old_topic);
                                 }
@@ -430,12 +421,12 @@ pub const App = struct {
                                 const nick = iter.next() orelse continue :loop; // nick
                                 const flags = iter.next() orelse continue :loop; // nick
 
-                                const user_ptr = try msg.client.getOrCreateUser(nick);
+                                const user_ptr = try client.getOrCreateUser(nick);
                                 if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
-                                var channel = try msg.client.getOrCreateChannel(channel_name);
+                                var channel = try client.getOrCreateChannel(channel_name);
 
                                 const prefix = for (flags) |c| {
-                                    if (std.mem.indexOfScalar(u8, msg.client.supports.prefix, c)) |_| {
+                                    if (std.mem.indexOfScalar(u8, client.supports.prefix, c)) |_| {
                                         break c;
                                     }
                                 } else ' ';
@@ -450,12 +441,12 @@ pub const App = struct {
                                 const nick = iter.next() orelse continue;
                                 const flags = iter.next() orelse continue;
 
-                                const user_ptr = try msg.client.getOrCreateUser(nick);
+                                const user_ptr = try client.getOrCreateUser(nick);
                                 if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
-                                var channel = try msg.client.getOrCreateChannel(channel_name);
+                                var channel = try client.getOrCreateChannel(channel_name);
 
                                 const prefix = for (flags) |c| {
-                                    if (std.mem.indexOfScalar(u8, msg.client.supports.prefix, c)) |_| {
+                                    if (std.mem.indexOfScalar(u8, client.supports.prefix, c)) |_| {
                                         break c;
                                     }
                                 } else ' ';
@@ -468,7 +459,7 @@ pub const App = struct {
                                 _ = iter.next() orelse continue :loop; // client
                                 const channel_name = iter.next() orelse continue :loop; // channel
                                 if (mem.eql(u8, channel_name, "*")) continue;
-                                var channel = try msg.client.getOrCreateChannel(channel_name);
+                                var channel = try client.getOrCreateChannel(channel_name);
                                 channel.in_flight.who = false;
                             },
                             .RPL_NAMREPLY => {
@@ -478,10 +469,10 @@ pub const App = struct {
                                 _ = iter.next() orelse continue; // symbol
                                 const channel_name = iter.next() orelse continue; // channel
                                 const names = iter.next() orelse continue;
-                                var channel = try msg.client.getOrCreateChannel(channel_name);
+                                var channel = try client.getOrCreateChannel(channel_name);
                                 var name_iter = std.mem.splitScalar(u8, names, ' ');
                                 while (name_iter.next()) |name| {
-                                    const nick, const prefix = for (msg.client.supports.prefix) |ch| {
+                                    const nick, const prefix = for (client.supports.prefix) |ch| {
                                         if (name[0] == ch) {
                                             break .{ name[1..], name[0] };
                                         }
@@ -491,7 +482,7 @@ pub const App = struct {
                                         log.debug("HAS PREFIX {s}", .{name});
                                     }
 
-                                    const user_ptr = try msg.client.getOrCreateUser(nick);
+                                    const user_ptr = try client.getOrCreateUser(nick);
 
                                     try channel.addMember(user_ptr, .{ .prefix = prefix, .sort = false });
                                 }
@@ -503,7 +494,7 @@ pub const App = struct {
                                 var iter = msg.paramIterator();
                                 _ = iter.next() orelse continue; // client
                                 const channel_name = iter.next() orelse continue; // channel
-                                var channel = try msg.client.getOrCreateChannel(channel_name);
+                                var channel = try client.getOrCreateChannel(channel_name);
                                 channel.in_flight.names = false;
                             },
                             .BOUNCER => {
@@ -513,13 +504,13 @@ pub const App = struct {
                                         const id = iter.next() orelse continue;
                                         const attr = iter.next() orelse continue;
                                         // check if we already have this network
-                                        for (self.clients.items, 0..) |client, i| {
-                                            if (client.config.network_id) |net_id| {
+                                        for (self.clients.items, 0..) |cl, i| {
+                                            if (cl.config.network_id) |net_id| {
                                                 if (mem.eql(u8, net_id, id)) {
                                                     if (mem.eql(u8, attr, "*")) {
                                                         // * means the network was
                                                         // deleted
-                                                        client.deinit();
+                                                        cl.deinit();
                                                         _ = self.clients.swapRemove(i);
                                                     }
                                                     continue :loop;
@@ -534,7 +525,7 @@ pub const App = struct {
                                                 break :name try self.alloc.dupe(u8, kv[n + 1 ..]);
                                         } else null;
 
-                                        var cfg = msg.client.config;
+                                        var cfg = client.config;
                                         cfg.network_id = try self.alloc.dupe(u8, id);
                                         cfg.name = name;
                                         loop.postEvent(.{ .connect = cfg });
@@ -542,10 +533,10 @@ pub const App = struct {
                                 }
                             },
                             .AWAY => {
-                                const src = msg.source orelse continue :loop;
+                                const src = msg.source() orelse continue :loop;
                                 var iter = msg.paramIterator();
                                 const n = std.mem.indexOfScalar(u8, src, '!') orelse src.len;
-                                const user = try msg.client.getOrCreateUser(src[0..n]);
+                                const user = try client.getOrCreateUser(src[0..n]);
                                 // If there are any params, the user is away. Otherwise
                                 // they are back.
                                 user.away = if (iter.next()) |_| true else false;
@@ -558,17 +549,17 @@ pub const App = struct {
                                         const batch_type = iter.next() orelse continue;
                                         if (mem.eql(u8, batch_type, "chathistory")) {
                                             const target = iter.next() orelse continue;
-                                            var channel = try msg.client.getOrCreateChannel(target);
+                                            var channel = try client.getOrCreateChannel(target);
                                             channel.at_oldest = true;
                                             const duped_tag = try self.alloc.dupe(u8, tag[1..]);
-                                            try msg.client.batches.put(duped_tag, channel);
+                                            try client.batches.put(duped_tag, channel);
                                         }
                                     },
                                     '-' => {
-                                        const key = msg.client.batches.getKey(tag[1..]) orelse continue;
-                                        var chan = msg.client.batches.get(key) orelse @panic("key should exist here");
+                                        const key = client.batches.getKey(tag[1..]) orelse continue;
+                                        var chan = client.batches.get(key) orelse @panic("key should exist here");
                                         chan.history_requested = false;
-                                        _ = msg.client.batches.remove(key);
+                                        _ = client.batches.remove(key);
                                         self.alloc.free(key);
                                     },
                                     else => {},
@@ -583,9 +574,9 @@ pub const App = struct {
                                 assert(target.len > 0);
                                 if (target[0] == '#') continue;
 
-                                var channel = try msg.client.getOrCreateChannel(target);
-                                const user_ptr = try msg.client.getOrCreateUser(target);
-                                const me_ptr = try msg.client.getOrCreateUser(msg.client.config.nick);
+                                var channel = try client.getOrCreateChannel(target);
+                                const user_ptr = try client.getOrCreateUser(target);
+                                const me_ptr = try client.getOrCreateUser(client.config.nick);
                                 try channel.addMember(user_ptr, .{});
                                 try channel.addMember(me_ptr, .{});
                                 // we set who_requested so we don't try to request
@@ -597,23 +588,23 @@ pub const App = struct {
                                     "MARKREAD {s}\r\n",
                                     .{channel.name},
                                 );
-                                try msg.client.queueWrite(mark_read);
-                                try msg.client.requestHistory(.after, channel);
+                                try client.queueWrite(mark_read);
+                                try client.requestHistory(.after, channel);
                             },
                             .JOIN => {
                                 // get the user
-                                const src = msg.source orelse continue :loop;
+                                const src = msg.source() orelse continue :loop;
                                 const n = std.mem.indexOfScalar(u8, src, '!') orelse src.len;
-                                const user = try msg.client.getOrCreateUser(src[0..n]);
+                                const user = try client.getOrCreateUser(src[0..n]);
 
                                 // get the channel
                                 var iter = msg.paramIterator();
                                 const target = iter.next() orelse continue;
-                                var channel = try msg.client.getOrCreateChannel(target);
+                                var channel = try client.getOrCreateChannel(target);
 
                                 // If it's our nick, we request chat history
-                                if (mem.eql(u8, user.nick, msg.client.config.nick))
-                                    try msg.client.requestHistory(.after, channel)
+                                if (mem.eql(u8, user.nick, client.config.nick))
+                                    try client.requestHistory(.after, channel)
                                 else
                                     try channel.addMember(user, .{});
                             },
@@ -630,47 +621,49 @@ pub const App = struct {
                                     log.err("couldn't convert timestamp: {}", .{err});
                                     continue;
                                 };
-                                var channel = try msg.client.getOrCreateChannel(target);
+                                var channel = try client.getOrCreateChannel(target);
                                 channel.last_read = last_read.unixTimestamp();
                                 const last_msg = channel.messages.getLastOrNull() orelse continue;
-                                const time = last_msg.time orelse continue;
-                                if (time.instant().unixTimestamp() > channel.last_read)
+                                const time = last_msg.time() orelse continue;
+                                if (time.unixTimestamp() > channel.last_read)
                                     channel.has_unread = true
                                 else
                                     channel.has_unread = false;
                             },
                             .PART => {
                                 // get the user
-                                const src = msg.source orelse continue :loop;
+                                const src = msg.source() orelse continue :loop;
                                 const n = std.mem.indexOfScalar(u8, src, '!') orelse src.len;
-                                const user = try msg.client.getOrCreateUser(src[0..n]);
+                                const user = try client.getOrCreateUser(src[0..n]);
 
                                 // get the channel
                                 var iter = msg.paramIterator();
                                 const target = iter.next() orelse continue;
 
-                                if (mem.eql(u8, user.nick, msg.client.config.nick)) {
-                                    for (msg.client.channels.items, 0..) |channel, i| {
+                                if (mem.eql(u8, user.nick, client.config.nick)) {
+                                    for (client.channels.items, 0..) |channel, i| {
                                         if (!mem.eql(u8, channel.name, target)) continue;
-                                        var chan = msg.client.channels.orderedRemove(i);
+                                        var chan = client.channels.orderedRemove(i);
                                         chan.deinit(self.alloc);
                                         break;
                                     }
                                 } else {
-                                    const channel = try msg.client.getOrCreateChannel(target);
+                                    const channel = try client.getOrCreateChannel(target);
                                     channel.removeMember(user);
                                 }
                             },
                             .PRIVMSG, .NOTICE => {
-                                keep_message = true;
                                 // syntax: <target> :<message>
-                                var iter = msg.paramIterator();
+                                const msg2: irc.Message = .{
+                                    .bytes = try self.alloc.dupe(u8, msg.bytes),
+                                };
+                                var iter = msg2.paramIterator();
                                 const target = blk: {
                                     const tgt = iter.next() orelse continue;
-                                    if (mem.eql(u8, tgt, msg.client.config.nick)) {
+                                    if (mem.eql(u8, tgt, client.config.nick)) {
                                         // If the target is us, it likely has our
                                         // hostname in it.
-                                        const source = msg.source orelse continue;
+                                        const source = msg2.source() orelse continue;
                                         const n = mem.indexOfScalar(u8, source, '!') orelse source.len;
                                         break :blk source[0..n];
                                     } else break :blk tgt;
@@ -681,19 +674,19 @@ pub const App = struct {
                                 // from the batch start. We also never notify from a
                                 // batched message. Batched messages also require
                                 // sorting
-                                var tag_iter = msg.tagIterator();
+                                var tag_iter = msg2.tagIterator();
                                 while (tag_iter.next()) |tag| {
                                     if (mem.eql(u8, tag.key, "batch")) {
-                                        const entry = msg.client.batches.getEntry(tag.value) orelse @panic("TODO");
+                                        const entry = client.batches.getEntry(tag.value) orelse @panic("TODO");
                                         var channel = entry.value_ptr.*;
-                                        try channel.messages.append(msg);
+                                        try channel.messages.append(msg2);
                                         std.sort.insertion(irc.Message, channel.messages.items, {}, irc.Message.compareTime);
                                         channel.at_oldest = false;
-                                        const time = msg.time orelse continue;
-                                        if (time.instant().unixTimestamp() > channel.last_read) {
+                                        const time = msg2.time() orelse continue;
+                                        if (time.unixTimestamp() > channel.last_read) {
                                             channel.has_unread = true;
                                             const content = iter.next() orelse continue;
-                                            if (std.mem.indexOf(u8, content, msg.client.config.nick)) |_| {
+                                            if (std.mem.indexOf(u8, content, client.config.nick)) |_| {
                                                 channel.has_unread_highlight = true;
                                             }
                                         }
@@ -701,23 +694,23 @@ pub const App = struct {
                                     }
                                 } else {
                                     // standard handling
-                                    var channel = try msg.client.getOrCreateChannel(target);
-                                    try channel.messages.append(msg);
+                                    var channel = try client.getOrCreateChannel(target);
+                                    try channel.messages.append(msg2);
                                     const content = iter.next() orelse continue;
                                     var has_highlight = false;
                                     {
                                         const sender: []const u8 = blk: {
-                                            const src = msg.source orelse break :blk "";
+                                            const src = msg2.source() orelse break :blk "";
                                             const l = std.mem.indexOfScalar(u8, src, '!') orelse
                                                 std.mem.indexOfScalar(u8, src, '@') orelse
                                                 src.len;
                                             break :blk src[0..l];
                                         };
-                                        try lua.onMessage(lua_state, msg.client, channel.name, sender, content);
+                                        try lua.onMessage(lua_state, client, channel.name, sender, content);
                                     }
-                                    if (std.mem.indexOf(u8, content, msg.client.config.nick)) |_| {
+                                    if (std.mem.indexOf(u8, content, client.config.nick)) |_| {
                                         var buf: [64]u8 = undefined;
-                                        const title_or_err = if (msg.source) |source|
+                                        const title_or_err = if (msg2.source()) |source|
                                             std.fmt.bufPrint(&buf, "{s} - {s}", .{ channel.name, source })
                                         else
                                             std.fmt.bufPrint(&buf, "{s}", .{channel.name});
@@ -729,8 +722,8 @@ pub const App = struct {
                                         try self.vx.notify(writer, title, content);
                                         has_highlight = true;
                                     }
-                                    const time = msg.time orelse continue;
-                                    if (time.instant().unixTimestamp() > channel.last_read) {
+                                    const time = msg2.time() orelse continue;
+                                    if (time.unixTimestamp() > channel.last_read) {
                                         channel.has_unread_highlight = has_highlight;
                                         channel.has_unread = true;
                                     }
@@ -882,6 +875,9 @@ pub const App = struct {
     }
 
     fn draw(self: *App, input: *TextInput) !void {
+        var arena = std.heap.ArenaAllocator.init(self.alloc);
+        defer arena.deinit();
+        const allocator = arena.allocator();
 
         // reset window state
         const win = self.vx.window();
@@ -1148,7 +1144,7 @@ pub const App = struct {
                     });
 
                     var prev_sender: ?[]const u8 = null;
-                    var prev_time: ?zeit.Time = null;
+                    var prev_time: ?zeit.Instant = null;
                     var i: usize = channel.messages.items.len -| self.state.messages.scroll_offset;
                     var y_off: usize = message_list_win.height -| 1;
                     while (i > 0) {
@@ -1157,7 +1153,7 @@ pub const App = struct {
                         // syntax: <target> <message>
 
                         const sender: []const u8 = blk: {
-                            const src = message.source orelse break :blk "";
+                            const src = message.source() orelse break :blk "";
                             const l = std.mem.indexOfScalar(u8, src, '!') orelse
                                 std.mem.indexOfScalar(u8, src, '@') orelse
                                 src.len;
@@ -1169,14 +1165,14 @@ pub const App = struct {
                             // more than some interval ago, then we'll print the
                             // previous sender and keep going
                             defer prev_sender = sender;
-                            defer prev_time = message.time;
+                            defer prev_time = message.time();
 
                             const time_gap: bool = time_gap: {
                                 // We are iterating through the messages in reverse,
                                 // so the timestamp of the "previous" message is
                                 // greater than the timestamp of the current message
-                                const t1 = if (message.time) |t| t.instant().timestamp else break :time_gap false;
-                                const t2 = if (prev_time) |t| t.instant().timestamp else break :time_gap false;
+                                const t1 = if (message.time()) |t| t.timestamp else break :time_gap false;
+                                const t2 = if (prev_time) |t| t.timestamp else break :time_gap false;
                                 break :time_gap @divTrunc(t2 - t1, std.time.ns_per_min) > 5;
                             };
 
@@ -1211,7 +1207,7 @@ pub const App = struct {
 
                         if (y_off == 0) break;
 
-                        try self.formatMessageContent(message);
+                        try self.formatMessageContent(client, message);
                         defer self.content_segments.clearRetainingCapacity();
                         // print the content first
                         const print_result = try message_offset_win.print(self.content_segments.items, .{
@@ -1279,15 +1275,20 @@ pub const App = struct {
                             .width = .{ .limit = 6 },
                         });
 
-                        if (message.time_buf) |buf| {
+                        if (message.localTime(&self.tz)) |instant| {
                             var date: bool = false;
-                            if (i != 0 and channel.messages.items[i - 1].time != null) {
-                                const time = message.time.?;
-                                const prev = channel.messages.items[i - 1].time.?;
+                            const time = instant.time();
+                            var buf = try std.fmt.allocPrint(
+                                allocator,
+                                "{d:0>2}:{d:0>2}",
+                                .{ time.hour, time.minute },
+                            );
+                            if (i != 0 and channel.messages.items[i - 1].time() != null) {
+                                const prev = channel.messages.items[i - 1].localTime(&self.tz).?.time();
                                 if (time.day != prev.day) {
                                     date = true;
-                                    message.time_buf = try std.fmt.bufPrint(
-                                        message.time_buf.?,
+                                    buf = try std.fmt.allocPrint(
+                                        allocator,
                                         "{d:0>2}/{d:0>2}",
                                         .{ @intFromEnum(time.month), time.day },
                                     );
@@ -1295,10 +1296,10 @@ pub const App = struct {
                             }
                             if (i == 0) {
                                 date = true;
-                                message.time_buf = try std.fmt.bufPrint(
-                                    message.time_buf.?,
+                                buf = try std.fmt.allocPrint(
+                                    allocator,
                                     "{d:0>2}/{d:0>2}",
-                                    .{ @intFromEnum(message.time.?.month), message.time.?.day },
+                                    .{ @intFromEnum(time.month), time.day },
                                 );
                             }
                             const fg: vaxis.Color = if (date)
@@ -1489,7 +1490,7 @@ pub const App = struct {
     }
 
     /// generate vaxis.Segments for the message content
-    fn formatMessageContent(self: *App, msg: irc.Message) !void {
+    fn formatMessageContent(self: *App, client: *irc.Client, msg: irc.Message) !void {
         const ColorState = enum {
             ground,
             fg,
@@ -1505,6 +1506,7 @@ pub const App = struct {
             slash,
             consume,
         };
+
         var iter = msg.paramIterator();
         _ = iter.next() orelse return error.InvalidMessage;
         const content = iter.next() orelse return error.InvalidMessage;
@@ -1521,13 +1523,13 @@ pub const App = struct {
                     {
                         // get the user of this message
                         const sender: []const u8 = blk: {
-                            const src = msg.source orelse break :blk "";
+                            const src = msg.source() orelse break :blk "";
                             const l = std.mem.indexOfScalar(u8, src, '!') orelse
                                 std.mem.indexOfScalar(u8, src, '@') orelse
                                 src.len;
                             break :blk src[0..l];
                         };
-                        const user = try msg.client.getOrCreateUser(sender);
+                        const user = try client.getOrCreateUser(sender);
                         style.italic = true;
                         const user_style: vaxis.Style = .{
                             .fg = user.color,

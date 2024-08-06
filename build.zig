@@ -56,6 +56,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    exe_unit_tests.root_module.addImport("vaxis", vaxis_dep.module("vaxis"));
+    exe_unit_tests.root_module.addImport("tls", tls_dep.module("tls"));
+    exe_unit_tests.root_module.addImport("zeit", zeit_dep.module("zeit"));
+    exe_unit_tests.root_module.addImport("ziglua", ziglua_dep.module("ziglua"));
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
