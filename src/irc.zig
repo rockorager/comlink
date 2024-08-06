@@ -648,17 +648,14 @@ pub const Client = struct {
     }
 
     pub fn connect(self: *Client) !void {
-        switch (self.config.tls) {
-            true => {
-                self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, 6697);
-                self.client = try tls.client(self.stream, .{
-                    .host = self.config.server,
-                    .root_ca = self.app.bundle,
-                });
-            },
-            false => {
-                self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, 6667);
-            },
+        if (self.config.tls) {
+            self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, 6697);
+            self.client = try tls.client(self.stream, .{
+                .host = self.config.server,
+                .root_ca = self.app.bundle,
+            });
+        } else {
+            self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, 6667);
         }
 
         var buf: [4096]u8 = undefined;
