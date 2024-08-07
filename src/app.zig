@@ -884,6 +884,7 @@ pub const App = struct {
         win.clear();
         self.vx.setMouseShape(.default);
 
+        // Handle resize of sidebars
         if (self.state.mouse) |mouse| {
             if (self.state.buffers.resizing) {
                 self.state.buffers.width = @min(mouse.col, win.width -| self.state.members.width);
@@ -1076,7 +1077,7 @@ pub const App = struct {
                         try self.vx.setTitle(self.tty.anyWriter(), title);
                     }
 
-                    if (hasMouse(member_list_win, self.state.mouse)) |mouse| {
+                    if (member_list_win.hasMouse(self.state.mouse)) |mouse| {
                         switch (mouse.button) {
                             .wheel_up => {
                                 self.state.members.scroll_offset -|= 3;
@@ -1125,7 +1126,7 @@ pub const App = struct {
                         .height = .{ .limit = middle_win.height -| 3 },
                         .width = .{ .limit = middle_win.width -| 1 },
                     });
-                    if (hasMouse(message_list_win, self.state.mouse)) |mouse| {
+                    if (message_list_win.hasMouse(self.state.mouse)) |mouse| {
                         switch (mouse.button) {
                             .wheel_up => {
                                 self.state.messages.scroll_offset +|= 3;
@@ -1227,7 +1228,7 @@ pub const App = struct {
                                 .height = .{ .limit = height },
                             },
                         );
-                        if (hasMouse(content_win, self.state.mouse)) |mouse| {
+                        if (content_win.hasMouse(self.state.mouse)) |mouse| {
                             var bg_idx: u8 = 8;
                             if (mouse.type == .press and mouse.button == .middle) {
                                 var list = std.ArrayList(u8).init(self.alloc);
@@ -1757,69 +1758,6 @@ pub const App = struct {
         }
     }
 };
-
-/// fetch the history for the provided channel.
-fn requestHistory(self: *App, client: *irc.Client, cmd: irc.ChatHistoryCommand, channel: *irc.Channel) !void {
-    if (channel.history_requested) return;
-
-    channel.history_requested = true;
-
-    var buf: [128]u8 = undefined;
-    if (channel.messages.items.len == 0) {
-        const hist = try std.fmt.bufPrint(
-            &buf,
-            "CHATHISTORY LATEST {s} * 50\r\n",
-            .{channel.name},
-        );
-        channel.history_requested = true;
-        try self.queueWrite(client, hist);
-        return;
-    }
-
-    switch (cmd) {
-        .before => {
-            assert(channel.messages.items.len > 0);
-            const first = channel.messages.items[0];
-            var tag_iter = first.tagIterator();
-            const time = while (tag_iter.next()) |tag| {
-                if (mem.eql(u8, tag.key, "time")) break tag.value;
-            } else return error.NoTimeTag;
-            const hist = try std.fmt.bufPrint(
-                &buf,
-                "CHATHISTORY BEFORE {s} timestamp={s} 50\r\n",
-                .{ channel.name, time },
-            );
-            channel.history_requested = true;
-            try self.queueWrite(client, hist);
-        },
-        .after => {
-            assert(channel.messages.items.len > 0);
-            const last = channel.messages.getLast();
-            var tag_iter = last.tagIterator();
-            const time = while (tag_iter.next()) |tag| {
-                if (mem.eql(u8, tag.key, "time")) break tag.value;
-            } else return error.NoTimeTag;
-            const hist = try std.fmt.bufPrint(
-                &buf,
-                // we request 500 because we have no
-                // idea how long we've been offline
-                "CHATHISTORY AFTER {s} timestamp={s} 500\r\n",
-                .{ channel.name, time },
-            );
-            channel.history_requested = true;
-            try self.queueWrite(client, hist);
-        },
-    }
-}
-
-/// returns true if the mouse event occurred within this window
-fn hasMouse(win: vaxis.Window, mouse: ?vaxis.Mouse) ?vaxis.Mouse {
-    const event = mouse orelse return null;
-    if (event.col >= win.x_off and
-        event.col < (win.x_off + win.width) and
-        event.row >= win.y_off and
-        event.row < (win.y_off + win.height)) return event else return null;
-}
 
 /// this loop is run in a separate thread and handles writes to all clients.
 /// Message content is deallocated when the write request is completed
