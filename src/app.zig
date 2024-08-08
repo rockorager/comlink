@@ -3,6 +3,7 @@ const comlink = @import("comlink.zig");
 const vaxis = @import("vaxis");
 const zeit = @import("zeit");
 const ziglua = @import("ziglua");
+const Scrollbar = @import("Scrollbar.zig");
 
 const irc = comlink.irc;
 const lua = comlink.lua;
@@ -29,6 +30,7 @@ const State = struct {
     } = .{},
     messages: struct {
         scroll_offset: usize = 0,
+        pending_scroll: isize = 0,
     } = .{},
     buffers: struct {
         scroll_offset: usize = 0,
@@ -66,8 +68,6 @@ pub const App = struct {
 
     state: State = .{},
 
-    content_segments: std.ArrayList(vaxis.Segment),
-
     completer: ?Completer = null,
 
     should_quit: bool = false,
@@ -86,7 +86,6 @@ pub const App = struct {
             .env = env,
             .vx = vx,
             .tty = try vaxis.Tty.init(),
-            .content_segments = std.ArrayList(vaxis.Segment).init(alloc),
             .binds = try std.ArrayList(Bind).initCapacity(alloc, 16),
             .paste_buffer = std.ArrayList(u8).init(alloc),
             .tz = try zeit.local(alloc, &env),
@@ -147,7 +146,6 @@ pub const App = struct {
         self.vx.deinit(self.alloc, self.tty.anyWriter());
         self.tty.deinit();
 
-        self.content_segments.deinit();
         if (self.completer) |*completer| completer.deinit();
         self.binds.deinit();
         self.paste_buffer.deinit();
@@ -182,9 +180,22 @@ pub const App = struct {
         var input = TextInput.init(self.alloc, &self.vx.unicode);
         defer input.deinit();
 
+        var last_frame: i64 = std.time.milliTimestamp();
         loop: while (!self.should_quit) {
-            loop.pollEvent();
+            var redraw: bool = false;
+            std.time.sleep(8 * std.time.ns_per_ms);
+            if (self.state.messages.pending_scroll != 0) {
+                redraw = true;
+                if (self.state.messages.pending_scroll > 0) {
+                    self.state.messages.pending_scroll -= 1;
+                    self.state.messages.scroll_offset += 1;
+                } else {
+                    self.state.messages.pending_scroll += 1;
+                    self.state.messages.scroll_offset -|= 1;
+                }
+            }
             while (loop.tryEvent()) |event| {
+                redraw = true;
                 switch (event) {
                     .redraw => {},
                     .key_press => |key| {
@@ -734,7 +745,10 @@ pub const App = struct {
                 }
             }
 
-            try self.draw(&input);
+            if (redraw) {
+                try self.draw(&input);
+                last_frame = std.time.milliTimestamp();
+            }
         }
     }
     pub fn nextChannel(self: *App) void {
@@ -913,6 +927,7 @@ pub const App = struct {
             }
         }
 
+        // Define the layout
         const buf_list_w = self.state.buffers.width;
         const mbr_list_w = self.state.members.width;
         const message_list_width = win.width -| buf_list_w -| mbr_list_w;
@@ -937,472 +952,104 @@ pub const App = struct {
             .border = .{ .where = .bottom },
         });
 
-        var row: usize = 0;
-        for (self.clients.items) |client| {
-            var style: vaxis.Style = if (row == self.state.buffers.selected_idx)
-                .{
-                    .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
-                    .reverse = true,
-                }
-            else
-                .{
-                    .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
-                };
-            const network_win = channel_list_win.child(.{
-                .y_off = row,
-                .height = .{ .limit = 1 },
-            });
-            if (network_win.hasMouse(self.state.mouse)) |_| {
-                self.vx.setMouseShape(.pointer);
-                style.bg = .{ .index = 8 };
-            }
-            _ = try network_win.print(
-                &.{.{
-                    .text = client.config.name orelse client.config.server,
-                    .style = style,
-                }},
-                .{},
-            );
-            if (network_win.hasMouse(self.state.mouse)) |_| {
-                self.vx.setMouseShape(.pointer);
-            }
-            row += 1;
+        const message_list_win = middle_win.child(.{
+            .y_off = 2,
+            .height = .{ .limit = middle_win.height -| 4 },
+            .width = .{ .limit = middle_win.width -| 1 },
+        });
 
-            for (client.channels.items) |*channel| {
-                const channel_win = channel_list_win.child(.{
-                    .y_off = row,
-                    .height = .{ .limit = 1 },
-                });
-                if (channel_win.hasMouse(self.state.mouse)) |mouse| {
-                    if (mouse.type == .press and mouse.button == .left) {
-                        self.state.buffers.selected_idx = row;
-                    }
-                }
+        // Draw the buffer list
+        try self.drawBufferList(self.clients.items, channel_list_win);
 
-                const is_current = row == self.state.buffers.selected_idx;
-                var chan_style: vaxis.Style = if (is_current)
-                    .{
-                        .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
-                        .reverse = true,
-                    }
-                else if (channel.has_unread)
-                    .{
-                        .fg = .{ .index = 4 },
-                        .bold = true,
-                    }
-                else
-                    .{
-                        .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
+        // Get our currently selected buffer and draw it
+        const buffer = self.selectedBuffer() orelse return;
+        switch (buffer) {
+            .client => {}, // nothing to do
+
+            .channel => |channel| {
+                // Mark the channel as read
+                try channel.markRead();
+
+                // Request WHO if we don't already have it
+                if (!channel.who_requested) try channel.client.whox(channel);
+
+                // Set the title of the terminal
+                {
+                    var buf: [64]u8 = undefined;
+                    const title = std.fmt.bufPrint(&buf, "{s} - comlink", .{channel.name}) catch title: {
+                        // If the channel name is too long to fit in our buffer just truncate
+                        const len = @min(buf.len, channel.name.len);
+                        @memcpy(buf[0..len], channel.name[0..len]);
+                        break :title buf[0..len];
                     };
-                defer row += 1;
-                const prefix: []const u8 = if (channel.name[0] == '#') "#" else "";
-                const name_offset: usize = if (prefix.len > 0) 1 else 0;
-
-                if (channel_win.hasMouse(self.state.mouse)) |mouse| {
-                    self.vx.setMouseShape(.pointer);
-                    if (mouse.button == .left)
-                        chan_style.reverse = true
-                    else
-                        chan_style.bg = .{ .index = 8 };
+                    try self.vx.setTitle(self.tty.anyWriter(), title);
                 }
 
-                const first_seg: vaxis.Segment = if (channel.has_unread_highlight)
-                    .{ .text = " ●︎", .style = .{ .fg = .{ .index = 1 } } }
-                else
-                    .{ .text = "  " };
+                // Draw the topic
+                try self.drawTopic(topic_win, channel.topic orelse "");
 
-                var chan_seg = [_]vaxis.Segment{
-                    first_seg,
-                    .{
-                        .text = prefix,
-                        .style = .{ .fg = .{ .index = 8 } },
-                    },
-                    .{
-                        .text = channel.name[name_offset..],
-                        .style = chan_style,
-                    },
-                };
-                const result = try channel_win.print(
-                    &chan_seg,
-                    .{},
-                );
-                if (result.overflow)
-                    channel_list_win.writeCell(
-                        buf_list_w -| 1,
-                        row,
-                        .{
-                            .char = .{
-                                .grapheme = "…",
-                                .width = 1,
-                            },
-                            .style = chan_style,
-                        },
-                    );
-                if (is_current) {
-                    var write_buf: [128]u8 = undefined;
-                    if (channel.has_unread) {
-                        channel.has_unread = false;
-                        channel.has_unread_highlight = false;
-                        const last_msg = channel.messages.getLast();
-                        var tag_iter = last_msg.tagIterator();
-                        while (tag_iter.next()) |tag| {
-                            if (!std.mem.eql(u8, tag.key, "time")) continue;
-                            const mark_read = try std.fmt.bufPrint(
-                                &write_buf,
-                                "MARKREAD {s} timestamp={s}\r\n",
-                                .{
-                                    channel.name,
-                                    tag.value,
-                                },
-                            );
-                            try client.queueWrite(mark_read);
-                        }
-                    }
-                    if (!channel.who_requested) try client.whox(channel);
-                    var topic_seg = [_]vaxis.Segment{
-                        .{
-                            .text = channel.topic orelse "",
-                        },
+                // Draw the member list
+                try self.drawMemberList(member_list_win, channel);
+
+                // Draw the message list
+                try self.drawMessageList(allocator, message_list_win, channel);
+
+                // draw a scrollbar
+                {
+                    const scrollbar: Scrollbar = .{
+                        .total = channel.messages.items.len,
+                        .view_size = message_list_win.height / 3, // ~3 lines per message
+                        .bottom = self.state.messages.scroll_offset,
                     };
-                    _ = try topic_win.print(&topic_seg, .{ .wrap = .none });
-
-                    {
-                        var buf: [64]u8 = undefined;
-                        const title = std.fmt.bufPrint(&buf, "{s} - comlink", .{channel.name}) catch title: {
-                            // If the channel name is too long to fit in our buffer just truncate
-                            const len = @min(buf.len, channel.name.len);
-                            @memcpy(buf[0..len], channel.name[0..len]);
-                            break :title buf[0..len];
-                        };
-                        try self.vx.setTitle(self.tty.anyWriter(), title);
-                    }
-
-                    if (member_list_win.hasMouse(self.state.mouse)) |mouse| {
-                        switch (mouse.button) {
-                            .wheel_up => {
-                                self.state.members.scroll_offset -|= 3;
-                                self.state.mouse.?.button = .none;
-                            },
-                            .wheel_down => {
-                                self.state.members.scroll_offset +|= 3;
-                                self.state.mouse.?.button = .none;
-                            },
-                            else => {},
-                        }
-                    }
-
-                    self.state.members.scroll_offset = @min(self.state.members.scroll_offset, channel.members.items.len -| member_list_win.height);
-
-                    var member_row: usize = 0;
-                    for (channel.members.items) |*member| {
-                        defer member_row += 1;
-                        if (member_row < self.state.members.scroll_offset) continue;
-                        var member_seg = [_]vaxis.Segment{
-                            .{
-                                .text = std.mem.asBytes(&member.prefix),
-                            },
-                            .{
-                                .text = member.user.nick,
-                                .style = .{
-                                    .fg = if (member.user.away)
-                                        .{ .index = 8 }
-                                    else
-                                        member.user.color,
-                                },
-                            },
-                        };
-                        _ = try member_list_win.print(
-                            &member_seg,
-                            .{
-                                .row_offset = member_row - self.state.members.scroll_offset,
-                            },
-                        );
-                    }
-
-                    // loop the messages and print from the last line to current
-                    // line
-                    const message_list_win = middle_win.child(.{
+                    const scrollbar_win = middle_win.child(.{
+                        .x_off = message_list_win.width,
                         .y_off = 2,
-                        .height = .{ .limit = middle_win.height -| 3 },
-                        .width = .{ .limit = middle_win.width -| 1 },
+                        .height = .{ .limit = middle_win.height -| 4 },
                     });
-                    if (message_list_win.hasMouse(self.state.mouse)) |mouse| {
-                        switch (mouse.button) {
-                            .wheel_up => {
-                                self.state.messages.scroll_offset +|= 3;
-                                self.state.mouse.?.button = .none;
-                            },
-                            .wheel_down => {
-                                self.state.messages.scroll_offset -|= 3;
-                                self.state.mouse.?.button = .none;
-                            },
-                            else => {},
-                        }
-                    }
-                    self.state.messages.scroll_offset = @min(self.state.messages.scroll_offset, channel.messages.items.len -| 1);
-                    const message_offset_win = message_list_win.child(.{
-                        .x_off = 6,
+                    scrollbar.draw(scrollbar_win);
+                }
+
+                // draw the completion list
+                if (self.completer) |*completer| {
+                    try completer.findMatches(channel);
+
+                    var completion_style: vaxis.Style = .{ .bg = .{ .index = 8 } };
+                    const completion_win = middle_win.child(.{
+                        .width = .{ .limit = completer.widestMatch(win) + 1 },
+                        .height = .{ .limit = @min(completer.numMatches(), middle_win.height -| 1) },
+                        .x_off = completer.start_idx,
+                        .y_off = middle_win.height -| completer.numMatches() -| 1,
                     });
-
-                    var prev_sender: ?[]const u8 = null;
-                    var prev_time: ?zeit.Instant = null;
-                    var i: usize = channel.messages.items.len -| self.state.messages.scroll_offset;
-                    var y_off: usize = message_list_win.height -| 1;
-                    while (i > 0) {
-                        i -= 1;
-                        var message = channel.messages.items[i];
-                        // syntax: <target> <message>
-
-                        const sender: []const u8 = blk: {
-                            const src = message.source() orelse break :blk "";
-                            const l = std.mem.indexOfScalar(u8, src, '!') orelse
-                                std.mem.indexOfScalar(u8, src, '@') orelse
-                                src.len;
-                            break :blk src[0..l];
-                        };
-                        {
-                            // If this sender is not the same as the previous
-                            // printed message OR if the previous message was sent
-                            // more than some interval ago, then we'll print the
-                            // previous sender and keep going
-                            defer prev_sender = sender;
-                            defer prev_time = message.time();
-
-                            const time_gap: bool = time_gap: {
-                                // We are iterating through the messages in reverse,
-                                // so the timestamp of the "previous" message is
-                                // greater than the timestamp of the current message
-                                const t1 = if (message.time()) |t| t.timestamp else break :time_gap false;
-                                const t2 = if (prev_time) |t| t.timestamp else break :time_gap false;
-                                break :time_gap @divTrunc(t2 - t1, std.time.ns_per_min) > 5;
-                            };
-
-                            if (y_off > 0 and
-                                prev_sender != null and
-                                (time_gap or !mem.eql(u8, sender, prev_sender.?)))
-                            {
-                                y_off -|= 1;
-                                const user = try client.getOrCreateUser(prev_sender.?);
-                                const sender_win = message_list_win.child(.{
-                                    .x_off = 6,
-                                    .y_off = y_off,
-                                    .height = .{ .limit = 1 },
-                                });
-                                const sender_result = try sender_win.print(
-                                    &.{.{
-                                        .text = prev_sender.?,
-                                        .style = .{
-                                            .fg = user.color,
-                                            .bold = true,
-                                        },
-                                    }},
-                                    .{ .wrap = .word },
-                                );
-                                y_off -|= 1;
-                                const result_win = sender_win.child(.{ .width = .{ .limit = sender_result.col } });
-                                if (result_win.hasMouse(self.state.mouse)) |_| {
-                                    self.vx.setMouseShape(.pointer);
-                                }
+                    completion_win.fill(.{
+                        .char = .{ .grapheme = " ", .width = 1 },
+                        .style = completion_style,
+                    });
+                    var completion_row: usize = 0;
+                    while (completion_row < completion_win.height) : (completion_row += 1) {
+                        log.debug("COMPLETION ROW {d}, selected_idx {d}", .{ completion_row, completer.selected_idx orelse 0 });
+                        if (completer.selected_idx) |idx| {
+                            if (completion_row == idx)
+                                completion_style.reverse = true
+                            else {
+                                completion_style = .{ .bg = .{ .index = 8 } };
                             }
                         }
-
-                        if (y_off == 0) break;
-
-                        try self.formatMessageContent(client, message);
-                        defer self.content_segments.clearRetainingCapacity();
-                        // print the content first
-                        const print_result = try message_offset_win.print(self.content_segments.items, .{
-                            .wrap = .word,
-                            .commit = false,
-                        });
-                        const content_height = if (print_result.col == 0)
-                            print_result.row
-                        else
-                            print_result.row + 1;
-
-                        const height = if (content_height > y_off) content_height - y_off else content_height;
-                        if (height == 0) break;
-                        const content_win = message_offset_win.child(
+                        var seg = [_]vaxis.Segment{
                             .{
-                                .y_off = y_off -| content_height,
-                                .height = .{ .limit = height },
+                                .text = completer.options.items[completer.options.items.len - 1 - completion_row],
+                                .style = completion_style,
                             },
-                        );
-                        if (content_win.hasMouse(self.state.mouse)) |mouse| {
-                            var bg_idx: u8 = 8;
-                            if (mouse.type == .press and mouse.button == .middle) {
-                                var list = std.ArrayList(u8).init(self.alloc);
-                                defer list.deinit();
-                                for (self.content_segments.items) |item| {
-                                    try list.appendSlice(item.text);
-                                }
-                                try self.vx.copyToSystemClipboard(self.tty.anyWriter(), list.items, self.alloc);
-                                bg_idx = 3;
-                            }
-                            content_win.fill(.{
-                                .char = .{
-                                    .grapheme = " ",
-                                    .width = 1,
-                                },
-                                .style = .{
-                                    .bg = .{ .index = bg_idx },
-                                },
-                            });
-                            for (self.content_segments.items) |*item| {
-                                item.style.bg = .{ .index = bg_idx };
-                            }
-                        }
-                        var iter = message.paramIterator();
-                        // target is the channel, and we already handled that
-                        _ = iter.next() orelse continue;
-
-                        const content = iter.next() orelse continue;
-                        if (std.mem.indexOf(u8, content, client.config.nick)) |_| {
-                            for (self.content_segments.items) |*item| {
-                                if (item.style.fg == .default)
-                                    item.style.fg = .{ .index = 3 };
-                            }
-                        }
-                        _ = try content_win.print(
-                            self.content_segments.items,
                             .{
-                                .wrap = .word,
-                                // .skip_n_rows = content_height - content_win.height,
+                                .text = " ",
+                                .style = completion_style,
                             },
-                        );
-                        if (content_height > y_off) break;
-                        const gutter = message_list_win.child(.{
-                            .y_off = y_off -| content_height,
-                            .width = .{ .limit = 6 },
-                        });
-
-                        if (message.localTime(&self.tz)) |instant| {
-                            var date: bool = false;
-                            const time = instant.time();
-                            var buf = try std.fmt.allocPrint(
-                                allocator,
-                                "{d:0>2}:{d:0>2}",
-                                .{ time.hour, time.minute },
-                            );
-                            if (i != 0 and channel.messages.items[i - 1].time() != null) {
-                                const prev = channel.messages.items[i - 1].localTime(&self.tz).?.time();
-                                if (time.day != prev.day) {
-                                    date = true;
-                                    buf = try std.fmt.allocPrint(
-                                        allocator,
-                                        "{d:0>2}/{d:0>2}",
-                                        .{ @intFromEnum(time.month), time.day },
-                                    );
-                                }
-                            }
-                            if (i == 0) {
-                                date = true;
-                                buf = try std.fmt.allocPrint(
-                                    allocator,
-                                    "{d:0>2}/{d:0>2}",
-                                    .{ @intFromEnum(time.month), time.day },
-                                );
-                            }
-                            const fg: vaxis.Color = if (date)
-                                .default
-                            else
-                                .{ .index = 8 };
-                            var time_seg = [_]vaxis.Segment{
-                                .{
-                                    .text = buf,
-                                    .style = .{ .fg = fg },
-                                },
-                            };
-                            _ = try gutter.print(&time_seg, .{});
-                        }
-
-                        y_off -|= content_height;
-
-                        // If we are on the first message, print the sender
-                        if (i == 0) {
-                            y_off -|= 1;
-                            const user = try client.getOrCreateUser(sender);
-                            const sender_win = message_list_win.child(.{
-                                .x_off = 6,
-                                .y_off = y_off,
-                                .height = .{ .limit = 1 },
-                            });
-                            const sender_result = try sender_win.print(
-                                &.{.{
-                                    .text = sender,
-                                    .style = .{
-                                        .fg = user.color,
-                                        .bold = true,
-                                    },
-                                }},
-                                .{ .wrap = .word },
-                            );
-                            const result_win = sender_win.child(.{ .width = .{ .limit = sender_result.col } });
-                            if (result_win.hasMouse(self.state.mouse)) |_| {
-                                self.vx.setMouseShape(.pointer);
-                            }
-                        }
-
-                        // if we are on the oldest message, request more history
-                        if (i == 0 and !channel.at_oldest) {
-                            try client.requestHistory(.before, channel);
-                        }
-                    }
-                    {
-                        // draw a scrollbar
-                        var scrollbar: vaxis.widgets.Scrollbar = .{
-                            .total = channel.messages.items.len,
-                            .view_size = channel.messages.items.len -| self.state.messages.scroll_offset -| i,
-                            .top = i,
                         };
-                        const scrollbar_win = middle_win.child(.{
-                            .x_off = message_list_win.width,
-                            .y_off = 2,
-                            .height = .{ .limit = middle_win.height -| 3 },
+                        _ = try completion_win.print(&seg, .{
+                            .row_offset = completion_win.height -| completion_row -| 1,
                         });
-                        scrollbar.draw(scrollbar_win);
-                    }
-                    if (self.completer) |*completer| {
-                        try completer.findMatches(channel);
-
-                        var completion_style: vaxis.Style = .{ .bg = .{ .index = 8 } };
-                        const completion_win = middle_win.child(.{
-                            .width = .{ .limit = completer.widestMatch(win) + 1 },
-                            .height = .{ .limit = @min(completer.numMatches(), middle_win.height -| 1) },
-                            .x_off = completer.start_idx,
-                            .y_off = middle_win.height -| completer.numMatches() -| 1,
-                        });
-                        completion_win.fill(.{
-                            .char = .{ .grapheme = " ", .width = 1 },
-                            .style = completion_style,
-                        });
-                        var completion_row: usize = 0;
-                        while (completion_row < completion_win.height) : (completion_row += 1) {
-                            log.debug("COMPLETION ROW {d}, selected_idx {d}", .{ completion_row, completer.selected_idx orelse 0 });
-                            if (completer.selected_idx) |idx| {
-                                if (completion_row == idx)
-                                    completion_style.reverse = true
-                                else {
-                                    completion_style = .{ .bg = .{ .index = 8 } };
-                                }
-                            }
-                            var seg = [_]vaxis.Segment{
-                                .{
-                                    .text = completer.options.items[completer.options.items.len - 1 - completion_row],
-                                    .style = completion_style,
-                                },
-                                .{
-                                    .text = " ",
-                                    .style = completion_style,
-                                },
-                            };
-                            _ = try completion_win.print(&seg, .{
-                                .row_offset = completion_win.height -| completion_row -| 1,
-                            });
-                        }
                     }
                 }
-            }
+            },
         }
 
         const input_win = middle_win.child(.{
@@ -1483,11 +1130,425 @@ pub const App = struct {
             // }));
         }
 
-        self.state.buffers.count = row;
-
         var buffered = self.tty.bufferedWriter();
         try self.vx.render(buffered.writer().any());
         try buffered.flush();
+    }
+
+    fn drawMessageList(
+        self: *App,
+        arena: std.mem.Allocator,
+        win: vaxis.Window,
+        channel: *irc.Channel,
+    ) !void {
+        if (channel.messages.items.len == 0) return;
+        const client = channel.client;
+        const messages = channel.messages.items[0 .. channel.messages.items.len - self.state.messages.scroll_offset];
+        // We draw a gutter for time information
+        const gutter_width: usize = 6;
+
+        // Our message list is offset by the gutter width
+        const message_offset_win = win.child(.{ .x_off = gutter_width });
+
+        // Handle mouse
+        if (win.hasMouse(self.state.mouse)) |mouse| {
+            switch (mouse.button) {
+                .wheel_up => {
+                    self.state.messages.scroll_offset +|= 1;
+                    self.state.mouse.?.button = .none;
+                    self.state.messages.pending_scroll += 2;
+                },
+                .wheel_down => {
+                    self.state.messages.scroll_offset -|= 1;
+                    self.state.mouse.?.button = .none;
+                    self.state.messages.pending_scroll -= 2;
+                },
+                else => {},
+            }
+        }
+        self.state.messages.scroll_offset = @min(
+            self.state.messages.scroll_offset,
+            channel.messages.items.len -| 1,
+        );
+
+        // Define a few state variables for the loop
+        const last_msg = messages[messages.len - 1];
+
+        // Initialize prev_time to the time of the last message, falling back to "now"
+        var prev_time: zeit.Instant = last_msg.localTime(&self.tz) orelse
+            try zeit.instant(.{ .source = .now, .timezone = &self.tz });
+
+        // Initialize prev_sender to the sender of the last message
+        var prev_sender: []const u8 = if (last_msg.source()) |src| blk: {
+            if (std.mem.indexOfScalar(u8, src, '!')) |idx|
+                break :blk src[0..idx];
+            if (std.mem.indexOfScalar(u8, src, '@')) |idx|
+                break :blk src[0..idx];
+            break :blk src;
+        } else "";
+
+        // y_off is the row we are printing on
+        var y_off: usize = win.height;
+
+        // Formatted message segments
+        var segments = std.ArrayList(vaxis.Segment).init(arena);
+
+        var msg_iter = std.mem.reverseIterator(messages);
+        var i: usize = messages.len;
+        while (msg_iter.next()) |message| {
+            i -|= 1;
+            segments.clearRetainingCapacity();
+
+            // Get the sender nick
+            const sender: []const u8 = if (message.source()) |src| blk: {
+                if (std.mem.indexOfScalar(u8, src, '!')) |idx|
+                    break :blk src[0..idx];
+                if (std.mem.indexOfScalar(u8, src, '@')) |idx|
+                    break :blk src[0..idx];
+                break :blk src;
+            } else "";
+
+            // Save sender state after this loop
+            defer prev_sender = sender;
+
+            // Before we print the message, we need to decide if we should print the sender name of
+            // the previous message. There are two cases we do this:
+            // 1. The previous message was sent by someone other than the current message
+            // 2. A certain amount of time has elapsed between messages
+            //
+            // Each case requires that we have space in the window to print the sender (y_off > 0)
+            const time_gap = if (message.localTime(&self.tz)) |time| blk: {
+                // Save message state for next loop
+                defer prev_time = time;
+                // time_gap is true when the difference between this message and last message is
+                // greater than 5 minutes
+                break :blk (prev_time.timestamp -| time.timestamp) > (5 * std.time.ns_per_min);
+            } else false;
+
+            // Print the sender of the previous message
+            if (y_off > 0 and (time_gap or !std.mem.eql(u8, prev_sender, sender))) {
+                // Go up one line
+                y_off -|= 1;
+
+                // Get the user so we have the correct color
+                const user = try client.getOrCreateUser(prev_sender);
+                const sender_win = message_offset_win.child(.{
+                    .y_off = y_off,
+                    .height = .{ .limit = 1 },
+                });
+
+                // We will use the result to see if our mouse is hovering over the nickname
+                const sender_result = try sender_win.printSegment(
+                    .{
+                        .text = prev_sender,
+                        .style = .{ .fg = user.color, .bold = true },
+                    },
+                    .{ .wrap = .none },
+                );
+
+                // If our mouse is over the nickname, we set it to a pointer
+                const result_win = sender_win.child(.{ .width = .{ .limit = sender_result.col } });
+                if (result_win.hasMouse(self.state.mouse)) |_| {
+                    self.vx.setMouseShape(.pointer);
+                }
+
+                // Go up one more line to print the next message
+                y_off -|= 1;
+            }
+
+            // We are out of space
+            if (y_off == 0) break;
+
+            const user = try client.getOrCreateUser(sender);
+            try formatMessage(&segments, user, message);
+
+            // Get the line count for this message
+            const content_height = lineCountForWindow(message_offset_win, segments.items);
+
+            const content_win = message_offset_win.child(
+                .{
+                    .y_off = y_off -| content_height,
+                    .height = .{ .limit = content_height },
+                },
+            );
+            if (content_win.hasMouse(self.state.mouse)) |mouse| {
+                var bg_idx: u8 = 8;
+                if (mouse.type == .press and mouse.button == .middle) {
+                    var list = std.ArrayList(u8).init(self.alloc);
+                    defer list.deinit();
+                    for (segments.items) |item| {
+                        try list.appendSlice(item.text);
+                    }
+                    try self.vx.copyToSystemClipboard(self.tty.anyWriter(), list.items, self.alloc);
+                    bg_idx = 3;
+                }
+                content_win.fill(.{
+                    .char = .{
+                        .grapheme = " ",
+                        .width = 1,
+                    },
+                    .style = .{
+                        .bg = .{ .index = bg_idx },
+                    },
+                });
+                for (segments.items) |*item| {
+                    item.style.bg = .{ .index = bg_idx };
+                }
+            }
+            var iter = message.paramIterator();
+            // target is the channel, and we already handled that
+            _ = iter.next() orelse continue;
+
+            const content = iter.next() orelse continue;
+            if (std.mem.indexOf(u8, content, client.config.nick)) |_| {
+                for (segments.items) |*item| {
+                    if (item.style.fg == .default)
+                        item.style.fg = .{ .index = 3 };
+                }
+            }
+            _ = try content_win.print(
+                segments.items,
+                .{
+                    .wrap = .word,
+                },
+            );
+            if (content_height > y_off) break;
+            const gutter = win.child(.{
+                .y_off = y_off -| content_height,
+                .width = .{ .limit = 6 },
+            });
+
+            if (message.localTime(&self.tz)) |instant| {
+                var date: bool = false;
+                const time = instant.time();
+                var buf = try std.fmt.allocPrint(
+                    arena,
+                    "{d:0>2}:{d:0>2}",
+                    .{ time.hour, time.minute },
+                );
+                if (i != 0 and channel.messages.items[i - 1].time() != null) {
+                    const prev = channel.messages.items[i - 1].localTime(&self.tz).?.time();
+                    if (time.day != prev.day) {
+                        date = true;
+                        buf = try std.fmt.allocPrint(
+                            arena,
+                            "{d:0>2}/{d:0>2}",
+                            .{ @intFromEnum(time.month), time.day },
+                        );
+                    }
+                }
+                if (i == 0) {
+                    date = true;
+                    buf = try std.fmt.allocPrint(
+                        arena,
+                        "{d:0>2}/{d:0>2}",
+                        .{ @intFromEnum(time.month), time.day },
+                    );
+                }
+                const fg: vaxis.Color = if (date)
+                    .default
+                else
+                    .{ .index = 8 };
+                var time_seg = [_]vaxis.Segment{
+                    .{
+                        .text = buf,
+                        .style = .{ .fg = fg },
+                    },
+                };
+                _ = try gutter.print(&time_seg, .{});
+            }
+
+            y_off -|= content_height;
+
+            // If we are on the first message, print the sender
+            if (i == 0) {
+                y_off -|= 1;
+                const sender_win = win.child(.{
+                    .x_off = 6,
+                    .y_off = y_off,
+                    .height = .{ .limit = 1 },
+                });
+                const sender_result = try sender_win.print(
+                    &.{.{
+                        .text = sender,
+                        .style = .{
+                            .fg = user.color,
+                            .bold = true,
+                        },
+                    }},
+                    .{ .wrap = .word },
+                );
+                const result_win = sender_win.child(.{ .width = .{ .limit = sender_result.col } });
+                if (result_win.hasMouse(self.state.mouse)) |_| {
+                    self.vx.setMouseShape(.pointer);
+                }
+            }
+
+            // if we are on the oldest message, request more history
+            if (i == 0 and !channel.at_oldest) {
+                try client.requestHistory(.before, channel);
+            }
+        }
+    }
+
+    fn drawMemberList(self: *App, win: vaxis.Window, channel: *irc.Channel) !void {
+        // Handle mouse
+        {
+            if (win.hasMouse(self.state.mouse)) |mouse| {
+                switch (mouse.button) {
+                    .wheel_up => {
+                        self.state.members.scroll_offset -|= 3;
+                        self.state.mouse.?.button = .none;
+                    },
+                    .wheel_down => {
+                        self.state.members.scroll_offset +|= 3;
+                        self.state.mouse.?.button = .none;
+                    },
+                    else => {},
+                }
+            }
+
+            self.state.members.scroll_offset = @min(
+                self.state.members.scroll_offset,
+                channel.members.items.len -| win.height,
+            );
+        }
+
+        // Draw the list
+        var member_row: usize = 0;
+        for (channel.members.items) |*member| {
+            defer member_row += 1;
+            if (member_row < self.state.members.scroll_offset) continue;
+            const member_seg = [_]vaxis.Segment{
+                .{
+                    .text = std.mem.asBytes(&member.prefix),
+                },
+                .{
+                    .text = member.user.nick,
+                    .style = .{
+                        .fg = if (member.user.away)
+                            .{ .index = 8 }
+                        else
+                            member.user.color,
+                    },
+                },
+            };
+            _ = try win.print(&member_seg, .{
+                .row_offset = member_row -| self.state.members.scroll_offset,
+            });
+        }
+    }
+
+    fn drawTopic(_: *App, win: vaxis.Window, topic: []const u8) !void {
+        _ = try win.printSegment(.{ .text = topic }, .{ .wrap = .none });
+    }
+
+    fn drawBufferList(self: *App, clients: []*irc.Client, win: vaxis.Window) !void {
+        const buf_list_w = self.state.buffers.width;
+        var row: usize = 0;
+
+        defer self.state.buffers.count = row;
+        for (clients) |client| {
+            var style: vaxis.Style = if (row == self.state.buffers.selected_idx)
+                .{
+                    .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
+                    .reverse = true,
+                }
+            else
+                .{
+                    .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
+                };
+            const network_win = win.child(.{
+                .y_off = row,
+                .height = .{ .limit = 1 },
+            });
+            if (network_win.hasMouse(self.state.mouse)) |_| {
+                self.vx.setMouseShape(.pointer);
+                style.bg = .{ .index = 8 };
+            }
+            _ = try network_win.print(
+                &.{.{
+                    .text = client.config.name orelse client.config.server,
+                    .style = style,
+                }},
+                .{},
+            );
+            if (network_win.hasMouse(self.state.mouse)) |_| {
+                self.vx.setMouseShape(.pointer);
+            }
+            row += 1;
+            for (client.channels.items) |*channel| {
+                const channel_win = win.child(.{
+                    .y_off = row,
+                    .height = .{ .limit = 1 },
+                });
+                if (channel_win.hasMouse(self.state.mouse)) |mouse| {
+                    if (mouse.type == .press and mouse.button == .left) {
+                        self.state.buffers.selected_idx = row;
+                    }
+                }
+
+                const is_current = row == self.state.buffers.selected_idx;
+                var chan_style: vaxis.Style = if (is_current)
+                    .{
+                        .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
+                        .reverse = true,
+                    }
+                else if (channel.has_unread)
+                    .{
+                        .fg = .{ .index = 4 },
+                        .bold = true,
+                    }
+                else
+                    .{
+                        .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
+                    };
+                defer row += 1;
+                const prefix: []const u8 = if (channel.name[0] == '#') "#" else "";
+                const name_offset: usize = if (prefix.len > 0) 1 else 0;
+
+                if (channel_win.hasMouse(self.state.mouse)) |mouse| {
+                    self.vx.setMouseShape(.pointer);
+                    if (mouse.button == .left)
+                        chan_style.reverse = true
+                    else
+                        chan_style.bg = .{ .index = 8 };
+                }
+
+                const first_seg: vaxis.Segment = if (channel.has_unread_highlight)
+                    .{ .text = " ●︎", .style = .{ .fg = .{ .index = 1 } } }
+                else
+                    .{ .text = "  " };
+
+                var chan_seg = [_]vaxis.Segment{
+                    first_seg,
+                    .{
+                        .text = prefix,
+                        .style = .{ .fg = .{ .index = 8 } },
+                    },
+                    .{
+                        .text = channel.name[name_offset..],
+                        .style = chan_style,
+                    },
+                };
+                const result = try channel_win.print(
+                    &chan_seg,
+                    .{},
+                );
+                if (result.overflow)
+                    win.writeCell(
+                        buf_list_w -| 1,
+                        row,
+                        .{
+                            .char = .{
+                                .grapheme = "…",
+                                .width = 1,
+                            },
+                            .style = chan_style,
+                        },
+                    );
+            }
+        }
     }
 
     /// generate vaxis.Segments for the message content
@@ -1781,4 +1842,281 @@ fn writeLoop(queue: *comlink.WriteQueue) !void {
             },
         }
     }
+}
+
+/// generate vaxis.Segments for the message content
+fn formatMessage(segments: *std.ArrayList(vaxis.Segment), user: *const irc.User, msg: irc.Message) !void {
+    const ColorState = enum {
+        ground,
+        fg,
+        bg,
+    };
+    const LinkState = enum {
+        h,
+        t1,
+        t2,
+        p,
+        s,
+        colon,
+        slash,
+        consume,
+    };
+
+    var iter = msg.paramIterator();
+    _ = iter.next() orelse return error.InvalidMessage;
+    const content = iter.next() orelse return error.InvalidMessage;
+    var start: usize = 0;
+    var i: usize = 0;
+    var style: vaxis.Style = .{};
+    while (i < content.len) : (i += 1) {
+        const b = content[i];
+        switch (b) {
+            0x01 => {
+                if (i == 0 and
+                    content.len > 7 and
+                    mem.startsWith(u8, content[1..], "ACTION"))
+                {
+                    style.italic = true;
+                    const user_style: vaxis.Style = .{
+                        .fg = user.color,
+                        .italic = true,
+                    };
+                    try segments.append(.{
+                        .text = user.nick,
+                        .style = user_style,
+                    });
+                    i += 6; // "ACTION"
+                } else {
+                    try segments.append(.{
+                        .text = content[start..i],
+                        .style = style,
+                    });
+                }
+                start = i + 1;
+            },
+            0x02 => {
+                try segments.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+                style.bold = !style.bold;
+                start = i + 1;
+            },
+            0x03 => {
+                try segments.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+                i += 1;
+                var state: ColorState = .ground;
+                var fg_idx: ?u8 = null;
+                var bg_idx: ?u8 = null;
+                while (i < content.len) : (i += 1) {
+                    const d = content[i];
+                    switch (state) {
+                        .ground => {
+                            switch (d) {
+                                '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
+                                    state = .fg;
+                                    fg_idx = d - '0';
+                                },
+                                else => {
+                                    style.fg = .default;
+                                    style.bg = .default;
+                                    start = i;
+                                    break;
+                                },
+                            }
+                        },
+                        .fg => {
+                            switch (d) {
+                                '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
+                                    const fg = fg_idx orelse 0;
+                                    if (fg > 9) {
+                                        style.fg = irc.toVaxisColor(fg);
+                                        start = i;
+                                        break;
+                                    } else {
+                                        fg_idx = fg * 10 + (d - '0');
+                                    }
+                                },
+                                else => {
+                                    if (fg_idx) |fg| {
+                                        style.fg = irc.toVaxisColor(fg);
+                                        start = i;
+                                    }
+                                    if (d == ',') state = .bg else break;
+                                },
+                            }
+                        },
+                        .bg => {
+                            switch (d) {
+                                '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
+                                    const bg = bg_idx orelse 0;
+                                    if (i - start == 2) {
+                                        style.bg = irc.toVaxisColor(bg);
+                                        start = i;
+                                        break;
+                                    } else {
+                                        bg_idx = bg * 10 + (d - '0');
+                                    }
+                                },
+                                else => {
+                                    if (bg_idx) |bg| {
+                                        style.bg = irc.toVaxisColor(bg);
+                                        start = i;
+                                    }
+                                    break;
+                                },
+                            }
+                        },
+                    }
+                }
+            },
+            0x0F => {
+                try segments.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+                style = .{};
+                start = i + 1;
+            },
+            0x16 => {
+                try segments.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+                style.reverse = !style.reverse;
+                start = i + 1;
+            },
+            0x1D => {
+                try segments.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+                style.italic = !style.italic;
+                start = i + 1;
+            },
+            0x1E => {
+                try segments.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+                style.strikethrough = !style.strikethrough;
+                start = i + 1;
+            },
+            0x1F => {
+                try segments.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+
+                style.ul_style = if (style.ul_style == .off) .single else .off;
+                start = i + 1;
+            },
+            else => {
+                if (b == 'h') {
+                    var state: LinkState = .h;
+                    const h_start = i;
+                    // consume until a space or EOF
+                    i += 1;
+                    while (i < content.len) : (i += 1) {
+                        const b1 = content[i];
+                        switch (state) {
+                            .h => {
+                                if (b1 == 't') state = .t1 else break;
+                            },
+                            .t1 => {
+                                if (b1 == 't') state = .t2 else break;
+                            },
+                            .t2 => {
+                                if (b1 == 'p') state = .p else break;
+                            },
+                            .p => {
+                                if (b1 == 's')
+                                    state = .s
+                                else if (b1 == ':')
+                                    state = .colon
+                                else
+                                    break;
+                            },
+                            .s => {
+                                if (b1 == ':') state = .colon else break;
+                            },
+                            .colon => {
+                                if (b1 == '/') state = .slash else break;
+                            },
+                            .slash => {
+                                if (b1 == '/') {
+                                    state = .consume;
+                                    try segments.append(.{
+                                        .text = content[start..h_start],
+                                        .style = style,
+                                    });
+                                    start = h_start;
+                                } else break;
+                            },
+                            .consume => {
+                                switch (b1) {
+                                    0x00...0x20, 0x7F => {
+                                        try segments.append(.{
+                                            .text = content[h_start..i],
+                                            .style = .{
+                                                .fg = .{ .index = 4 },
+                                            },
+                                            .link = .{
+                                                .uri = content[h_start..i],
+                                            },
+                                        });
+                                        start = i;
+                                        // backup one
+                                        i -= 1;
+                                        break;
+                                    },
+                                    else => {
+                                        if (i == content.len) {
+                                            try segments.append(.{
+                                                .text = content[h_start..],
+                                                .style = .{
+                                                    .fg = .{ .index = 4 },
+                                                },
+                                                .link = .{
+                                                    .uri = content[h_start..],
+                                                },
+                                            });
+                                            return;
+                                        }
+                                    },
+                                }
+                            },
+                        }
+                    }
+                }
+            },
+        }
+    }
+    if (start < i and start < content.len) {
+        try segments.append(.{
+            .text = content[start..],
+            .style = style,
+        });
+    }
+}
+
+/// Returns the number of lines the segments would consume in the given window
+fn lineCountForWindow(win: vaxis.Window, segments: []const vaxis.Segment) usize {
+    // Fastpath if we have fewer bytes than the width
+    var byte_count: usize = 0;
+    for (segments) |segment| {
+        byte_count += segment.text.len;
+    }
+    // One line if we are fewer bytes than the width
+    if (byte_count <= win.width) return 1;
+
+    // Slow path. We have to layout the text
+    const result = win.print(segments, .{ .commit = false, .wrap = .word }) catch return 0;
+    if (result.col == 0)
+        return result.row
+    else
+        return result.row + 1;
 }

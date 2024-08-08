@@ -196,6 +196,27 @@ pub const Channel = struct {
             }
         }
     }
+
+    /// issue a MARKREAD command for this channel. The most recent message in the channel will be used as
+    /// the last read time
+    pub fn markRead(self: *Channel) !void {
+        if (!self.has_unread) return;
+
+        self.has_unread = false;
+        self.has_unread_highlight = false;
+        const last_msg = self.messages.getLast();
+        const time_tag = last_msg.getTag("time") orelse return;
+        var write_buf: [128]u8 = undefined;
+        const mark_read = try std.fmt.bufPrint(
+            &write_buf,
+            "MARKREAD {s} timestamp={s}\r\n",
+            .{
+                self.name,
+                time_tag,
+            },
+        );
+        try self.client.queueWrite(mark_read);
+    }
 };
 
 pub const User = struct {
