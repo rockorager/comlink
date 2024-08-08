@@ -117,6 +117,7 @@ fn getClient(lua: *Lua) *irc.Client {
 
 /// The on_connect event is emitted when we complete registration and receive a RPL_WELCOME message
 pub fn onConnect(lua: *Lua, client: *irc.Client) !void {
+    defer lua.setTop(0); // []
     lua.pushLightUserdata(client); // [light_userdata]
     lua.setField(registry_index, client_key); // []
 
@@ -135,6 +136,7 @@ pub fn onConnect(lua: *Lua, client: *irc.Client) !void {
 }
 
 pub fn onMessage(lua: *Lua, client: *irc.Client, channel: []const u8, sender: []const u8, msg: []const u8) !void {
+    defer lua.setTop(0); // []
     Client.getTable(lua, client.config.lua_table); // [table]
     const lua_type = lua.getField(1, "on_message"); // [table, type]
     switch (lua_type) {
@@ -145,7 +147,7 @@ pub fn onMessage(lua: *Lua, client: *irc.Client, channel: []const u8, sender: []
             _ = lua.pushString(msg); // [function,string,string,string]
             lua.protectedCall(3, 0, 0) catch return error.LuaError;
         },
-        else => lua.pop(2), // []
+        else => {},
     }
 }
 
@@ -158,6 +160,7 @@ pub fn execFn(lua: *Lua, func: i32) !void {
 }
 
 pub fn execUserCommand(lua: *Lua, cmdline: []const u8, func: i32) !void {
+    defer lua.setTop(0); // []
     const lua_type = lua.rawGetIndex(registry_index, func); // [function]
     _ = lua.pushString(cmdline); // [function, string]
 
