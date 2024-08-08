@@ -276,6 +276,12 @@ pub const App = struct {
                                 self.completer.?.deinit();
                                 self.completer = null;
                             }
+                        } else if (key.matches(vaxis.Key.page_up, .{})) {
+                            self.state.messages.scroll_offset +|= 3;
+                        } else if (key.matches(vaxis.Key.page_down, .{})) {
+                            self.state.messages.scroll_offset -|= 3;
+                        } else if (key.matches(vaxis.Key.home, .{})) {
+                            self.state.messages.scroll_offset = 0;
                         } else {
                             if (self.completer != null and !key.isModifier()) {
                                 self.completer.?.deinit();
