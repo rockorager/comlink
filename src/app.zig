@@ -1578,7 +1578,7 @@ pub const App = struct {
         while (i < content.len) : (i += 1) {
             const b = content[i];
             switch (b) {
-                0x01 => {
+                0x01 => { // https://modern.ircdocs.horse/ctcp
                     if (i == 0 and
                         content.len > 7 and
                         mem.startsWith(u8, content[1..], "ACTION"))

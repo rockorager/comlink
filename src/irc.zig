@@ -842,7 +842,7 @@ pub fn toVaxisColor(irc: u8) vaxis.Color {
     return switch (irc) {
         0 => .default, // white
         1 => .{ .index = 0 }, // black
-        2 => .{ .index = 3 }, // blue
+        2 => .{ .index = 4 }, // blue
         3 => .{ .index = 2 }, // green
         4 => .{ .index = 1 }, // red
         5 => .{ .index = 3 }, // brown
