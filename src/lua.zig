@@ -145,7 +145,7 @@ pub fn onMessage(lua: *Lua, client: *irc.Client, channel: []const u8, sender: []
             _ = lua.pushString(msg); // [function,string,string,string]
             lua.protectedCall(3, 0, 0) catch return error.LuaError;
         },
-        else => {},
+        else => lua.pop(2), // []
     }
 }
 
