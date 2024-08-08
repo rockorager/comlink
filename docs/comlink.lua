@@ -27,6 +27,11 @@ local conn = {}
 ---@return string name Name of the connection
 function conn.name() end
 
+---Joins a channel
+---
+---@param channel string Name of the channel to join
+function conn.join(channel) end
+
 ---Set connection configuration
 ---
 ---@param cfg ConnectionConfiguration
