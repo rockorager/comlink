@@ -79,6 +79,7 @@ pub fn main() !void {
             error.LuaError => {
                 const msg = lua.toString(-1) catch "";
                 const duped = alloc.dupe(u8, msg) catch "";
+                app.deinit();
                 defer alloc.free(duped);
                 log.err("{s}", .{duped});
                 return err;
