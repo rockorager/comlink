@@ -1143,7 +1143,8 @@ pub const App = struct {
     ) !void {
         if (channel.messages.items.len == 0) return;
         const client = channel.client;
-        const messages = channel.messages.items[0 .. channel.messages.items.len - self.state.messages.scroll_offset];
+        const last_msg_idx = channel.messages.items.len -| self.state.messages.scroll_offset;
+        const messages = channel.messages.items[0..@max(1, last_msg_idx)];
         // We draw a gutter for time information
         const gutter_width: usize = 6;
 
@@ -1172,7 +1173,7 @@ pub const App = struct {
         );
 
         // Define a few state variables for the loop
-        const last_msg = messages[messages.len - 1];
+        const last_msg = messages[messages.len -| 1];
 
         // Initialize prev_time to the time of the last message, falling back to "now"
         var prev_time: zeit.Instant = last_msg.localTime(&self.tz) orelse
