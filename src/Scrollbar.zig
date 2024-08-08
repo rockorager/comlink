@@ -29,7 +29,7 @@ pub fn draw(self: Scrollbar, win: vaxis.Window) void {
     const bar_height = @max(std.math.divCeil(usize, self.view_size * win.height, self.total) catch unreachable, 1);
 
     // The row of the last cell of the bottom of the bar
-    const bar_bottom = (win.height - 1) - (std.math.divCeil(usize, self.bottom * win.height, self.total) catch unreachable);
+    const bar_bottom = (win.height - 1) -| (std.math.divCeil(usize, self.bottom * win.height, self.total) catch unreachable);
 
     var i: usize = 0;
     while (i <= bar_height) : (i += 1)
