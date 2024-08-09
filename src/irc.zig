@@ -806,10 +806,8 @@ pub const Client = struct {
             .before => {
                 assert(channel.messages.items.len > 0);
                 const first = channel.messages.items[0];
-                var tag_iter = first.tagIterator();
-                const time = while (tag_iter.next()) |tag| {
-                    if (std.mem.eql(u8, tag.key, "time")) break tag.value;
-                } else return error.NoTimeTag;
+                const time = first.getTag("time") orelse
+                    return error.NoTimeTag;
                 const hist = try std.fmt.bufPrint(
                     &buf,
                     "CHATHISTORY BEFORE {s} timestamp={s} 50\r\n",
@@ -821,10 +819,8 @@ pub const Client = struct {
             .after => {
                 assert(channel.messages.items.len > 0);
                 const last = channel.messages.getLast();
-                var tag_iter = last.tagIterator();
-                const time = while (tag_iter.next()) |tag| {
-                    if (std.mem.eql(u8, tag.key, "time")) break tag.value;
-                } else return error.NoTimeTag;
+                const time = last.getTag("time") orelse
+                    return error.NoTimeTag;
                 const hist = try std.fmt.bufPrint(
                     &buf,
                     // we request 500 because we have no
