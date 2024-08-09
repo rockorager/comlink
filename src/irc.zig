@@ -785,6 +785,7 @@ pub const Client = struct {
 
     /// fetch the history for the provided channel.
     pub fn requestHistory(self: *Client, cmd: ChatHistoryCommand, channel: *Channel) !void {
+        if (!self.caps.@"draft/chathistory") return;
         if (channel.history_requested) return;
 
         channel.history_requested = true;
