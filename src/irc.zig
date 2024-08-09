@@ -622,7 +622,11 @@ pub const Client = struct {
                 };
                 if (self.should_close) return;
                 log.debug("read {d}", .{n});
-                if (n == 0) continue;
+                if (n == 0) {
+                    self.status = .disconnected;
+                    loop.postEvent(.redraw);
+                    break;
+                }
                 last_msg = std.time.milliTimestamp();
                 var i: usize = 0;
                 while (std.mem.indexOfPos(u8, buf[0 .. n + start], i, "\r\n")) |idx| {
