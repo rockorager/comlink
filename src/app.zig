@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const comlink = @import("comlink.zig");
 const vaxis = @import("vaxis");
 const zeit = @import("zeit");
@@ -137,7 +138,13 @@ pub const App = struct {
             for (self.clients.items, 0..) |_, i| {
                 var client = self.clients.items[i];
                 client.deinit();
-                self.alloc.destroy(client);
+                if (builtin.mode != .Debug) {
+                    // We only clean up clients in Debug mode so we can check for memory leaks
+                    // without failing for this. We don't care about it in any other mode since we
+                    // are exiting anyways and we want to do it fast. If we destroy, our readthread
+                    // could panic so we don't do it unless we have to.
+                    self.alloc.destroy(client);
+                }
             }
             self.clients.deinit();
         }
@@ -777,8 +784,8 @@ pub const App = struct {
         const command: comlink.Command = blk: {
             const start: u1 = if (cmd[0] == '/') 1 else 0;
             const end = mem.indexOfScalar(u8, cmd, ' ') orelse cmd.len;
-            if (comlink.Command.fromString(cmd[start..end])) |builtin|
-                break :blk builtin;
+            if (comlink.Command.fromString(cmd[start..end])) |internal|
+                break :blk internal;
             if (comlink.Command.user_commands.get(cmd[start..end])) |ref| {
                 const str = if (end == cmd.len) "" else std.mem.trim(u8, cmd[end..], " ");
                 return lua.execUserCommand(lua_state, str, ref);
