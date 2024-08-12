@@ -138,7 +138,7 @@ pub const App = struct {
             for (self.clients.items, 0..) |_, i| {
                 var client = self.clients.items[i];
                 client.deinit();
-                if (builtin.mode != .Debug) {
+                if (builtin.mode == .Debug) {
                     // We only clean up clients in Debug mode so we can check for memory leaks
                     // without failing for this. We don't care about it in any other mode since we
                     // are exiting anyways and we want to do it fast. If we destroy, our readthread
