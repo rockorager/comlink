@@ -29,6 +29,7 @@ pub const Command = union(enum) {
     part,
     close,
     redraw,
+    version,
     lua_function: i32,
 
     pub var user_commands: std.StringHashMap(i32) = undefined;
@@ -47,6 +48,7 @@ pub const Command = union(enum) {
         .{ "part", .part },
         .{ "close", .close },
         .{ "redraw", .redraw },
+        .{ "version", .version },
     });
 
     pub fn fromString(str: []const u8) ?Command {

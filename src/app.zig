@@ -5,6 +5,7 @@ const vaxis = @import("vaxis");
 const zeit = @import("zeit");
 const ziglua = @import("ziglua");
 const Scrollbar = @import("Scrollbar.zig");
+const main = @import("main.zig");
 
 const irc = comlink.irc;
 const lua = comlink.lua;
@@ -884,6 +885,18 @@ pub const App = struct {
                 return client.queueWrite(msg);
             },
             .redraw => self.vx.queueRefresh(),
+            .version => {
+                if (channel == null) return error.InvalidCommand;
+                const msg = try std.fmt.bufPrint(
+                    &buf,
+                    "NOTICE {s} :\x01VERSION comlink {s}\x01\r\n",
+                    .{
+                        channel.?.name,
+                        main.version,
+                    },
+                );
+                return client.queueWrite(msg);
+            },
             .lua_function => {}, // we don't handle these from the text-input
         }
     }
