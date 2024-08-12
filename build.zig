@@ -1,5 +1,8 @@
 const std = @import("std");
 
+/// Must be kept in sync with git tags
+const comlink_version: std.SemanticVersion = .{ .major = 0, .minor = 0, .patch = 0 };
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -32,6 +35,14 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const opts = b.addOptions();
+    const version_string = version(b) catch |err| {
+        std.debug.print("{}", .{err});
+        @compileError("couldn't get version");
+    };
+    opts.addOption([]const u8, "version", version_string);
+
+    exe.root_module.addOptions("build_options", opts);
     exe.root_module.addImport("tls", tls_dep.module("tls"));
     exe.root_module.addImport("ziglua", ziglua_dep.module("ziglua"));
     exe.root_module.addImport("vaxis", vaxis_dep.module("vaxis"));
@@ -65,4 +76,29 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_exe_unit_tests.step);
+}
+
+fn version(b: *std.Build) ![]const u8 {
+    if (!std.process.can_spawn) {
+        std.debug.print("error: version info cannot be retrieved from git. Zig version must be provided using -Dversion-string\n", .{});
+        std.process.exit(1);
+    }
+    const version_string = b.fmt("v{d}.{d}.{d}", .{ comlink_version.major, comlink_version.minor, comlink_version.patch });
+
+    var code: u8 = undefined;
+    const git_describe_untrimmed = b.runAllowFail(&[_][]const u8{
+        "git",
+        "-C",
+        b.build_root.path orelse ".",
+        "describe",
+        "--tags",
+        "--abbrev=9",
+    }, &code, .Ignore) catch {
+        return version_string;
+    };
+    if (!std.mem.startsWith(u8, git_describe_untrimmed, version_string)) {
+        std.debug.print("error: tagged version does not match internal version\n", .{});
+        std.process.exit(1);
+    }
+    return std.mem.trim(u8, git_describe_untrimmed, " \n\r");
 }

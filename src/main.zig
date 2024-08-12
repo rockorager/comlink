@@ -1,4 +1,5 @@
 const std = @import("std");
+const options = @import("build_options");
 const builtin = @import("builtin");
 const comlink = @import("comlink.zig");
 const vaxis = @import("vaxis");
@@ -16,6 +17,8 @@ pub const std_options: std.Options = .{
         .{ .scope = .vaxis_parser, .level = .warn },
     },
 };
+
+pub const version = options.version;
 
 /// Called after receiving a terminating signal
 fn cleanUp(sig: c_int) callconv(.C) void {
@@ -46,6 +49,15 @@ pub fn main() !void {
         }
     }
     const alloc = gpa.allocator();
+
+    var args = try std.process.argsWithAllocator(alloc);
+    while (args.next()) |arg| {
+        if (argMatch("-v", "--version", arg)) {
+            const stdout = std.io.getStdOut();
+            try stdout.writer().print("comlink {s}\n", .{version});
+            return;
+        }
+    }
 
     // Handle termination signals
     switch (builtin.os.tag) {
@@ -87,6 +99,16 @@ pub fn main() !void {
             else => return err,
         }
     };
+}
+
+fn argMatch(maybe_short: ?[]const u8, maybe_long: ?[]const u8, arg: [:0]const u8) bool {
+    if (maybe_short) |short| {
+        if (std.mem.eql(u8, short, arg)) return true;
+    }
+    if (maybe_long) |long| {
+        if (std.mem.eql(u8, long, arg)) return true;
+    }
+    return false;
 }
 
 test {
