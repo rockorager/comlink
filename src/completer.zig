@@ -1,9 +1,16 @@
 const std = @import("std");
 const comlink = @import("comlink.zig");
 const vaxis = @import("vaxis");
+const emoji = @import("emoji.zig");
 
 const irc = comlink.irc;
 const Command = comlink.Command;
+
+const Kind = enum {
+    command,
+    emoji,
+    nick,
+};
 
 pub const Completer = struct {
     word: []const u8,
@@ -12,7 +19,7 @@ pub const Completer = struct {
     selected_idx: ?usize,
     widest: ?usize,
     buf: [irc.maximum_message_size]u8 = undefined,
-    cmd: bool = false, // true when we are completing a command
+    kind: Kind = .nick,
 
     pub fn init(alloc: std.mem.Allocator, line: []const u8) !Completer {
         const start_idx = if (std.mem.lastIndexOfScalar(u8, line, ' ')) |idx| idx + 1 else 0;
@@ -26,8 +33,12 @@ pub const Completer = struct {
         };
         @memcpy(completer.buf[0..line.len], line);
         if (last_word.len > 0 and last_word[0] == '/') {
-            completer.cmd = true;
+            completer.kind = .command;
             try completer.findCommandMatches();
+        }
+        if (last_word.len > 0 and last_word[0] == ':') {
+            completer.kind = .emoji;
+            try completer.findEmojiMatches();
         }
         return completer;
     }
@@ -66,24 +77,33 @@ pub const Completer = struct {
     pub fn replacementText(self: *Completer) []const u8 {
         if (self.selected_idx == null or self.options.items.len == 0) return "";
         const replacement = self.options.items[self.options.items.len - 1 - self.selected_idx.?];
-        if (self.cmd) {
-            self.buf[0] = '/';
-            @memcpy(self.buf[1 .. 1 + replacement.len], replacement);
-            const append_space = if (Command.fromString(replacement)) |cmd|
-                cmd.appendSpace()
-            else
-                true;
-            if (append_space) self.buf[1 + replacement.len] = ' ';
-            return self.buf[0 .. 1 + replacement.len + @as(u1, if (append_space) 1 else 0)];
-        }
-        const start = self.start_idx;
-        @memcpy(self.buf[start .. start + replacement.len], replacement);
-        if (self.start_idx == 0) {
-            @memcpy(self.buf[start + replacement.len .. start + replacement.len + 2], ": ");
-            return self.buf[0 .. start + replacement.len + 2];
-        } else {
-            @memcpy(self.buf[start + replacement.len .. start + replacement.len + 1], " ");
-            return self.buf[0 .. start + replacement.len + 1];
+        switch (self.kind) {
+            .command => {
+                self.buf[0] = '/';
+                @memcpy(self.buf[1 .. 1 + replacement.len], replacement);
+                const append_space = if (Command.fromString(replacement)) |cmd|
+                    cmd.appendSpace()
+                else
+                    true;
+                if (append_space) self.buf[1 + replacement.len] = ' ';
+                return self.buf[0 .. 1 + replacement.len + @as(u1, if (append_space) 1 else 0)];
+            },
+            .emoji => {
+                const start = self.start_idx;
+                @memcpy(self.buf[start .. start + replacement.len], replacement);
+                return self.buf[0 .. start + replacement.len];
+            },
+            .nick => {
+                const start = self.start_idx;
+                @memcpy(self.buf[start .. start + replacement.len], replacement);
+                if (self.start_idx == 0) {
+                    @memcpy(self.buf[start + replacement.len .. start + replacement.len + 2], ": ");
+                    return self.buf[0 .. start + replacement.len + 2];
+                } else {
+                    @memcpy(self.buf[start + replacement.len .. start + replacement.len + 1], " ");
+                    return self.buf[0 .. start + replacement.len + 1];
+                }
+            },
         }
     }
 
@@ -106,7 +126,6 @@ pub const Completer = struct {
 
     pub fn findCommandMatches(self: *Completer) !void {
         if (self.options.items.len > 0) return;
-        self.cmd = true;
         const commands = std.meta.fieldNames(Command);
         for (commands) |cmd| {
             if (std.mem.eql(u8, cmd, "lua_function")) continue;
@@ -119,6 +138,17 @@ pub const Completer = struct {
             if (std.ascii.startsWithIgnoreCase(cmd.*, self.word[1..])) {
                 try self.options.append(cmd.*);
             }
+        }
+    }
+
+    pub fn findEmojiMatches(self: *Completer) !void {
+        if (self.options.items.len > 0) return;
+        const keys = emoji.map.keys();
+        const values = emoji.map.values();
+
+        for (keys, values) |shortcode, glyph| {
+            if (std.mem.indexOf(u8, shortcode, self.word[1..])) |_|
+                try self.options.append(glyph);
         }
     }
 
