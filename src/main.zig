@@ -112,5 +112,6 @@ fn argMatch(maybe_short: ?[]const u8, maybe_long: ?[]const u8, arg: [:0]const u8
 }
 
 test {
+    _ = @import("format.zig");
     _ = @import("irc.zig");
 }
