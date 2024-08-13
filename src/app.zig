@@ -255,9 +255,9 @@ pub const App = struct {
                                 try input.insertSliceAtCursor(line);
                             }
                         } else if (key.matches(vaxis.Key.enter, .{})) {
-                            if (input.buf.realLength() == 0) continue;
                             const buffer = self.selectedBuffer() orelse @panic("no buffer");
                             const content = try input.toOwnedSlice();
+                            if (content.len == 0) continue;
                             defer self.alloc.free(content);
                             if (content[0] == '/')
                                 self.handleCommand(lua_state, buffer, content) catch |err| {
