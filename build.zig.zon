@@ -18,6 +18,10 @@
             .url = "git+https://github.com/ianic/tls.zig#36ae29b0e51fae564222767ffd5d7f60f9a8dd0b",
             .hash = "1220319a215975c0ac3d251b334bfb915765adf21f7e64904028b1ec5ebcf00ea3cd",
         },
+        .zzdoc = .{
+            .url = "git+https://github.com/rockorager/zzdoc?ref=v0.2.0#4952c59aa4eaacb8e58c651022ca200d0def2e8c",
+            .hash = "12202a808ac9b32753cf4e093ef95a1c56aa595f7e3d331092ebd8883350c48da930",
+        },
     },
     .paths = .{""},
 }

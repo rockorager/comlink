@@ -1,4 +1,5 @@
 const std = @import("std");
+const zzdoc = @import("zzdoc");
 
 /// Must be kept in sync with git tags
 const comlink_version: std.SemanticVersion = .{ .major = 0, .minor = 0, .patch = 0 };
@@ -6,6 +7,16 @@ const comlink_version: std.SemanticVersion = .{ .major = 0, .minor = 0, .patch =
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    // manpages
+    {
+        var man_step = zzdoc.addManpageStep(b, .{
+            .root_doc_dir = b.path("docs/"),
+        });
+
+        const install_step = man_step.addInstallStep(.{});
+        b.default_step.dependOn(&install_step.step);
+    }
 
     const ziglua_dep = b.dependency("ziglua", .{
         .target = target,
