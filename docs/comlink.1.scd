@@ -8,6 +8,13 @@ comlink - an IRC client
 
 *comlink* [options...]
 
+# DESCRIPTION
+
+Comlink is an IRC client for your terminal. It employs many modern terminal
+features, such as the Kitty Keyboard Protocol, mouse shapes, and OSC 8
+hyperlinks. It also uses many IRCv3 extensions to provide a modern chat
+experience.
+
 # OPTIONS
 
 *-v*, *--version*
@@ -116,5 +123,10 @@ shortcuts shown here are the defaults.
 
 # AUTHORS
 
-Maintained by Tim Culverhouse <tim@timculverhouse.com>. Source code available at
-https://git.sr.ht/~rockorager/comlink.
+Written and maintained by Tim Culverhouse <tim@timculverhouse.com>, assisted by
+open source contributors.
+
+# REPORTING BUGS
+
+Bugs may be reported to the mailing list <~rockorager/comlink@lists.sr.ht> or at
+https://github.com/rockorager/comlink.
