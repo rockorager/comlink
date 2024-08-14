@@ -121,6 +121,10 @@ shortcuts shown here are the defaults.
 *ENTER*
 	Send the text in the input field.
 
+# SEE ALSO
+
+*comlink*(3), *comlink_connection*(3), *comlink_channel*(3)
+
 # AUTHORS
 
 Written and maintained by Tim Culverhouse <tim@timculverhouse.com>, assisted by
