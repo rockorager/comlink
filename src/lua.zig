@@ -307,11 +307,16 @@ const Comlink = struct {
                 lua.pop(1); // [table]
                 break :blk true;
             },
-            .boolean => lua.toBoolean(-1), // [table]
+            .boolean => blk: {
+                const val = lua.toBoolean(-1);
+                lua.pop(1); // [table]
+                break :blk val;
+            },
             else => lua.raiseErrorStr("expected a boolean for field 'tls'", .{}),
         };
 
-        lua.pop(1); // []
+        // Ref the config table so it doesn't get garbage collected
+        _ = lua.ref(registry_index) catch lua.raiseErrorStr("couldn't ref config table", .{}); // []
 
         Client.initTable(lua); // [table]
         const table_ref = lua.ref(registry_index) catch {
@@ -364,8 +369,11 @@ const Comlink = struct {
     fn addCommand(lua: *Lua) i32 {
         lua.argCheck(lua.isString(1), 1, "expected a string"); // [string, function]
         lua.argCheck(lua.isFunction(2), 2, "expected a function"); // [string, function]
-        const ref = lua.ref(registry_index) catch lua.raiseErrorStr("couldn't ref function", .{});
+        const ref = lua.ref(registry_index) catch lua.raiseErrorStr("couldn't ref function", .{}); // [string]
         const cmd = lua.toString(1) catch unreachable;
+
+        // ref the string so we don't garbage collect it
+        _ = lua.ref(registry_index) catch lua.raiseErrorStr("couldn't ref command name", .{}); // []
         comlink.Command.user_commands.put(cmd, ref) catch lua.raiseErrorStr("out of memory", .{});
         return 0;
     }
