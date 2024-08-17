@@ -223,9 +223,11 @@ pub const User = struct {
     nick: []const u8,
     away: bool = false,
     color: vaxis.Color = .default,
+    real_name: ?[]const u8 = null,
 
     pub fn deinit(self: *const User, alloc: std.mem.Allocator) void {
         alloc.free(self.nick);
+        if (self.real_name) |realname| alloc.free(realname);
     }
 };
 
@@ -771,7 +773,7 @@ pub const Client = struct {
             channel.in_flight.who = true;
             const who = try std.fmt.bufPrint(
                 &write_buf,
-                "WHO {s} %cnf\r\n",
+                "WHO {s} %cnfr\r\n",
                 .{channel.name},
             );
             try self.queueWrite(who);

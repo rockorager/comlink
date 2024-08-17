@@ -445,7 +445,7 @@ pub const App = struct {
                                 _ = iter.next() orelse continue :loop; // host
                                 _ = iter.next() orelse continue :loop; // server
                                 const nick = iter.next() orelse continue :loop; // nick
-                                const flags = iter.next() orelse continue :loop; // nick
+                                const flags = iter.next() orelse continue :loop; // flags
 
                                 const user_ptr = try client.getOrCreateUser(nick);
                                 if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
@@ -460,7 +460,7 @@ pub const App = struct {
                                 try channel.addMember(user_ptr, .{ .prefix = prefix });
                             },
                             .RPL_WHOSPCRPL => {
-                                // syntax: <client> <channel> <nick> <flags>
+                                // syntax: <client> <channel> <nick> <flags> :<realname>
                                 var iter = msg.paramIterator();
                                 _ = iter.next() orelse continue;
                                 const channel_name = iter.next() orelse continue; // channel
@@ -468,6 +468,12 @@ pub const App = struct {
                                 const flags = iter.next() orelse continue;
 
                                 const user_ptr = try client.getOrCreateUser(nick);
+                                if (iter.next()) |real_name| {
+                                    if (user_ptr.real_name) |old_name| {
+                                        self.alloc.free(old_name);
+                                    }
+                                    user_ptr.real_name = try self.alloc.dupe(u8, real_name);
+                                }
                                 if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
                                 var channel = try client.getOrCreateChannel(channel_name);
 
@@ -1278,6 +1284,19 @@ pub const App = struct {
                 const result_win = sender_win.child(.{ .width = .{ .limit = sender_result.col } });
                 if (result_win.hasMouse(self.state.mouse)) |_| {
                     self.vx.setMouseShape(.pointer);
+                    // If we have a realname we print it
+                    if (user.real_name) |real_name| {
+                        _ = try sender_win.printSegment(
+                            .{
+                                .text = real_name,
+                                .style = .{ .italic = true, .dim = true },
+                            },
+                            .{
+                                .wrap = .none,
+                                .col_offset = sender_result.col + 1,
+                            },
+                        );
+                    }
                 }
 
                 // Go up one more line to print the next message
