@@ -444,6 +444,7 @@ pub const Client = struct {
         password: []const u8,
         real_name: []const u8,
         server: []const u8,
+        port: ?u16,
         network_id: ?[]const u8 = null,
         name: ?[]const u8 = null,
         tls: bool = true,
@@ -676,13 +677,15 @@ pub const Client = struct {
 
     pub fn connect(self: *Client) !void {
         if (self.config.tls) {
-            self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, 6697);
+            const port: u16 = self.config.port orelse 6697;
+            self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, port);
             self.client = try tls.client(self.stream, .{
                 .host = self.config.server,
                 .root_ca = self.app.bundle,
             });
         } else {
-            self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, 6667);
+            const port: u16 = self.config.port orelse 6667;
+            self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, port);
         }
 
         var buf: [4096]u8 = undefined;

@@ -13,6 +13,7 @@ local comlink = {}
 ---@field password string Password for server
 ---@field real_name string Real name of user
 ---@field tls? boolean Whether to encrypt connections
+---@field port? number Optional port to use for server connection. Defaults to 6697 for TLS connections and 6667 for plaintext connections
 
 ---A connection to a server
 ---

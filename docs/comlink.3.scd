@@ -37,6 +37,8 @@ This module provides application level API calls.
 
 	The following optional fields are available:
 
+	- *port*: uint16 (default=6697 (tls) or 6667), port to use for
+	  connection
 	- *tls*: boolean (default=true), when true, use an encrypted connection
 
 *comlink.log*

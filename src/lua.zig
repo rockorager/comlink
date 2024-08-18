@@ -315,6 +315,21 @@ const Comlink = struct {
             else => lua.raiseErrorStr("expected a boolean for field 'tls'", .{}),
         };
 
+        lua_type = lua.getField(1, "port"); // [table, int|nil]
+        lua.argCheck(lua_type == .nil or lua_type == .number, 1, "expected a number or nil");
+        const port: ?u16 = switch (lua_type) {
+            .nil => blk: {
+                lua.pop(1); // [table]
+                break :blk null;
+            },
+            .number => blk: {
+                const val = lua.toNumber(-1) catch unreachable;
+                lua.pop(1); // [table]
+                break :blk @intFromFloat(val);
+            },
+            else => lua.raiseErrorStr("expected a boolean for field 'tls'", .{}),
+        };
+
         // Ref the config table so it doesn't get garbage collected
         _ = lua.ref(registry_index) catch lua.raiseErrorStr("couldn't ref config table", .{}); // []
 
@@ -331,6 +346,7 @@ const Comlink = struct {
             .real_name = real_name,
             .tls = tls,
             .lua_table = table_ref,
+            .port = port,
         };
 
         const loop = getLoop(lua); // []
