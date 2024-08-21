@@ -7,6 +7,7 @@ const bytepool = @import("pool.zig");
 
 const testing = std.testing;
 
+const Allocator = std.mem.Allocator;
 pub const MessagePool = bytepool.BytePool(max_raw_msg_size * 4);
 pub const Slice = MessagePool.Slice;
 
@@ -206,16 +207,13 @@ pub const Channel = struct {
         self.has_unread_highlight = false;
         const last_msg = self.messages.getLast();
         const time_tag = last_msg.getTag("time") orelse return;
-        var write_buf: [128]u8 = undefined;
-        const mark_read = try std.fmt.bufPrint(
-            &write_buf,
+        try self.client.print(
             "MARKREAD {s} timestamp={s}\r\n",
             .{
                 self.name,
                 time_tag,
             },
         );
-        try self.client.queueWrite(mark_read);
     }
 };
 
@@ -657,9 +655,18 @@ pub const Client = struct {
         }
     }
 
+    pub fn print(self: *Client, comptime fmt: []const u8, args: anytype) Allocator.Error!void {
+        const msg = try std.fmt.allocPrint(self.alloc, fmt, args);
+        self.write_queue.push(.{ .write = .{
+            .client = self,
+            .msg = msg,
+            .allocator = self.alloc,
+        } });
+    }
+
     /// push a write request into the queue. The request should include the trailing
     /// '\r\n'. queueWrite will dupe the message and free after processing.
-    pub fn queueWrite(self: *Client, msg: []const u8) !void {
+    pub fn queueWrite(self: *Client, msg: []const u8) Allocator.Error!void {
         self.write_queue.push(.{ .write = .{
             .client = self,
             .msg = try self.alloc.dupe(u8, msg),
@@ -688,33 +695,25 @@ pub const Client = struct {
             self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, port);
         }
 
-        var buf: [4096]u8 = undefined;
-
         try self.queueWrite("CAP LS 302\r\n");
 
         const cap_names = std.meta.fieldNames(Capabilities);
         for (cap_names) |cap| {
-            const cap_req = try std.fmt.bufPrint(
-                &buf,
+            try self.print(
                 "CAP REQ :{s}\r\n",
                 .{cap},
             );
-            try self.queueWrite(cap_req);
         }
 
-        const nick = try std.fmt.bufPrint(
-            &buf,
+        try self.print(
             "NICK {s}\r\n",
             .{self.config.nick},
         );
-        try self.queueWrite(nick);
 
-        const user = try std.fmt.bufPrint(
-            &buf,
+        try self.print(
             "USER {s} 0 * {s}\r\n",
             .{ self.config.user, self.config.real_name },
         );
-        try self.queueWrite(user);
     }
 
     pub fn getOrCreateChannel(self: *Client, name: []const u8) !*Channel {
@@ -772,23 +771,17 @@ pub const Client = struct {
             self.caps.@"away-notify" and
             !channel.in_flight.who)
         {
-            var write_buf: [64]u8 = undefined;
             channel.in_flight.who = true;
-            const who = try std.fmt.bufPrint(
-                &write_buf,
+            try self.print(
                 "WHO {s} %cnfr\r\n",
                 .{channel.name},
             );
-            try self.queueWrite(who);
         } else {
-            var write_buf: [64]u8 = undefined;
             channel.in_flight.names = true;
-            const names = try std.fmt.bufPrint(
-                &write_buf,
+            try self.print(
                 "NAMES {s}\r\n",
                 .{channel.name},
             );
-            try self.queueWrite(names);
         }
     }
 
@@ -799,15 +792,12 @@ pub const Client = struct {
 
         channel.history_requested = true;
 
-        var buf: [128]u8 = undefined;
         if (channel.messages.items.len == 0) {
-            const hist = try std.fmt.bufPrint(
-                &buf,
+            try self.print(
                 "CHATHISTORY LATEST {s} * 50\r\n",
                 .{channel.name},
             );
             channel.history_requested = true;
-            try self.queueWrite(hist);
             return;
         }
 
@@ -817,28 +807,24 @@ pub const Client = struct {
                 const first = channel.messages.items[0];
                 const time = first.getTag("time") orelse
                     return error.NoTimeTag;
-                const hist = try std.fmt.bufPrint(
-                    &buf,
+                try self.print(
                     "CHATHISTORY BEFORE {s} timestamp={s} 50\r\n",
                     .{ channel.name, time },
                 );
                 channel.history_requested = true;
-                try self.queueWrite(hist);
             },
             .after => {
                 assert(channel.messages.items.len > 0);
                 const last = channel.messages.getLast();
                 const time = last.getTag("time") orelse
                     return error.NoTimeTag;
-                const hist = try std.fmt.bufPrint(
-                    &buf,
+                try self.print(
                     // we request 500 because we have no
                     // idea how long we've been offline
                     "CHATHISTORY AFTER {s} timestamp={s} 500\r\n",
                     .{ channel.name, time },
                 );
                 channel.history_requested = true;
-                try self.queueWrite(hist);
             },
         }
     }
