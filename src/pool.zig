@@ -3,6 +3,19 @@ const std = @import("std");
 const Condition = std.Thread.Condition;
 const Mutex = std.Thread.Mutex;
 
+/// BytePool is a thread safe buffer. Use it by Allocating a given number of bytes, which will block
+/// until one is available. The returned Slice structure contains a reference to a slice within the
+/// pool. This slice will always belong to the Slice until deinit is called.
+///
+/// This data structure is useful for receiving messages over-the-wire and sending to another thread
+/// for processing, while providing some level of backpressure on the read side. For example, we
+/// could be reading messages from the wire and sending into a queue for processing. We could read
+/// 10 messages off the connection, but the queue is blocked doing an expensive operation. We are
+/// still able to read until our BytePool is out of capacity.
+///
+/// For IRC, we use this because messages over the wire *could* be up to 4192 bytes, but commonly
+/// are less than 100. Instead of a pool of buffers each 4192, we write messages of exact length
+/// into this pool to more efficiently pack the memory
 pub fn BytePool(comptime size: usize) type {
     return struct {
         const Self = @This();
