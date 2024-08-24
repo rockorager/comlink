@@ -177,7 +177,7 @@ pub const App = struct {
 
         // start our write thread
         var write_queue: comlink.WriteQueue = .{};
-        const write_thread = try std.Thread.spawn(.{}, writeLoop, .{&write_queue});
+        const write_thread = try std.Thread.spawn(.{}, writeLoop, .{ self.alloc, &write_queue });
         defer {
             write_queue.push(.join);
             write_thread.join();
@@ -1869,19 +1869,19 @@ pub const App = struct {
 
 /// this loop is run in a separate thread and handles writes to all clients.
 /// Message content is deallocated when the write request is completed
-fn writeLoop(queue: *comlink.WriteQueue) !void {
+fn writeLoop(alloc: std.mem.Allocator, queue: *comlink.WriteQueue) !void {
     log.debug("starting write thread", .{});
     while (true) {
         const req = queue.pop();
         switch (req) {
             .write => |w| {
                 try w.client.write(w.msg);
-                w.allocator.free(w.msg);
+                alloc.free(w.msg);
             },
             .join => {
                 while (queue.tryPop()) |r| {
                     switch (r) {
-                        .write => |w| w.allocator.free(w.msg),
+                        .write => |w| alloc.free(w.msg),
                         else => {},
                     }
                 }

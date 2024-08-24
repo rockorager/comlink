@@ -8,7 +8,7 @@ pub const lua = @import("lua.zig");
 pub const App = app.App;
 pub const Completer = completer.Completer;
 pub const EventLoop = vaxis.Loop(Event);
-pub const WriteQueue = vaxis.Queue(WriteEvent, 64);
+pub const WriteQueue = vaxis.Queue(WriteEvent, 256);
 
 pub const Bind = struct {
     key: vaxis.Key,
@@ -93,7 +93,6 @@ pub const WriteEvent = union(enum) {
     write: struct {
         client: *irc.Client,
         msg: []const u8,
-        allocator: std.mem.Allocator,
     },
     join,
 };

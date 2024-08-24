@@ -660,7 +660,6 @@ pub const Client = struct {
         self.write_queue.push(.{ .write = .{
             .client = self,
             .msg = msg,
-            .allocator = self.alloc,
         } });
     }
 
@@ -670,7 +669,6 @@ pub const Client = struct {
         self.write_queue.push(.{ .write = .{
             .client = self,
             .msg = try self.alloc.dupe(u8, msg),
-            .allocator = self.alloc,
         } });
     }
 
