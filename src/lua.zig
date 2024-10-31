@@ -283,23 +283,28 @@ const Comlink = struct {
         // [table]
         var lua_type = lua.getField(1, "user"); // [table,string]
         lua.argCheck(lua_type == .string, 1, "expected a string for field 'user'");
-        const user = lua.toString(-1) catch unreachable; // [table]
+        const user = lua.toString(-1) catch unreachable;
+        lua.pop(1); // [table]
 
         lua_type = lua.getField(1, "nick"); // [table,string]
         lua.argCheck(lua_type == .string, 1, "expected a string for field 'nick'");
-        const nick = lua.toString(-1) catch unreachable; // [table]
+        const nick = lua.toString(-1) catch unreachable;
+        lua.pop(1); // [table]
 
         lua_type = lua.getField(1, "password"); // [table, string]
         lua.argCheck(lua_type == .string, 1, "expected a string for field 'password'");
-        const password = lua.toString(-1) catch unreachable; // [table]
+        const password = lua.toString(-1) catch unreachable;
+        lua.pop(1); // [table]
 
         lua_type = lua.getField(1, "real_name"); // [table, string]
         lua.argCheck(lua_type == .string, 1, "expected a string for field 'real_name'");
-        const real_name = lua.toString(-1) catch unreachable; // [table]
+        const real_name = lua.toString(-1) catch unreachable;
+        lua.pop(1); // [table]
 
         lua_type = lua.getField(1, "server"); // [table, string]
         lua.argCheck(lua_type == .string, 1, "expected a string for field 'server'");
         const server = lua.toString(-1) catch unreachable; // [table]
+        lua.pop(1); // [table]
 
         lua_type = lua.getField(1, "tls"); // [table, boolean|nil]
         const tls: bool = switch (lua_type) {
