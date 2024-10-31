@@ -605,6 +605,12 @@ pub const Client = struct {
             var start: usize = 0;
 
             while (true) {
+                try std.posix.setsockopt(
+                    self.stream.handle,
+                    std.posix.SOL.SOCKET,
+                    std.posix.SO.RCVTIMEO,
+                    &timeout,
+                );
                 const n = self.read(buf[start..]) catch |err| {
                     if (err != error.WouldBlock) break;
                     const now = std.time.milliTimestamp();
@@ -622,7 +628,6 @@ pub const Client = struct {
                     continue;
                 };
                 if (self.should_close) return;
-                log.debug("read {d}", .{n});
                 if (n == 0) {
                     self.status = .disconnected;
                     loop.postEvent(.redraw);
@@ -645,12 +650,6 @@ pub const Client = struct {
                     std.mem.copyForwards(u8, buf[0 .. (n + start) - i], buf[i..(n + start)]);
                     start = (n + start) - i;
                 } else start = 0;
-                try std.posix.setsockopt(
-                    self.stream.handle,
-                    std.posix.SOL.SOCKET,
-                    std.posix.SO.RCVTIMEO,
-                    &timeout,
-                );
             }
         }
     }
