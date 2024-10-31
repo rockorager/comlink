@@ -385,7 +385,7 @@ pub const App = struct {
                                 var now_buf: [30]u8 = undefined;
                                 const now_fmt = try now.time().bufPrint(&now_buf, .rfc3339);
 
-                                const past = now.subtract(.{ .days = 7 });
+                                const past = try now.subtract(.{ .days = 7 });
                                 var past_buf: [30]u8 = undefined;
                                 const past_fmt = try past.time().bufPrint(&past_buf, .rfc3339);
 
@@ -1256,7 +1256,7 @@ pub const App = struct {
                 defer prev_time = time;
                 // time_gap is true when the difference between this message and last message is
                 // greater than 5 minutes
-                break :blk (prev_time.timestamp -| time.timestamp) > (5 * std.time.ns_per_min);
+                break :blk (prev_time.timestamp_ns -| time.timestamp_ns) > (5 * std.time.ns_per_min);
             } else false;
 
             // Print the sender of the previous message

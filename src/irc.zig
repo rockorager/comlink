@@ -431,7 +431,7 @@ pub const Message = struct {
         const lhs_time = lhs.time() orelse return false;
         const rhs_time = rhs.time() orelse return false;
 
-        return lhs_time.timestamp < rhs_time.timestamp;
+        return lhs_time.timestamp_ns < rhs_time.timestamp_ns;
     }
 };
 

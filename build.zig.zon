@@ -11,8 +11,8 @@
             .hash = "1220f3260273dd957a4ffb8b453e5b5a2204311ed06b2384e492d01ac06e751ae56b",
         },
         .zeit = .{
-            .url = "git+https://github.com/rockorager/zeit?ref=main#9cca8ec620a54c3b07cd249f25e5bcb3153d03d7",
-            .hash = "1220755ea2a5aa6bb3713437aaafefd44812169fe43f1da755c3ee6101b85940f441",
+            .url = "git+https://github.com/rockorager/zeit?ref=main#d943bc4bfe9e18490460dfdd64f48e997065eba8",
+            .hash = "1220a021c15abe512e13fcf4615ee43f17ed09da80d49a0710116702666a7a04a6dd",
         },
         .tls = .{
             .url = "git+https://github.com/ianic/tls.zig#36ae29b0e51fae564222767ffd5d7f60f9a8dd0b",
