@@ -760,6 +760,19 @@ pub const App = struct {
                                         channel.has_unread = true;
                                     }
                                 }
+
+                                // If we get a message from the current user mark the channel as
+                                // read, since they must have just sent the message.
+                                const sender: []const u8 = blk: {
+                                    const src = msg2.source() orelse break :blk "";
+                                    const l = std.mem.indexOfScalar(u8, src, '!') orelse
+                                        std.mem.indexOfScalar(u8, src, '@') orelse
+                                        src.len;
+                                    break :blk src[0..l];
+                                };
+                                if (std.mem.eql(u8, sender, client.config.nick)) {
+                                    self.markSelectedChannelRead();
+                                }
                             },
                         }
                     },
@@ -773,6 +786,10 @@ pub const App = struct {
         }
     }
     pub fn nextChannel(self: *App) void {
+        // When leaving a channel we mark it as read, so we make sure that's done
+        // before we change to the new channel.
+        self.markSelectedChannelRead();
+
         const state = self.state.buffers;
         if (state.selected_idx >= state.count - 1)
             self.state.buffers.selected_idx = 0
@@ -781,6 +798,10 @@ pub const App = struct {
     }
 
     pub fn prevChannel(self: *App) void {
+        // When leaving a channel we mark it as read, so we make sure that's done
+        // before we change to the new channel.
+        self.markSelectedChannelRead();
+
         switch (self.state.buffers.selected_idx) {
             0 => self.state.buffers.selected_idx = self.state.buffers.count - 1,
             else => self.state.buffers.selected_idx -|= 1,
@@ -1000,9 +1021,6 @@ pub const App = struct {
             .client => {}, // nothing to do
 
             .channel => |channel| {
-                // Mark the channel as read
-                try channel.markRead();
-
                 // Request WHO if we don't already have it
                 if (!channel.who_requested) try channel.client.whox(channel);
 
@@ -1353,6 +1371,16 @@ pub const App = struct {
                         item.style.fg = .{ .index = 3 };
                 }
             }
+
+            // Color the background of unread messages gray.
+            if (message.localTime(&self.tz)) |instant| {
+                if (instant.unixTimestamp() > channel.last_read) {
+                    for (segments.items) |*item| {
+                        item.style.bg = .{ .index = 8 };
+                    }
+                }
+            }
+
             _ = try content_win.print(
                 segments.items,
                 .{
@@ -1531,6 +1559,9 @@ pub const App = struct {
                 });
                 if (channel_win.hasMouse(self.state.mouse)) |mouse| {
                     if (mouse.type == .press and mouse.button == .left) {
+                        // When leaving a channel we mark it as read, so we make sure that's done
+                        // before we change to the new channel.
+                        self.markSelectedChannelRead();
                         self.state.buffers.selected_idx = row;
                     }
                 }
@@ -1863,6 +1894,17 @@ pub const App = struct {
                 .text = content[start..],
                 .style = style,
             });
+        }
+    }
+
+    fn markSelectedChannelRead(self: *App) void {
+        const buffer = self.selectedBuffer() orelse return;
+
+        switch (buffer) {
+            .channel => |channel| {
+                channel.markRead() catch return;
+            },
+            else => {},
         }
     }
 };
