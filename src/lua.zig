@@ -420,6 +420,7 @@ const Channel = struct {
         const fns = [_]ziglua.FnReg{
             .{ .name = "send_msg", .func = ziglua.wrap(Channel.sendMsg) },
             .{ .name = "name", .func = ziglua.wrap(Channel.name) },
+            .{ .name = "mark_read", .func = ziglua.wrap(Channel.markRead) },
         };
         lua.newLibTable(&fns); // [table]
         lua.setFuncs(&fns, 0); // [table]
@@ -463,6 +464,18 @@ const Channel = struct {
         lua.pop(2); // []
         _ = lua.pushString(channel.name); // [string]
         return 1;
+    }
+
+    fn markRead(lua: *Lua) i32 {
+        lua.argCheck(lua.isTable(1), 1, "expected a table"); // [table]
+        const lua_type = lua.getField(1, "_ptr"); // [table, lightuserdata]
+        lua.argCheck(lua_type == .light_userdata, 2, "expected lightuserdata");
+        const channel = lua.toUserdata(irc.Channel, 2) catch unreachable;
+        channel.markRead() catch |err| {
+            std.log.err("couldn't mark channel as read: {}", .{err});
+        };
+        lua.pop(2); // []
+        return 0;
     }
 };
 
