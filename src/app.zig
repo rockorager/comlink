@@ -1558,7 +1558,7 @@ pub const App = struct {
                     .height = .{ .limit = 1 },
                 });
                 if (channel_win.hasMouse(self.state.mouse)) |mouse| {
-                    if (mouse.type == .press and mouse.button == .left) {
+                    if (mouse.type == .press and mouse.button == .left and self.state.buffers.selected_idx != row) {
                         // When leaving a channel we mark it as read, so we make sure that's done
                         // before we change to the new channel.
                         self.markSelectedChannelRead();
