@@ -8,6 +8,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const pie = b.option(bool, "pie", "Build a Position Independent Executable") orelse false;
+
     // manpages
     {
         var man_step = zzdoc.addManpageStep(b, .{
@@ -46,6 +48,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    exe.pie = pie;
+
     const opts = b.addOptions();
     const version_string = version(b) catch |err| {
         std.debug.print("{}", .{err});
