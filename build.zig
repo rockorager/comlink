@@ -2,7 +2,7 @@ const std = @import("std");
 const zzdoc = @import("zzdoc");
 
 /// Must be kept in sync with git tags
-const comlink_version: std.SemanticVersion = .{ .major = 0, .minor = 0, .patch = 0 };
+const comlink_version: std.SemanticVersion = .{ .major = 0, .minor = 1, .patch = 1 };
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
