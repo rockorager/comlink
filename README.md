@@ -7,6 +7,16 @@ libera.chat.
 
 ## Installation
 
+### Arch Linux
+
+[comlink](https://aur.archlinux.org/packages/comlink) is available as a package in the AUR. It can be installed using an AUR helper (e.g. paru).
+
+```sh
+paru -S comlink
+```
+
+### Zig Build System
+
 `comlink` is written in zig and can be installed using the zig build system,
 version 0.13.0.
 
