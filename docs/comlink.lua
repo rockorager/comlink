@@ -86,16 +86,21 @@ function comlink.selected_channel() end
 ---@class Channel
 local channel = {}
 
----Send a message to the channel. If the message begins with a '/', it will be processed as a command. This allows for sending of "/me <msg>" style messages from lua
----
----@param chan Channel this channel
----@param msg string message to send
-function channel.send_msg(chan, msg) end
-
 ---Get the name of the channel
 ---
 ---@param chan Channel // this channel
 ---@return string name name of the channel
 function channel.name(chan) end
+
+---Mark a channel as read
+---
+---@param chan Channel // this channel
+function channel.mark_read(chan) end
+
+---Send a message to the channel. If the message begins with a '/', it will be processed as a command. This allows for sending of "/me <msg>" style messages from lua
+---
+---@param chan Channel this channel
+---@param msg string message to send
+function channel.send_msg(chan, msg) end
 
 return comlink
