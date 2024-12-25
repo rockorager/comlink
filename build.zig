@@ -65,6 +65,7 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
     b.installFile("docs/comlink.lua", "share/comlink/lua/comlink.lua");
+    b.installFile("contrib/comlink.desktop", "share/applications/comlink.desktop");
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

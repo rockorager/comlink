@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+TryExec=comlink
+Exec=comlink
+Terminal=true
+Categories=Network;IRCClient;
+
+Name=comlink
+Comment=An experimental IRC client
