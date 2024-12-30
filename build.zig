@@ -8,7 +8,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const pie = b.option(bool, "pie", "Build a Position Independent Executable") orelse false;
+    const pie = b.option(bool, "pie", "Build a Position Independent Executable");
 
     // manpages
     {
