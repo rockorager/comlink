@@ -444,6 +444,7 @@ pub const Client = struct {
         server: []const u8,
         port: ?u16,
         network_id: ?[]const u8 = null,
+        network_nick: ?[]const u8 = null,
         name: ?[]const u8 = null,
         tls: bool = true,
         lua_table: i32,
@@ -523,6 +524,8 @@ pub const Client = struct {
         if (self.config.network_id) |id| self.alloc.free(id);
         if (self.config.name) |name| self.alloc.free(name);
 
+        if (self.config.network_nick) |nick| self.alloc.free(nick);
+
         for (self.channels.items) |channel| {
             channel.deinit(self.alloc);
         }
@@ -541,6 +544,10 @@ pub const Client = struct {
             self.alloc.free(key.*);
         }
         batches.deinit();
+    }
+
+    pub fn nickname(self: *Client) []const u8 {
+        return self.config.network_nick orelse self.config.nick;
     }
 
     pub fn ack(self: *Client, cap: []const u8) void {

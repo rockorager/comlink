@@ -550,16 +550,18 @@ pub const App = struct {
                                             }
                                         }
 
-                                        var attr_iter = std.mem.splitScalar(u8, attr, ';');
-                                        const name: ?[]const u8 = name: while (attr_iter.next()) |kv| {
-                                            const n = std.mem.indexOfScalar(u8, kv, '=') orelse continue;
-                                            if (mem.eql(u8, kv[0..n], "name"))
-                                                break :name try self.alloc.dupe(u8, kv[n + 1 ..]);
-                                        } else null;
-
                                         var cfg = client.config;
                                         cfg.network_id = try self.alloc.dupe(u8, id);
-                                        cfg.name = name;
+
+                                        var attr_iter = std.mem.splitScalar(u8, attr, ';');
+                                        while (attr_iter.next()) |kv| {
+                                            const n = std.mem.indexOfScalar(u8, kv, '=') orelse continue;
+                                            const key = kv[0..n];
+                                            if (mem.eql(u8, key, "name"))
+                                                cfg.name = try self.alloc.dupe(u8, kv[n + 1 ..])
+                                            else if (mem.eql(u8, key, "nickname"))
+                                                cfg.network_nick = try self.alloc.dupe(u8, kv[n + 1 ..]);
+                                        }
                                         loop.postEvent(.{ .connect = cfg });
                                     }
                                 }
@@ -608,7 +610,7 @@ pub const App = struct {
 
                                 var channel = try client.getOrCreateChannel(target);
                                 const user_ptr = try client.getOrCreateUser(target);
-                                const me_ptr = try client.getOrCreateUser(client.config.nick);
+                                const me_ptr = try client.getOrCreateUser(client.nickname());
                                 try channel.addMember(user_ptr, .{});
                                 try channel.addMember(me_ptr, .{});
                                 // we set who_requested so we don't try to request
@@ -635,7 +637,7 @@ pub const App = struct {
                                 var channel = try client.getOrCreateChannel(target);
 
                                 // If it's our nick, we request chat history
-                                if (mem.eql(u8, user.nick, client.config.nick))
+                                if (mem.eql(u8, user.nick, client.nickname()))
                                     try client.requestHistory(.after, channel)
                                 else
                                     try channel.addMember(user, .{});
@@ -672,7 +674,7 @@ pub const App = struct {
                                 var iter = msg.paramIterator();
                                 const target = iter.next() orelse continue;
 
-                                if (mem.eql(u8, user.nick, client.config.nick)) {
+                                if (mem.eql(u8, user.nick, client.nickname())) {
                                     for (client.channels.items, 0..) |channel, i| {
                                         if (!mem.eql(u8, channel.name, target)) continue;
                                         var chan = client.channels.orderedRemove(i);
@@ -692,7 +694,7 @@ pub const App = struct {
                                 var iter = msg2.paramIterator();
                                 const target = blk: {
                                     const tgt = iter.next() orelse continue;
-                                    if (mem.eql(u8, tgt, client.config.nick)) {
+                                    if (mem.eql(u8, tgt, client.nickname())) {
                                         // If the target is us, it likely has our
                                         // hostname in it.
                                         const source = msg2.source() orelse continue;
@@ -718,7 +720,7 @@ pub const App = struct {
                                         if (time.unixTimestamp() > channel.last_read) {
                                             channel.has_unread = true;
                                             const content = iter.next() orelse continue;
-                                            if (std.mem.indexOf(u8, content, client.config.nick)) |_| {
+                                            if (std.mem.indexOf(u8, content, client.nickname())) |_| {
                                                 channel.has_unread_highlight = true;
                                             }
                                         }
@@ -740,7 +742,7 @@ pub const App = struct {
                                         };
                                         try lua.onMessage(lua_state, client, channel.name, sender, content);
                                     }
-                                    if (std.mem.indexOf(u8, content, client.config.nick)) |_| {
+                                    if (std.mem.indexOf(u8, content, client.nickname())) |_| {
                                         var buf: [64]u8 = undefined;
                                         const title_or_err = if (msg2.source()) |source|
                                             std.fmt.bufPrint(&buf, "{s} - {s}", .{ channel.name, source })
@@ -770,7 +772,7 @@ pub const App = struct {
                                         src.len;
                                     break :blk src[0..l];
                                 };
-                                if (std.mem.eql(u8, sender, client.config.nick)) {
+                                if (std.mem.eql(u8, sender, client.nickname())) {
                                     self.markSelectedChannelRead();
                                 }
                             },
@@ -1365,7 +1367,7 @@ pub const App = struct {
             _ = iter.next() orelse continue;
 
             const content = iter.next() orelse continue;
-            if (std.mem.indexOf(u8, content, client.config.nick)) |_| {
+            if (std.mem.indexOf(u8, content, client.nickname())) |_| {
                 for (segments.items) |*item| {
                     if (item.style.fg == .default)
                         item.style.fg = .{ .index = 3 };
