@@ -897,6 +897,7 @@ pub const App = struct {
             .query => {
                 const s = std.mem.indexOfScalar(u8, cmd, ' ') orelse return error.InvalidCommand;
                 const e = std.mem.indexOfScalarPos(u8, cmd, s + 1, ' ') orelse cmd.len;
+                if (cmd[s + 1] == '#') return error.InvalidCommand;
 
                 const ch = try client.getOrCreateChannel(cmd[s + 1 .. e]);
                 try client.requestHistory(.after, ch);
