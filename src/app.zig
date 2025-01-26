@@ -810,6 +810,21 @@ pub const App = struct {
         }
     }
 
+    pub fn selectChannelName(self: *App, cl: *irc.Client, name: []const u8) void {
+        var i: usize = 0;
+        for (self.clients.items) |client| {
+            i += 1;
+            for (client.channels.items) |*channel| {
+                if (cl == client) {
+                    if (std.mem.eql(u8, name, channel.name)) {
+                        self.state.buffers.selected_idx = i;
+                    }
+                }
+                i += 1;
+            }
+        }
+    }
+
     /// handle a command
     pub fn handleCommand(self: *App, lua_state: *Lua, buffer: irc.Buffer, cmd: []const u8) !void {
         const command: comlink.Command = blk: {
@@ -878,6 +893,26 @@ pub const App = struct {
                     },
                 );
                 return client.queueWrite(msg);
+            },
+            .query => {
+                const s = std.mem.indexOfScalar(u8, cmd, ' ') orelse return error.InvalidCommand;
+                const e = std.mem.indexOfScalarPos(u8, cmd, s + 1, ' ') orelse cmd.len;
+
+                const ch = try client.getOrCreateChannel(cmd[s + 1 .. e]);
+                try client.requestHistory(.after, ch);
+                self.selectChannelName(client, ch.name);
+                //handle sending the message
+                if (cmd.len - e + 1 > 0) {
+                    const msg = try std.fmt.bufPrint(
+                        &buf,
+                        "PRIVMSG {s} :{s}\r\n",
+                        .{
+                            cmd[s + 1 .. e],
+                            cmd[e + 1 ..],
+                        },
+                    );
+                    return client.queueWrite(msg);
+                }
             },
             .names => {
                 if (channel == null) return error.InvalidCommand;
@@ -1521,6 +1556,27 @@ pub const App = struct {
     }
 
     fn drawBufferList(self: *App, clients: []*irc.Client, win: vaxis.Window) !void {
+        // Handle mouse
+        {
+            if (win.hasMouse(self.state.mouse)) |mouse| {
+                switch (mouse.button) {
+                    .wheel_up => {
+                        self.state.buffers.scroll_offset -|= 3;
+                        self.state.mouse.?.button = .none;
+                    },
+                    .wheel_down => {
+                        self.state.buffers.scroll_offset +|= 3;
+                        self.state.mouse.?.button = .none;
+                    },
+                    else => {},
+                }
+            }
+
+            self.state.buffers.scroll_offset = @min(
+                self.state.buffers.scroll_offset,
+                self.state.buffers.count -| win.height,
+            );
+        }
         const buf_list_w = self.state.buffers.width;
         var row: usize = 0;
 
