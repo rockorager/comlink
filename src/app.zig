@@ -902,7 +902,7 @@ pub const App = struct {
                 try client.requestHistory(.after, ch);
                 self.selectChannelName(client, ch.name);
                 //handle sending the message
-                if (cmd.len - e + 1 > 0) {
+                if (cmd.len - e > 1) {
                     const msg = try std.fmt.bufPrint(
                         &buf,
                         "PRIVMSG {s} :{s}\r\n",
@@ -1531,7 +1531,7 @@ pub const App = struct {
         for (channel.members.items) |*member| {
             defer member_row += 1;
             if (member_row < self.state.members.scroll_offset) continue;
-            const member_seg = [_]vaxis.Segment{
+            var member_seg = [_]vaxis.Segment{
                 .{
                     .text = std.mem.asBytes(&member.prefix),
                 },
@@ -1582,37 +1582,42 @@ pub const App = struct {
 
         defer self.state.buffers.count = row;
         for (clients) |client| {
-            var style: vaxis.Style = if (row == self.state.buffers.selected_idx)
-                .{
-                    .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
-                    .reverse = true,
+            const scroll_offset = self.state.buffers.scroll_offset;
+            if (!(row < scroll_offset)) {
+                var style: vaxis.Style = if (row == self.state.buffers.selected_idx)
+                    .{
+                        .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
+                        .reverse = true,
+                    }
+                else
+                    .{
+                        .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
+                    };
+                const network_win = win.child(.{
+                    .y_off = row,
+                    .height = .{ .limit = 1 },
+                });
+                if (network_win.hasMouse(self.state.mouse)) |_| {
+                    self.vx.setMouseShape(.pointer);
+                    style.bg = .{ .index = 8 };
                 }
-            else
-                .{
-                    .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
-                };
-            const network_win = win.child(.{
-                .y_off = row,
-                .height = .{ .limit = 1 },
-            });
-            if (network_win.hasMouse(self.state.mouse)) |_| {
-                self.vx.setMouseShape(.pointer);
-                style.bg = .{ .index = 8 };
-            }
-            _ = try network_win.print(
-                &.{.{
-                    .text = client.config.name orelse client.config.server,
-                    .style = style,
-                }},
-                .{},
-            );
-            if (network_win.hasMouse(self.state.mouse)) |_| {
-                self.vx.setMouseShape(.pointer);
+                _ = try network_win.print(
+                    &.{.{
+                        .text = client.config.name orelse client.config.server,
+                        .style = style,
+                    }},
+                    .{},
+                );
+                if (network_win.hasMouse(self.state.mouse)) |_| {
+                    self.vx.setMouseShape(.pointer);
+                }
             }
             row += 1;
             for (client.channels.items) |*channel| {
+                defer row += 1;
+                if (row < scroll_offset) continue;
                 const channel_win = win.child(.{
-                    .y_off = row,
+                    .y_off = row -| scroll_offset,
                     .height = .{ .limit = 1 },
                 });
                 if (channel_win.hasMouse(self.state.mouse)) |mouse| {
@@ -1639,7 +1644,6 @@ pub const App = struct {
                     .{
                         .fg = if (client.status == .disconnected) .{ .index = 8 } else .default,
                     };
-                defer row += 1;
                 const prefix: []const u8 = if (channel.name[0] == '#') "#" else "";
                 const name_offset: usize = if (prefix.len > 0) 1 else 0;
 
@@ -1674,7 +1678,7 @@ pub const App = struct {
                 if (result.overflow)
                     win.writeCell(
                         buf_list_w -| 1,
-                        row,
+                        row -| scroll_offset,
                         .{
                             .char = .{
                                 .grapheme = "…",
