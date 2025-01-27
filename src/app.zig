@@ -940,15 +940,25 @@ pub const App = struct {
 
                 // Skip command
                 _ = it.next();
+                const target = it.next() orelse channel.?.name;
 
-                const msg = try std.fmt.bufPrint(
-                    &buf,
-                    "PART {s}\r\n",
-                    .{
-                        it.next() orelse channel.?.name,
-                    },
-                );
-                return client.queueWrite(msg);
+                if (target[0] != '#') {
+                    for (client.channels.items, 0..) |search, i| {
+                        if (!mem.eql(u8, search.name, target)) continue;
+                        var chan = client.channels.orderedRemove(i);
+                        chan.deinit(self.alloc);
+                        break;
+                    }
+                } else {
+                    const msg = try std.fmt.bufPrint(
+                        &buf,
+                        "PART {s}\r\n",
+                        .{
+                            target,
+                        },
+                    );
+                    return client.queueWrite(msg);
+                }
             },
             .redraw => self.vx.queueRefresh(),
             .version => {
