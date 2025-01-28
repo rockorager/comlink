@@ -53,6 +53,7 @@ const State = struct {
 };
 
 pub const App = struct {
+    explicit_join: bool = false,
     alloc: std.mem.Allocator,
     /// System certificate bundle
     bundle: std.crypto.Certificate.Bundle = .{},
@@ -637,10 +638,13 @@ pub const App = struct {
                                 var channel = try client.getOrCreateChannel(target);
 
                                 // If it's our nick, we request chat history
-                                if (mem.eql(u8, user.nick, client.nickname()))
-                                    try client.requestHistory(.after, channel)
-                                else
-                                    try channel.addMember(user, .{});
+                                if (mem.eql(u8, user.nick, client.nickname())) {
+                                    try client.requestHistory(.after, channel);
+                                    if (self.explicit_join) {
+                                        self.selectChannelName(client, target);
+                                        self.explicit_join = false;
+                                    }
+                                } else try channel.addMember(user, .{});
                             },
                             .MARKREAD => {
                                 var iter = msg.paramIterator();
@@ -866,6 +870,8 @@ pub const App = struct {
                         cmd[start + 1 ..],
                     },
                 );
+                // Ensure buffer exists
+                self.explicit_join = true;
                 return client.queueWrite(msg);
             },
             .me => {
