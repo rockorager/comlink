@@ -831,15 +831,17 @@ pub const App = struct {
     }
 
     /// handle a command
-    pub fn handleCommand(self: *App, lua_state: *Lua, buffer: irc.Buffer, cmd: []const u8) !void {
+    pub fn handleCommand(self: *App, lua_state: ?*Lua, buffer: irc.Buffer, cmd: []const u8) !void {
         const command: comlink.Command = blk: {
             const start: u1 = if (cmd[0] == '/') 1 else 0;
             const end = mem.indexOfScalar(u8, cmd, ' ') orelse cmd.len;
             if (comlink.Command.fromString(cmd[start..end])) |internal|
                 break :blk internal;
             if (comlink.Command.user_commands.get(cmd[start..end])) |ref| {
-                const str = if (end == cmd.len) "" else std.mem.trim(u8, cmd[end..], " ");
-                return lua.execUserCommand(lua_state, str, ref);
+                if (lua_state) |luaW| {
+                    const str = if (end == cmd.len) "" else std.mem.trim(u8, cmd[end..], " ");
+                    return lua.execUserCommand(luaW, str, ref);
+                }
             }
             return error.UnknownCommand;
         };
