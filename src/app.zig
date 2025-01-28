@@ -1358,7 +1358,7 @@ pub const App = struct {
 
                 // If our mouse is over the nickname, we set it to a pointer
                 const result_win = sender_win.child(.{ .width = .{ .limit = sender_result.col } });
-                if (result_win.hasMouse(self.state.mouse)) |_| {
+                if (result_win.hasMouse(self.state.mouse)) |mouse| {
                     self.vx.setMouseShape(.pointer);
                     // If we have a realname we print it
                     if (user.real_name) |real_name| {
@@ -1372,6 +1372,23 @@ pub const App = struct {
                                 .col_offset = sender_result.col + 1,
                             },
                         );
+                    }
+                    switch (mouse.button) {
+                        .left => {
+                            if (mouse.type == .press) {
+                                const buffer = self.selectedBuffer() orelse @panic("no buffer");
+                                const command = "/query ";
+                                const content: []const u8 = std.mem.concat(self.alloc, u8, &[_][]const u8{ command, user.nick }) catch |err| {
+                                    log.err("couldn't allocate memory: {}", .{err});
+                                    return;
+                                };
+                                self.handleCommand(null, buffer, content) catch |err| {
+                                    log.err("couldn't handle command: {}", .{err});
+                                };
+                                self.state.mouse.?.type = .release;
+                            }
+                        },
+                        else => {},
                     }
                 }
 
@@ -1566,6 +1583,28 @@ pub const App = struct {
                     },
                 },
             };
+            if (win.hasMouse(self.state.mouse)) |mouse| {
+                if (mouse.row == win.y_off + (member_row -| self.state.members.scroll_offset)) {
+                    self.vx.setMouseShape(.pointer);
+                    switch (mouse.button) {
+                        .left => {
+                            if (mouse.type == .press) {
+                                const buffer = self.selectedBuffer() orelse @panic("no buffer");
+                                const command = "/query ";
+                                const content: []const u8 = std.mem.concat(self.alloc, u8, &[_][]const u8{ command, member.user.nick }) catch |err| {
+                                    log.err("couldn't allocate memory: {}", .{err});
+                                    return;
+                                };
+                                self.handleCommand(null, buffer, content) catch |err| {
+                                    log.err("couldn't handle command: {}", .{err});
+                                };
+                                self.state.mouse.?.type = .release;
+                            }
+                        },
+                        else => {},
+                    }
+                }
+            }
             _ = try win.print(&member_seg, .{
                 .row_offset = member_row -| self.state.members.scroll_offset,
             });
