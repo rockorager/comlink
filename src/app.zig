@@ -1098,10 +1098,10 @@ pub const App = struct {
                 try self.drawTopic(topic_win, channel.topic orelse "");
 
                 // Draw the member list
-                try self.drawMemberList(member_list_win, channel);
+                try self.drawMemberList(member_list_win, channel, input);
 
                 // Draw the message list
-                try self.drawMessageList(allocator, message_list_win, channel);
+                try self.drawMessageList(allocator, message_list_win, channel, input);
 
                 // draw a scrollbar
                 {
@@ -1249,6 +1249,7 @@ pub const App = struct {
         arena: std.mem.Allocator,
         win: vaxis.Window,
         channel: *irc.Channel,
+        input: *TextInput,
     ) !void {
         if (channel.messages.items.len == 0) return;
         const client = channel.client;
@@ -1386,6 +1387,13 @@ pub const App = struct {
                                     log.err("couldn't handle command: {}", .{err});
                                 };
                                 self.state.mouse.?.type = .release;
+                            }
+                        },
+                        .right => {
+                            if (mouse.type == .press) {
+                                input.insertSliceAtCursor(user.nick) catch |err| {
+                                    log.err("Couldn't insert username in input: {} ", .{err});
+                                };
                             }
                         },
                         else => {},
@@ -1541,7 +1549,7 @@ pub const App = struct {
         }
     }
 
-    fn drawMemberList(self: *App, win: vaxis.Window, channel: *irc.Channel) !void {
+    fn drawMemberList(self: *App, win: vaxis.Window, channel: *irc.Channel, input: *TextInput) !void {
         // Handle mouse
         {
             if (win.hasMouse(self.state.mouse)) |mouse| {
@@ -1598,7 +1606,15 @@ pub const App = struct {
                                 self.handleCommand(null, buffer, content) catch |err| {
                                     log.err("couldn't handle command: {}", .{err});
                                 };
+                                // ugly, but needed to not spam server or accidentally going to another buffer with yourself
                                 self.state.mouse.?.type = .release;
+                            }
+                        },
+                        .right => {
+                            if (mouse.type == .press) {
+                                input.insertSliceAtCursor(member.user.nick) catch |err| {
+                                    log.err("Couldn't insert username in input: {} ", .{err});
+                                };
                             }
                         },
                         else => {},
