@@ -682,6 +682,7 @@ pub const App = struct {
                                     for (client.channels.items, 0..) |channel, i| {
                                         if (!mem.eql(u8, channel.name, target)) continue;
                                         var chan = client.channels.orderedRemove(i);
+                                        self.state.buffers.selected_idx -|= 1;
                                         chan.deinit(self.alloc);
                                         break;
                                     }
@@ -952,6 +953,7 @@ pub const App = struct {
                     for (client.channels.items, 0..) |search, i| {
                         if (!mem.eql(u8, search.name, target)) continue;
                         var chan = client.channels.orderedRemove(i);
+                        self.state.buffers.selected_idx -|= 1;
                         chan.deinit(self.alloc);
                         break;
                     }
