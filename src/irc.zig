@@ -763,7 +763,7 @@ pub const Client = struct {
             channel.name[0] != '#')
         {
             const other = try self.getOrCreateUser(channel.name);
-            const me = try self.getOrCreateUser(self.config.nick);
+            const me = try self.getOrCreateUser(self.nickname());
             try channel.addMember(other, .{});
             try channel.addMember(me, .{});
             return;
