@@ -85,6 +85,7 @@ pub const App = struct {
 
     lhs: vxfw.SplitView,
     rhs: vxfw.SplitView,
+    buffer_list: vxfw.ListView,
 
     /// initialize vaxis, lua state
     pub fn init(self: *App, gpa: std.mem.Allocator) !void {
@@ -101,7 +102,7 @@ pub const App = struct {
             .write_thread = undefined,
             .lhs = .{
                 .width = self.state.buffers.width,
-                .lhs = self.bufferWidget(),
+                .lhs = self.buffer_list.widget(),
                 .rhs = self.rhs.widget(),
             },
             .rhs = .{
@@ -115,6 +116,15 @@ pub const App = struct {
             .deinited = false,
             .completer = null,
             .should_quit = false,
+            .buffer_list = .{
+                .children = .{
+                    .builder = .{
+                        .userdata = self,
+                        .buildFn = App.bufferBuilderFn,
+                    },
+                },
+                .draw_cursor = false,
+            },
         };
 
         self.lua = try Lua.init(&self.alloc);
@@ -259,8 +269,30 @@ pub const App = struct {
         };
     }
 
+    fn bufferBuilderFn(ptr: *const anyopaque, idx: usize, cursor: usize) ?vxfw.Widget {
+        const self: *const App = @ptrCast(@alignCast(ptr));
+        var i: usize = 0;
+        for (self.clients.items) |client| {
+            if (i == idx and i == cursor) {
+                return .{
+                    .userdata = client,
+                    .drawFn = irc.Client.typeErasedNameSelectedDrawFn,
+                };
+            }
+            if (i == idx) {
+                return .{
+                    .userdata = client,
+                    .drawFn = irc.Client.typeErasedNameDrawFn,
+                };
+            }
+            i += 1;
+        }
+        return null;
+    }
+
     fn typeErasedBufferDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
-        _ = ptr;
+        const self: *App = @ptrCast(@alignCast(ptr));
+        _ = self;
         const text: vxfw.Text = .{ .text = "buffers" };
         return text.draw(ctx);
     }
