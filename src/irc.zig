@@ -8,6 +8,7 @@ const bytepool = @import("pool.zig");
 
 const testing = std.testing;
 const mem = std.mem;
+const vxfw = vaxis.vxfw;
 
 const Allocator = std.mem.Allocator;
 const Base64Encoder = std.base64.standard.Encoder;
@@ -563,6 +564,25 @@ pub const Client = struct {
         }
         batches.deinit();
         self.fifo.deinit();
+    }
+
+    pub fn typeErasedNameDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        const self: *Client = @ptrCast(@alignCast(ptr));
+        const text: vxfw.Text = .{
+            .text = self.config.name orelse self.config.server,
+            .softwrap = false,
+        };
+        return text.draw(ctx);
+    }
+
+    pub fn typeErasedNameSelectedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        const self: *Client = @ptrCast(@alignCast(ptr));
+        const text: vxfw.Text = .{
+            .text = self.config.name orelse self.config.server,
+            .softwrap = false,
+            .style = .{ .reverse = true },
+        };
+        return text.draw(ctx);
     }
 
     pub fn drainFifo(self: *Client) void {
