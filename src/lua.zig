@@ -5,7 +5,6 @@ const ziglua = @import("ziglua");
 
 const irc = comlink.irc;
 const App = comlink.App;
-const EventLoop = comlink.EventLoop;
 const Lua = ziglua.Lua;
 
 const assert = std.debug.assert;
@@ -16,13 +15,11 @@ const registry_index = ziglua.registry_index;
 /// global key for the app userdata pointer in the registry
 const app_key = "comlink.app";
 
-/// global key for the loop userdata pointer
-const loop_key = "comlink.loop";
-
 /// active client key. This gets replaced with the client context during callbacks
 const client_key = "comlink.client";
 
-pub fn init(app: *App, lua: *Lua, loop: *comlink.EventLoop) !void {
+pub fn init(app: *App) !void {
+    const lua = app.lua;
     // load standard libraries
     lua.openLibs();
 
@@ -65,9 +62,6 @@ pub fn init(app: *App, lua: *Lua, loop: *comlink.EventLoop) !void {
     // keep a reference to our app in the lua state
     lua.pushLightUserdata(app); // [userdata]
     lua.setField(registry_index, app_key); // []
-    // keep a reference to our loop in the lua state
-    lua.pushLightUserdata(loop); // [userdata]
-    lua.setField(registry_index, loop_key); // []
 
     // load config
     var buf: [std.posix.PATH_MAX]u8 = undefined;
@@ -98,14 +92,14 @@ fn getApp(lua: *Lua) *App {
     return app;
 }
 
-/// retrieves the *Loop lightuserdata from the registry index
-fn getLoop(lua: *Lua) *EventLoop {
-    const lua_type = lua.getField(registry_index, loop_key); // [userdata]
-    assert(lua_type == .light_userdata); // set by comlink as a lightuserdata
-    const loop = lua.toUserdata(comlink.EventLoop, -1) catch unreachable; // already asserted
-    // as lightuserdata
-    return loop;
-}
+// /// retrieves the *Loop lightuserdata from the registry index
+// fn getLoop(lua: *Lua) *EventLoop {
+//     const lua_type = lua.getField(registry_index, loop_key); // [userdata]
+//     assert(lua_type == .light_userdata); // set by comlink as a lightuserdata
+//     const loop = lua.toUserdata(comlink.EventLoop, -1) catch unreachable; // already asserted
+//     // as lightuserdata
+//     return loop;
+// }
 
 fn getClient(lua: *Lua) *irc.Client {
     const lua_type = lua.getField(registry_index, client_key); // [userdata]
@@ -354,8 +348,10 @@ const Comlink = struct {
             .port = port,
         };
 
-        const loop = getLoop(lua); // []
-        loop.postEvent(.{ .connect = cfg });
+        const app = getApp(lua);
+        app.connect(cfg) catch {
+            lua.raiseErrorStr("couldn't connect", .{});
+        };
 
         // put the table back on the stack
         Client.getTable(lua, table_ref); // [table]
@@ -374,15 +370,18 @@ const Comlink = struct {
         lua.argCheck(lua.isString(1), 1, "expected a string"); // [string, string]
         lua.argCheck(lua.isString(2), 2, "expected a string"); // [string, string]
         const app = getApp(lua);
+        _ = app; // autofix
         const title = lua.toString(1) catch { // [string, string]
             lua.raiseErrorStr("couldn't write notification", .{});
         };
+        _ = title; // autofix
         const body = lua.toString(2) catch { // [string, string]
             lua.raiseErrorStr("couldn't write notification", .{});
         };
+        _ = body; // autofix
         lua.pop(2); // []
-        app.vx.notify(app.tty.anyWriter(), title, body) catch
-            lua.raiseErrorStr("couldn't write notification", .{});
+        // app.vx.notify(app.tty.anyWriter(), title, body) catch
+        //     lua.raiseErrorStr("couldn't write notification", .{});
         return 0;
     }
 

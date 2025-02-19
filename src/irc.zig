@@ -1,13 +1,16 @@
 const std = @import("std");
 const comlink = @import("comlink.zig");
+const lua = @import("lua.zig");
 const tls = @import("tls");
 const vaxis = @import("vaxis");
 const zeit = @import("zeit");
 const bytepool = @import("pool.zig");
 
 const testing = std.testing;
+const mem = std.mem;
 
 const Allocator = std.mem.Allocator;
+const Base64Encoder = std.base64.standard.Encoder;
 pub const MessagePool = bytepool.BytePool(max_raw_msg_size * 4);
 pub const Slice = MessagePool.Slice;
 
@@ -25,6 +28,8 @@ pub const Buffer = union(enum) {
     client: *Client,
     channel: *Channel,
 };
+
+pub const Event = comlink.IrcEvent;
 
 pub const Command = enum {
     RPL_WELCOME, // 001
@@ -495,7 +500,16 @@ pub const Client = struct {
 
     thread: ?std.Thread = null,
 
-    pub fn init(alloc: std.mem.Allocator, app: *comlink.App, wq: *comlink.WriteQueue, cfg: Config) !Client {
+    redraw: std.atomic.Value(bool),
+    fifo: std.fifo.LinearFifo(Event, .Dynamic),
+    fifo_mutex: std.Thread.Mutex,
+
+    pub fn init(
+        alloc: std.mem.Allocator,
+        app: *comlink.App,
+        wq: *comlink.WriteQueue,
+        cfg: Config,
+    ) !Client {
         return .{
             .alloc = alloc,
             .app = app,
@@ -506,6 +520,9 @@ pub const Client = struct {
             .users = std.StringHashMap(*User).init(alloc),
             .batches = std.StringHashMap(*Channel).init(alloc),
             .write_queue = wq,
+            .redraw = std.atomic.Value(bool).init(false),
+            .fifo = std.fifo.LinearFifo(Event, .Dynamic).init(alloc),
+            .fifo_mutex = .{},
         };
     }
 
@@ -544,6 +561,481 @@ pub const Client = struct {
             self.alloc.free(key.*);
         }
         batches.deinit();
+        self.fifo.deinit();
+    }
+
+    pub fn drainFifo(self: *Client) void {
+        self.fifo_mutex.lock();
+        defer self.fifo_mutex.unlock();
+        while (self.fifo.readItem()) |item| {
+            self.handleEvent(item) catch |err| {
+                log.err("error: {}", .{err});
+            };
+        }
+    }
+
+    pub fn handleEvent(self: *Client, event: Event) !void {
+        const msg: Message = .{ .bytes = event.msg.slice() };
+        const client = event.client;
+        defer event.msg.deinit();
+        switch (msg.command()) {
+            .unknown => {},
+            .CAP => {
+                // syntax: <client> <ACK/NACK> :caps
+                var iter = msg.paramIterator();
+                _ = iter.next() orelse return; // client
+                const ack_or_nak = iter.next() orelse return;
+                const caps = iter.next() orelse return;
+                var cap_iter = mem.splitScalar(u8, caps, ' ');
+                while (cap_iter.next()) |cap| {
+                    if (mem.eql(u8, ack_or_nak, "ACK")) {
+                        client.ack(cap);
+                        if (mem.eql(u8, cap, "sasl"))
+                            try client.queueWrite("AUTHENTICATE PLAIN\r\n");
+                    } else if (mem.eql(u8, ack_or_nak, "NAK")) {
+                        log.debug("CAP not supported {s}", .{cap});
+                    }
+                }
+            },
+            .AUTHENTICATE => {
+                var iter = msg.paramIterator();
+                while (iter.next()) |param| {
+                    // A '+' is the continuuation to send our
+                    // AUTHENTICATE info
+                    if (!mem.eql(u8, param, "+")) continue;
+                    var buf: [4096]u8 = undefined;
+                    const config = client.config;
+                    const sasl = try std.fmt.bufPrint(
+                        &buf,
+                        "{s}\x00{s}\x00{s}",
+                        .{ config.user, config.nick, config.password },
+                    );
+
+                    // Create a buffer big enough for the base64 encoded string
+                    const b64_buf = try self.alloc.alloc(u8, Base64Encoder.calcSize(sasl.len));
+                    defer self.alloc.free(b64_buf);
+                    const encoded = Base64Encoder.encode(b64_buf, sasl);
+                    // Make our message
+                    const auth = try std.fmt.bufPrint(
+                        &buf,
+                        "AUTHENTICATE {s}\r\n",
+                        .{encoded},
+                    );
+                    try client.queueWrite(auth);
+                    if (config.network_id) |id| {
+                        const bind = try std.fmt.bufPrint(
+                            &buf,
+                            "BOUNCER BIND {s}\r\n",
+                            .{id},
+                        );
+                        try client.queueWrite(bind);
+                    }
+                    try client.queueWrite("CAP END\r\n");
+                }
+            },
+            .RPL_WELCOME => {
+                const now = try zeit.instant(.{});
+                var now_buf: [30]u8 = undefined;
+                const now_fmt = try now.time().bufPrint(&now_buf, .rfc3339);
+
+                const past = try now.subtract(.{ .days = 7 });
+                var past_buf: [30]u8 = undefined;
+                const past_fmt = try past.time().bufPrint(&past_buf, .rfc3339);
+
+                var buf: [128]u8 = undefined;
+                const targets = try std.fmt.bufPrint(
+                    &buf,
+                    "CHATHISTORY TARGETS timestamp={s} timestamp={s} 50\r\n",
+                    .{ now_fmt, past_fmt },
+                );
+                try client.queueWrite(targets);
+                // on_connect callback
+                try lua.onConnect(self.app.lua, client);
+            },
+            .RPL_YOURHOST => {},
+            .RPL_CREATED => {},
+            .RPL_MYINFO => {},
+            .RPL_ISUPPORT => {
+                // syntax: <client> <token>[ <token>] :are supported
+                var iter = msg.paramIterator();
+                _ = iter.next() orelse return; // client
+                while (iter.next()) |token| {
+                    if (mem.eql(u8, token, "WHOX"))
+                        client.supports.whox = true
+                    else if (mem.startsWith(u8, token, "PREFIX")) {
+                        const prefix = blk: {
+                            const idx = mem.indexOfScalar(u8, token, ')') orelse
+                                // default is "@+"
+                                break :blk try self.alloc.dupe(u8, "@+");
+                            break :blk try self.alloc.dupe(u8, token[idx + 1 ..]);
+                        };
+                        client.supports.prefix = prefix;
+                    }
+                }
+            },
+            .RPL_LOGGEDIN => {},
+            .RPL_TOPIC => {
+                // syntax: <client> <channel> :<topic>
+                var iter = msg.paramIterator();
+                _ = iter.next() orelse return; // client ("*")
+                const channel_name = iter.next() orelse return; // channel
+                const topic = iter.next() orelse return; // topic
+
+                var channel = try client.getOrCreateChannel(channel_name);
+                if (channel.topic) |old_topic| {
+                    self.alloc.free(old_topic);
+                }
+                channel.topic = try self.alloc.dupe(u8, topic);
+            },
+            .RPL_SASLSUCCESS => {},
+            .RPL_WHOREPLY => {
+                // syntax: <client> <channel> <username> <host> <server> <nick> <flags> :<hopcount> <real name>
+                var iter = msg.paramIterator();
+                _ = iter.next() orelse return; // client
+                const channel_name = iter.next() orelse return; // channel
+                if (mem.eql(u8, channel_name, "*")) return;
+                _ = iter.next() orelse return; // username
+                _ = iter.next() orelse return; // host
+                _ = iter.next() orelse return; // server
+                const nick = iter.next() orelse return; // nick
+                const flags = iter.next() orelse return; // flags
+
+                const user_ptr = try client.getOrCreateUser(nick);
+                if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
+                var channel = try client.getOrCreateChannel(channel_name);
+
+                const prefix = for (flags) |c| {
+                    if (std.mem.indexOfScalar(u8, client.supports.prefix, c)) |_| {
+                        break c;
+                    }
+                } else ' ';
+
+                try channel.addMember(user_ptr, .{ .prefix = prefix });
+            },
+            .RPL_WHOSPCRPL => {
+                // syntax: <client> <channel> <nick> <flags> :<realname>
+                var iter = msg.paramIterator();
+                _ = iter.next() orelse return;
+                const channel_name = iter.next() orelse return; // channel
+                const nick = iter.next() orelse return;
+                const flags = iter.next() orelse return;
+
+                const user_ptr = try client.getOrCreateUser(nick);
+                if (iter.next()) |real_name| {
+                    if (user_ptr.real_name) |old_name| {
+                        self.alloc.free(old_name);
+                    }
+                    user_ptr.real_name = try self.alloc.dupe(u8, real_name);
+                }
+                if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
+                var channel = try client.getOrCreateChannel(channel_name);
+
+                const prefix = for (flags) |c| {
+                    if (std.mem.indexOfScalar(u8, client.supports.prefix, c)) |_| {
+                        break c;
+                    }
+                } else ' ';
+
+                try channel.addMember(user_ptr, .{ .prefix = prefix });
+            },
+            .RPL_ENDOFWHO => {
+                // syntax: <client> <mask> :End of WHO list
+                var iter = msg.paramIterator();
+                _ = iter.next() orelse return; // client
+                const channel_name = iter.next() orelse return; // channel
+                if (mem.eql(u8, channel_name, "*")) return;
+                var channel = try client.getOrCreateChannel(channel_name);
+                channel.in_flight.who = false;
+            },
+            .RPL_NAMREPLY => {
+                // syntax: <client> <symbol> <channel> :[<prefix>]<nick>{ [<prefix>]<nick>}
+                var iter = msg.paramIterator();
+                _ = iter.next() orelse return; // client
+                _ = iter.next() orelse return; // symbol
+                const channel_name = iter.next() orelse return; // channel
+                const names = iter.next() orelse return;
+                var channel = try client.getOrCreateChannel(channel_name);
+                var name_iter = std.mem.splitScalar(u8, names, ' ');
+                while (name_iter.next()) |name| {
+                    const nick, const prefix = for (client.supports.prefix) |ch| {
+                        if (name[0] == ch) {
+                            break .{ name[1..], name[0] };
+                        }
+                    } else .{ name, ' ' };
+
+                    if (prefix != ' ') {
+                        log.debug("HAS PREFIX {s}", .{name});
+                    }
+
+                    const user_ptr = try client.getOrCreateUser(nick);
+
+                    try channel.addMember(user_ptr, .{ .prefix = prefix, .sort = false });
+                }
+
+                channel.sortMembers();
+            },
+            .RPL_ENDOFNAMES => {
+                // syntax: <client> <channel> :End of /NAMES list
+                var iter = msg.paramIterator();
+                _ = iter.next() orelse return; // client
+                const channel_name = iter.next() orelse return; // channel
+                var channel = try client.getOrCreateChannel(channel_name);
+                channel.in_flight.names = false;
+            },
+            .BOUNCER => {
+                var iter = msg.paramIterator();
+                while (iter.next()) |param| {
+                    if (mem.eql(u8, param, "NETWORK")) {
+                        const id = iter.next() orelse continue;
+                        const attr = iter.next() orelse continue;
+                        // check if we already have this network
+                        for (self.app.clients.items, 0..) |cl, i| {
+                            if (cl.config.network_id) |net_id| {
+                                if (mem.eql(u8, net_id, id)) {
+                                    if (mem.eql(u8, attr, "*")) {
+                                        // * means the network was
+                                        // deleted
+                                        cl.deinit();
+                                        _ = self.app.clients.swapRemove(i);
+                                    }
+                                    return;
+                                }
+                            }
+                        }
+
+                        var cfg = client.config;
+                        cfg.network_id = try self.alloc.dupe(u8, id);
+
+                        var attr_iter = std.mem.splitScalar(u8, attr, ';');
+                        while (attr_iter.next()) |kv| {
+                            const n = std.mem.indexOfScalar(u8, kv, '=') orelse continue;
+                            const key = kv[0..n];
+                            if (mem.eql(u8, key, "name"))
+                                cfg.name = try self.alloc.dupe(u8, kv[n + 1 ..])
+                            else if (mem.eql(u8, key, "nickname"))
+                                cfg.network_nick = try self.alloc.dupe(u8, kv[n + 1 ..]);
+                        }
+                        try self.app.connect(cfg);
+                    }
+                }
+            },
+            .AWAY => {
+                const src = msg.source() orelse return;
+                var iter = msg.paramIterator();
+                const n = std.mem.indexOfScalar(u8, src, '!') orelse src.len;
+                const user = try client.getOrCreateUser(src[0..n]);
+                // If there are any params, the user is away. Otherwise
+                // they are back.
+                user.away = if (iter.next()) |_| true else false;
+            },
+            .BATCH => {
+                var iter = msg.paramIterator();
+                const tag = iter.next() orelse return;
+                switch (tag[0]) {
+                    '+' => {
+                        const batch_type = iter.next() orelse return;
+                        if (mem.eql(u8, batch_type, "chathistory")) {
+                            const target = iter.next() orelse return;
+                            var channel = try client.getOrCreateChannel(target);
+                            channel.at_oldest = true;
+                            const duped_tag = try self.alloc.dupe(u8, tag[1..]);
+                            try client.batches.put(duped_tag, channel);
+                        }
+                    },
+                    '-' => {
+                        const key = client.batches.getKey(tag[1..]) orelse return;
+                        var chan = client.batches.get(key) orelse @panic("key should exist here");
+                        chan.history_requested = false;
+                        _ = client.batches.remove(key);
+                        self.alloc.free(key);
+                    },
+                    else => {},
+                }
+            },
+            .CHATHISTORY => {
+                var iter = msg.paramIterator();
+                const should_targets = iter.next() orelse return;
+                if (!mem.eql(u8, should_targets, "TARGETS")) return;
+                const target = iter.next() orelse return;
+                // we only add direct messages, not more channels
+                assert(target.len > 0);
+                if (target[0] == '#') return;
+
+                var channel = try client.getOrCreateChannel(target);
+                const user_ptr = try client.getOrCreateUser(target);
+                const me_ptr = try client.getOrCreateUser(client.nickname());
+                try channel.addMember(user_ptr, .{});
+                try channel.addMember(me_ptr, .{});
+                // we set who_requested so we don't try to request
+                // who on DMs
+                channel.who_requested = true;
+                var buf: [128]u8 = undefined;
+                const mark_read = try std.fmt.bufPrint(
+                    &buf,
+                    "MARKREAD {s}\r\n",
+                    .{channel.name},
+                );
+                try client.queueWrite(mark_read);
+                try client.requestHistory(.after, channel);
+            },
+            .JOIN => {
+                // get the user
+                const src = msg.source() orelse return;
+                const n = std.mem.indexOfScalar(u8, src, '!') orelse src.len;
+                const user = try client.getOrCreateUser(src[0..n]);
+
+                // get the channel
+                var iter = msg.paramIterator();
+                const target = iter.next() orelse return;
+                var channel = try client.getOrCreateChannel(target);
+
+                // If it's our nick, we request chat history
+                if (mem.eql(u8, user.nick, client.nickname())) {
+                    try client.requestHistory(.after, channel);
+                    if (self.app.explicit_join) {
+                        self.app.selectChannelName(client, target);
+                        self.app.explicit_join = false;
+                    }
+                } else try channel.addMember(user, .{});
+            },
+            .MARKREAD => {
+                var iter = msg.paramIterator();
+                const target = iter.next() orelse return;
+                const timestamp = iter.next() orelse return;
+                const equal = std.mem.indexOfScalar(u8, timestamp, '=') orelse return;
+                const last_read = zeit.instant(.{
+                    .source = .{
+                        .iso8601 = timestamp[equal + 1 ..],
+                    },
+                }) catch |err| {
+                    log.err("couldn't convert timestamp: {}", .{err});
+                    return;
+                };
+                var channel = try client.getOrCreateChannel(target);
+                channel.last_read = last_read.unixTimestamp();
+                const last_msg = channel.messages.getLastOrNull() orelse return;
+                const time = last_msg.time() orelse return;
+                if (time.unixTimestamp() > channel.last_read)
+                    channel.has_unread = true
+                else
+                    channel.has_unread = false;
+            },
+            .PART => {
+                // get the user
+                const src = msg.source() orelse return;
+                const n = std.mem.indexOfScalar(u8, src, '!') orelse src.len;
+                const user = try client.getOrCreateUser(src[0..n]);
+
+                // get the channel
+                var iter = msg.paramIterator();
+                const target = iter.next() orelse return;
+
+                if (mem.eql(u8, user.nick, client.nickname())) {
+                    for (client.channels.items, 0..) |channel, i| {
+                        if (!mem.eql(u8, channel.name, target)) continue;
+                        var chan = client.channels.orderedRemove(i);
+                        self.app.state.buffers.selected_idx -|= 1;
+                        chan.deinit(self.app.alloc);
+                        break;
+                    }
+                } else {
+                    const channel = try client.getOrCreateChannel(target);
+                    channel.removeMember(user);
+                }
+            },
+            .PRIVMSG, .NOTICE => {
+                // syntax: <target> :<message>
+                const msg2: Message = .{
+                    .bytes = try self.app.alloc.dupe(u8, msg.bytes),
+                };
+                var iter = msg2.paramIterator();
+                const target = blk: {
+                    const tgt = iter.next() orelse return;
+                    if (mem.eql(u8, tgt, client.nickname())) {
+                        // If the target is us, it likely has our
+                        // hostname in it.
+                        const source = msg2.source() orelse return;
+                        const n = mem.indexOfScalar(u8, source, '!') orelse source.len;
+                        break :blk source[0..n];
+                    } else break :blk tgt;
+                };
+
+                // We handle batches separately. When we encounter a
+                // PRIVMSG from a batch, we use the original target
+                // from the batch start. We also never notify from a
+                // batched message. Batched messages also require
+                // sorting
+                var tag_iter = msg2.tagIterator();
+                while (tag_iter.next()) |tag| {
+                    if (mem.eql(u8, tag.key, "batch")) {
+                        const entry = client.batches.getEntry(tag.value) orelse @panic("TODO");
+                        var channel = entry.value_ptr.*;
+                        try channel.messages.append(msg2);
+                        std.sort.insertion(Message, channel.messages.items, {}, Message.compareTime);
+                        channel.at_oldest = false;
+                        const time = msg2.time() orelse continue;
+                        if (time.unixTimestamp() > channel.last_read) {
+                            channel.has_unread = true;
+                            const content = iter.next() orelse continue;
+                            if (std.mem.indexOf(u8, content, client.nickname())) |_| {
+                                channel.has_unread_highlight = true;
+                            }
+                        }
+                        break;
+                    }
+                } else {
+                    // standard handling
+                    var channel = try client.getOrCreateChannel(target);
+                    try channel.messages.append(msg2);
+                    const content = iter.next() orelse return;
+                    var has_highlight = false;
+                    {
+                        const sender: []const u8 = blk: {
+                            const src = msg2.source() orelse break :blk "";
+                            const l = std.mem.indexOfScalar(u8, src, '!') orelse
+                                std.mem.indexOfScalar(u8, src, '@') orelse
+                                src.len;
+                            break :blk src[0..l];
+                        };
+                        try lua.onMessage(self.app.lua, client, channel.name, sender, content);
+                    }
+                    if (std.mem.indexOf(u8, content, client.nickname())) |_| {
+                        var buf: [64]u8 = undefined;
+                        const title_or_err = if (msg2.source()) |source|
+                            std.fmt.bufPrint(&buf, "{s} - {s}", .{ channel.name, source })
+                        else
+                            std.fmt.bufPrint(&buf, "{s}", .{channel.name});
+                        const title = title_or_err catch title: {
+                            const len = @min(buf.len, channel.name.len);
+                            @memcpy(buf[0..len], channel.name[0..len]);
+                            break :title buf[0..len];
+                        };
+                        _ = title;
+                        // TODO: fix this
+                        // try self.vx.notify(writer, title, content);
+                        has_highlight = true;
+                    }
+                    const time = msg2.time() orelse return;
+                    if (time.unixTimestamp() > channel.last_read) {
+                        channel.has_unread_highlight = has_highlight;
+                        channel.has_unread = true;
+                    }
+                }
+
+                // If we get a message from the current user mark the channel as
+                // read, since they must have just sent the message.
+                const sender: []const u8 = blk: {
+                    const src = msg2.source() orelse break :blk "";
+                    const l = std.mem.indexOfScalar(u8, src, '!') orelse
+                        std.mem.indexOfScalar(u8, src, '@') orelse
+                        src.len;
+                    break :blk src[0..l];
+                };
+                if (std.mem.eql(u8, sender, client.nickname())) {
+                    self.app.markSelectedChannelRead();
+                }
+            },
+        }
     }
 
     pub fn nickname(self: *Client) []const u8 {
@@ -569,7 +1061,7 @@ pub const Client = struct {
         }
     }
 
-    pub fn readLoop(self: *Client, loop: *comlink.EventLoop) !void {
+    pub fn readLoop(self: *Client) !void {
         var delay: u64 = 1 * std.time.ns_per_s;
 
         while (!self.should_close) {
@@ -624,7 +1116,7 @@ pub const Client = struct {
                     if (now - last_msg > keep_alive + max_rt) {
                         // reconnect??
                         self.status = .disconnected;
-                        loop.postEvent(.redraw);
+                        self.redraw.store(true, .unordered);
                         break;
                     }
                     if (now - last_msg > keep_alive) {
@@ -637,7 +1129,7 @@ pub const Client = struct {
                 if (self.should_close) return;
                 if (n == 0) {
                     self.status = .disconnected;
-                    loop.postEvent(.redraw);
+                    self.redraw.store(true, .unordered);
                     break;
                 }
                 last_msg = std.time.milliTimestamp();
@@ -649,7 +1141,7 @@ pub const Client = struct {
                     @memcpy(buffer.slice(), buf[i..idx]);
                     assert(std.mem.eql(u8, buf[idx .. idx + 2], "\r\n"));
                     log.debug("[<-{s}] {s}", .{ self.config.name orelse self.config.server, buffer.slice() });
-                    loop.postEvent(.{ .irc = .{ .client = self, .msg = buffer } });
+                    try self.fifo.writeItem(.{ .client = self, .msg = buffer });
                 }
                 if (i != n) {
                     // we had a part of a line read. Copy it to the beginning of the

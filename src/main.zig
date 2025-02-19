@@ -22,7 +22,7 @@ pub const version = options.version;
 
 /// Called after receiving a terminating signal
 fn cleanUp(sig: c_int) callconv(.C) void {
-    if (vaxis.Tty.global_tty) |gty| {
+    if (vaxis.tty.global_tty) |gty| {
         const reset: []const u8 = vaxis.ctlseqs.csi_u_pop ++
             vaxis.ctlseqs.mouse_reset ++
             vaxis.ctlseqs.bp_reset ++
@@ -79,26 +79,35 @@ pub fn main() !void {
     comlink.Command.user_commands = std.StringHashMap(i32).init(alloc);
     defer comlink.Command.user_commands.deinit();
 
-    const lua = try Lua.init(&alloc);
-    defer lua.deinit();
-
-    var app = try comlink.App.init(alloc);
+    var app = try vaxis.vxfw.App.init(gpa.allocator());
     defer app.deinit();
 
-    app.run(lua) catch |err| {
-        switch (err) {
-            // ziglua errors
-            error.LuaError => {
-                const msg = lua.toString(-1) catch "";
-                const duped = alloc.dupe(u8, msg) catch "";
-                app.deinit();
-                defer alloc.free(duped);
-                log.err("{s}", .{duped});
-                return err;
-            },
-            else => return err,
-        }
-    };
+    // const lua = try Lua.init(&alloc);
+    // defer lua.deinit();
+
+    // var app = try comlink.App.init(alloc);
+    // defer app.deinit();
+
+    var comlink_app: comlink.App = undefined;
+    try comlink_app.init(gpa.allocator());
+    defer comlink_app.deinit();
+
+    try app.run(comlink_app.widget(), .{});
+
+    // app.run(lua) catch |err| {
+    //     switch (err) {
+    //         // ziglua errors
+    //         error.LuaError => {
+    //             const msg = lua.toString(-1) catch "";
+    //             const duped = alloc.dupe(u8, msg) catch "";
+    //             app.deinit();
+    //             defer alloc.free(duped);
+    //             log.err("{s}", .{duped});
+    //             return err;
+    //         },
+    //         else => return err,
+    //     }
+    // };
 }
 
 fn argMatch(maybe_short: ?[]const u8, maybe_long: ?[]const u8, arg: [:0]const u8) bool {

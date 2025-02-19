@@ -11,9 +11,11 @@ const format = @import("format.zig");
 const irc = comlink.irc;
 const lua = comlink.lua;
 const mem = std.mem;
+const vxfw = vaxis.vxfw;
 
 const assert = std.debug.assert;
 
+const Allocator = std.mem.Allocator;
 const Base64Encoder = std.base64.standard.Encoder;
 const Bind = comlink.Bind;
 const Completer = comlink.Completer;
@@ -65,10 +67,6 @@ pub const App = struct {
     env: std.process.EnvMap,
     /// Local timezone
     tz: zeit.TimeZone,
-    /// Instance of vaxis
-    vx: vaxis.Vaxis,
-    /// The tty we are talking to
-    tty: vaxis.Tty,
 
     state: State = .{},
 
@@ -80,43 +78,52 @@ pub const App = struct {
 
     paste_buffer: std.ArrayList(u8),
 
+    lua: *Lua,
+
+    write_queue: comlink.WriteQueue,
+    write_thread: std.Thread,
+
     /// initialize vaxis, lua state
-    pub fn init(alloc: std.mem.Allocator) !App {
-        const vx = try vaxis.init(alloc, .{});
-        const env = try std.process.getEnvMap(alloc);
-        var app: App = .{
-            .alloc = alloc,
-            .clients = std.ArrayList(*irc.Client).init(alloc),
-            .env = env,
-            .vx = vx,
-            .tty = try vaxis.Tty.init(),
-            .binds = try std.ArrayList(Bind).initCapacity(alloc, 16),
-            .paste_buffer = std.ArrayList(u8).init(alloc),
-            .tz = try zeit.local(alloc, &env),
+    pub fn init(self: *App, gpa: std.mem.Allocator) !void {
+        self.* = .{
+            .alloc = gpa,
+            .clients = std.ArrayList(*irc.Client).init(gpa),
+            .env = try std.process.getEnvMap(gpa),
+            .binds = try std.ArrayList(Bind).initCapacity(gpa, 16),
+            .paste_buffer = std.ArrayList(u8).init(gpa),
+            .tz = try zeit.local(gpa, null),
+            .lua = undefined,
+            .write_queue = .{},
+            .write_thread = undefined,
         };
 
-        try app.binds.append(.{
+        self.lua = try Lua.init(&self.alloc);
+        self.write_thread = try std.Thread.spawn(.{}, writeLoop, .{ self.alloc, &self.write_queue });
+
+        try lua.init(self);
+
+        try self.binds.append(.{
             .key = .{
                 .codepoint = 'c',
                 .mods = .{ .ctrl = true },
             },
             .command = .quit,
         });
-        try app.binds.append(.{
+        try self.binds.append(.{
             .key = .{
                 .codepoint = vaxis.Key.up,
                 .mods = .{ .alt = true },
             },
             .command = .@"prev-channel",
         });
-        try app.binds.append(.{
+        try self.binds.append(.{
             .key = .{
                 .codepoint = vaxis.Key.down,
                 .mods = .{ .alt = true },
             },
             .command = .@"next-channel",
         });
-        try app.binds.append(.{
+        try self.binds.append(.{
             .key = .{
                 .codepoint = 'l',
                 .mods = .{ .ctrl = true },
@@ -125,9 +132,7 @@ pub const App = struct {
         });
 
         // Get our system tls certs
-        try app.bundle.rescan(alloc);
-
-        return app;
+        try self.bundle.rescan(gpa);
     }
 
     /// close the application. This closes the TUI, disconnects clients, and cleans
@@ -135,6 +140,8 @@ pub const App = struct {
     pub fn deinit(self: *App) void {
         if (self.deinited) return;
         self.deinited = true;
+        // Push a join command to the write thread
+        self.write_queue.push(.join);
 
         // clean up clients
         {
@@ -153,645 +160,712 @@ pub const App = struct {
         }
 
         self.bundle.deinit(self.alloc);
-        self.vx.deinit(self.alloc, self.tty.anyWriter());
-        self.tty.deinit();
 
         if (self.completer) |*completer| completer.deinit();
         self.binds.deinit();
         self.paste_buffer.deinit();
         self.tz.deinit();
+
+        // Join the write thread
+        self.write_thread.join();
         self.env.deinit();
+        self.lua.deinit();
     }
 
-    pub fn run(self: *App, lua_state: *Lua) !void {
-        const writer = self.tty.anyWriter();
+    pub fn widget(self: *App) vxfw.Widget {
+        return .{
+            .userdata = self,
+            .captureHandler = App.typeErasedCaptureHandler,
+            .eventHandler = App.typeErasedEventHandler,
+            .drawFn = App.typeErasedDrawFn,
+        };
+    }
 
-        var loop: comlink.EventLoop = .{ .vaxis = &self.vx, .tty = &self.tty };
-        try loop.init();
-        try loop.start();
-        defer loop.stop();
-
-        try self.vx.enterAltScreen(writer);
-        try self.vx.queryTerminal(writer, 1 * std.time.ns_per_s);
-        try self.vx.setMouseMode(writer, true);
-        try self.vx.setBracketedPaste(writer, true);
-
-        // start our write thread
-        var write_queue: comlink.WriteQueue = .{};
-        const write_thread = try std.Thread.spawn(.{}, writeLoop, .{ self.alloc, &write_queue });
-        defer {
-            write_queue.push(.join);
-            write_thread.join();
-        }
-
-        // initialize lua state
-        try lua.init(self, lua_state, &loop);
-
-        var input = TextInput.init(self.alloc, &self.vx.unicode);
-        defer input.deinit();
-
-        var last_frame: i64 = std.time.milliTimestamp();
-        loop: while (!self.should_quit) {
-            var redraw: bool = false;
-            std.time.sleep(8 * std.time.ns_per_ms);
-            if (self.state.messages.pending_scroll != 0) {
-                redraw = true;
-                if (self.state.messages.pending_scroll > 0) {
-                    self.state.messages.pending_scroll -= 1;
-                    self.state.messages.scroll_offset += 1;
-                } else {
-                    self.state.messages.pending_scroll += 1;
-                    self.state.messages.scroll_offset -|= 1;
+    fn typeErasedCaptureHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
+        // const self: *App = @ptrCast(@alignCast(ptr));
+        _ = ptr;
+        switch (event) {
+            .key_press => |key| {
+                if (key.matches('c', .{ .ctrl = true })) {
+                    ctx.quit = true;
                 }
-            }
-            while (loop.tryEvent()) |event| {
-                redraw = true;
-                switch (event) {
-                    .redraw => {},
-                    .key_press => |key| {
-                        if (self.state.paste.showDialog()) {
-                            if (key.matches(vaxis.Key.escape, .{})) {
-                                self.state.paste.has_newline = false;
-                                self.paste_buffer.clearAndFree();
-                            }
-                            break;
-                        }
-                        if (self.state.paste.pasting) {
-                            if (key.matches(vaxis.Key.enter, .{})) {
-                                self.state.paste.has_newline = true;
-                                try self.paste_buffer.append('\n');
-                                continue :loop;
-                            }
-                            const text = key.text orelse continue :loop;
-                            try self.paste_buffer.appendSlice(text);
-                            continue;
-                        }
-                        for (self.binds.items) |bind| {
-                            if (key.matches(bind.key.codepoint, bind.key.mods)) {
-                                switch (bind.command) {
-                                    .quit => self.should_quit = true,
-                                    .@"next-channel" => self.nextChannel(),
-                                    .@"prev-channel" => self.prevChannel(),
-                                    .redraw => self.vx.queueRefresh(),
-                                    .lua_function => |ref| try lua.execFn(lua_state, ref),
-                                    else => {},
-                                }
-                                break;
-                            }
-                        } else if (key.matches(vaxis.Key.tab, .{})) {
-                            // if we already have a completion word, then we are
-                            // cycling through the options
-                            if (self.completer) |*completer| {
-                                const line = completer.next();
-                                input.clearRetainingCapacity();
-                                try input.insertSliceAtCursor(line);
-                            } else {
-                                var completion_buf: [irc.maximum_message_size]u8 = undefined;
-                                const content = input.sliceToCursor(&completion_buf);
-                                self.completer = try Completer.init(self.alloc, content);
-                            }
-                        } else if (key.matches(vaxis.Key.tab, .{ .shift = true })) {
-                            if (self.completer) |*completer| {
-                                const line = completer.prev();
-                                input.clearRetainingCapacity();
-                                try input.insertSliceAtCursor(line);
-                            }
-                        } else if (key.matches(vaxis.Key.enter, .{})) {
-                            const buffer = self.selectedBuffer() orelse @panic("no buffer");
-                            const content = try input.toOwnedSlice();
-                            if (content.len == 0) continue;
-                            defer self.alloc.free(content);
-                            if (content[0] == '/')
-                                self.handleCommand(lua_state, buffer, content) catch |err| {
-                                    log.err("couldn't handle command: {}", .{err});
-                                }
-                            else {
-                                switch (buffer) {
-                                    .channel => |channel| {
-                                        var buf: [1024]u8 = undefined;
-                                        const msg = try std.fmt.bufPrint(
-                                            &buf,
-                                            "PRIVMSG {s} :{s}\r\n",
-                                            .{
-                                                channel.name,
-                                                content,
-                                            },
-                                        );
-                                        try channel.client.queueWrite(msg);
-                                    },
-                                    .client => log.err("can't send message to client", .{}),
-                                }
-                            }
-                            if (self.completer != null) {
-                                self.completer.?.deinit();
-                                self.completer = null;
-                            }
-                        } else if (key.matches(vaxis.Key.page_up, .{})) {
-                            self.state.messages.scroll_offset +|= 3;
-                        } else if (key.matches(vaxis.Key.page_down, .{})) {
-                            self.state.messages.scroll_offset -|= 3;
-                        } else if (key.matches(vaxis.Key.home, .{})) {
-                            self.state.messages.scroll_offset = 0;
-                        } else {
-                            if (self.completer != null and !key.isModifier()) {
-                                self.completer.?.deinit();
-                                self.completer = null;
-                            }
-                            log.debug("{}", .{key});
-                            try input.update(.{ .key_press = key });
-                        }
-                    },
-                    .paste_start => self.state.paste.pasting = true,
-                    .paste_end => {
-                        self.state.paste.pasting = false;
-                        if (self.state.paste.has_newline) {
-                            log.warn("NEWLINE", .{});
-                        } else {
-                            try input.insertSliceAtCursor(self.paste_buffer.items);
-                            defer self.paste_buffer.clearAndFree();
-                        }
-                    },
-                    .focus_out => self.state.mouse = null,
-                    .mouse => |mouse| {
-                        self.state.mouse = mouse;
-                    },
-                    .winsize => |ws| try self.vx.resize(self.alloc, writer, ws),
-                    .connect => |cfg| {
-                        const client = try self.alloc.create(irc.Client);
-                        client.* = try irc.Client.init(self.alloc, self, &write_queue, cfg);
-                        client.thread = try std.Thread.spawn(.{}, irc.Client.readLoop, .{ client, &loop });
-                        try self.clients.append(client);
-                    },
-                    .irc => |irc_event| {
-                        const msg: irc.Message = .{ .bytes = irc_event.msg.slice() };
-                        const client = irc_event.client;
-                        defer irc_event.msg.deinit();
-                        switch (msg.command()) {
-                            .unknown => {},
-                            .CAP => {
-                                // syntax: <client> <ACK/NACK> :caps
-                                var iter = msg.paramIterator();
-                                _ = iter.next() orelse continue; // client
-                                const ack_or_nak = iter.next() orelse continue;
-                                const caps = iter.next() orelse continue;
-                                var cap_iter = mem.splitScalar(u8, caps, ' ');
-                                while (cap_iter.next()) |cap| {
-                                    if (mem.eql(u8, ack_or_nak, "ACK")) {
-                                        client.ack(cap);
-                                        if (mem.eql(u8, cap, "sasl"))
-                                            try client.queueWrite("AUTHENTICATE PLAIN\r\n");
-                                    } else if (mem.eql(u8, ack_or_nak, "NAK")) {
-                                        log.debug("CAP not supported {s}", .{cap});
-                                    }
-                                }
-                            },
-                            .AUTHENTICATE => {
-                                var iter = msg.paramIterator();
-                                while (iter.next()) |param| {
-                                    // A '+' is the continuuation to send our
-                                    // AUTHENTICATE info
-                                    if (!mem.eql(u8, param, "+")) continue;
-                                    var buf: [4096]u8 = undefined;
-                                    const config = client.config;
-                                    const sasl = try std.fmt.bufPrint(
-                                        &buf,
-                                        "{s}\x00{s}\x00{s}",
-                                        .{ config.user, config.nick, config.password },
-                                    );
-
-                                    // Create a buffer big enough for the base64 encoded string
-                                    const b64_buf = try self.alloc.alloc(u8, Base64Encoder.calcSize(sasl.len));
-                                    defer self.alloc.free(b64_buf);
-                                    const encoded = Base64Encoder.encode(b64_buf, sasl);
-                                    // Make our message
-                                    const auth = try std.fmt.bufPrint(
-                                        &buf,
-                                        "AUTHENTICATE {s}\r\n",
-                                        .{encoded},
-                                    );
-                                    try client.queueWrite(auth);
-                                    if (config.network_id) |id| {
-                                        const bind = try std.fmt.bufPrint(
-                                            &buf,
-                                            "BOUNCER BIND {s}\r\n",
-                                            .{id},
-                                        );
-                                        try client.queueWrite(bind);
-                                    }
-                                    try client.queueWrite("CAP END\r\n");
-                                }
-                            },
-                            .RPL_WELCOME => {
-                                const now = try zeit.instant(.{});
-                                var now_buf: [30]u8 = undefined;
-                                const now_fmt = try now.time().bufPrint(&now_buf, .rfc3339);
-
-                                const past = try now.subtract(.{ .days = 7 });
-                                var past_buf: [30]u8 = undefined;
-                                const past_fmt = try past.time().bufPrint(&past_buf, .rfc3339);
-
-                                var buf: [128]u8 = undefined;
-                                const targets = try std.fmt.bufPrint(
-                                    &buf,
-                                    "CHATHISTORY TARGETS timestamp={s} timestamp={s} 50\r\n",
-                                    .{ now_fmt, past_fmt },
-                                );
-                                try client.queueWrite(targets);
-                                // on_connect callback
-                                try lua.onConnect(lua_state, client);
-                            },
-                            .RPL_YOURHOST => {},
-                            .RPL_CREATED => {},
-                            .RPL_MYINFO => {},
-                            .RPL_ISUPPORT => {
-                                // syntax: <client> <token>[ <token>] :are supported
-                                var iter = msg.paramIterator();
-                                _ = iter.next() orelse continue; // client
-                                while (iter.next()) |token| {
-                                    if (mem.eql(u8, token, "WHOX"))
-                                        client.supports.whox = true
-                                    else if (mem.startsWith(u8, token, "PREFIX")) {
-                                        const prefix = blk: {
-                                            const idx = mem.indexOfScalar(u8, token, ')') orelse
-                                                // default is "@+"
-                                                break :blk try self.alloc.dupe(u8, "@+");
-                                            break :blk try self.alloc.dupe(u8, token[idx + 1 ..]);
-                                        };
-                                        client.supports.prefix = prefix;
-                                    }
-                                }
-                            },
-                            .RPL_LOGGEDIN => {},
-                            .RPL_TOPIC => {
-                                // syntax: <client> <channel> :<topic>
-                                var iter = msg.paramIterator();
-                                _ = iter.next() orelse continue :loop; // client ("*")
-                                const channel_name = iter.next() orelse continue :loop; // channel
-                                const topic = iter.next() orelse continue :loop; // topic
-
-                                var channel = try client.getOrCreateChannel(channel_name);
-                                if (channel.topic) |old_topic| {
-                                    self.alloc.free(old_topic);
-                                }
-                                channel.topic = try self.alloc.dupe(u8, topic);
-                            },
-                            .RPL_SASLSUCCESS => {},
-                            .RPL_WHOREPLY => {
-                                // syntax: <client> <channel> <username> <host> <server> <nick> <flags> :<hopcount> <real name>
-                                var iter = msg.paramIterator();
-                                _ = iter.next() orelse continue :loop; // client
-                                const channel_name = iter.next() orelse continue :loop; // channel
-                                if (mem.eql(u8, channel_name, "*")) continue;
-                                _ = iter.next() orelse continue :loop; // username
-                                _ = iter.next() orelse continue :loop; // host
-                                _ = iter.next() orelse continue :loop; // server
-                                const nick = iter.next() orelse continue :loop; // nick
-                                const flags = iter.next() orelse continue :loop; // flags
-
-                                const user_ptr = try client.getOrCreateUser(nick);
-                                if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
-                                var channel = try client.getOrCreateChannel(channel_name);
-
-                                const prefix = for (flags) |c| {
-                                    if (std.mem.indexOfScalar(u8, client.supports.prefix, c)) |_| {
-                                        break c;
-                                    }
-                                } else ' ';
-
-                                try channel.addMember(user_ptr, .{ .prefix = prefix });
-                            },
-                            .RPL_WHOSPCRPL => {
-                                // syntax: <client> <channel> <nick> <flags> :<realname>
-                                var iter = msg.paramIterator();
-                                _ = iter.next() orelse continue;
-                                const channel_name = iter.next() orelse continue; // channel
-                                const nick = iter.next() orelse continue;
-                                const flags = iter.next() orelse continue;
-
-                                const user_ptr = try client.getOrCreateUser(nick);
-                                if (iter.next()) |real_name| {
-                                    if (user_ptr.real_name) |old_name| {
-                                        self.alloc.free(old_name);
-                                    }
-                                    user_ptr.real_name = try self.alloc.dupe(u8, real_name);
-                                }
-                                if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
-                                var channel = try client.getOrCreateChannel(channel_name);
-
-                                const prefix = for (flags) |c| {
-                                    if (std.mem.indexOfScalar(u8, client.supports.prefix, c)) |_| {
-                                        break c;
-                                    }
-                                } else ' ';
-
-                                try channel.addMember(user_ptr, .{ .prefix = prefix });
-                            },
-                            .RPL_ENDOFWHO => {
-                                // syntax: <client> <mask> :End of WHO list
-                                var iter = msg.paramIterator();
-                                _ = iter.next() orelse continue :loop; // client
-                                const channel_name = iter.next() orelse continue :loop; // channel
-                                if (mem.eql(u8, channel_name, "*")) continue;
-                                var channel = try client.getOrCreateChannel(channel_name);
-                                channel.in_flight.who = false;
-                            },
-                            .RPL_NAMREPLY => {
-                                // syntax: <client> <symbol> <channel> :[<prefix>]<nick>{ [<prefix>]<nick>}
-                                var iter = msg.paramIterator();
-                                _ = iter.next() orelse continue; // client
-                                _ = iter.next() orelse continue; // symbol
-                                const channel_name = iter.next() orelse continue; // channel
-                                const names = iter.next() orelse continue;
-                                var channel = try client.getOrCreateChannel(channel_name);
-                                var name_iter = std.mem.splitScalar(u8, names, ' ');
-                                while (name_iter.next()) |name| {
-                                    const nick, const prefix = for (client.supports.prefix) |ch| {
-                                        if (name[0] == ch) {
-                                            break .{ name[1..], name[0] };
-                                        }
-                                    } else .{ name, ' ' };
-
-                                    if (prefix != ' ') {
-                                        log.debug("HAS PREFIX {s}", .{name});
-                                    }
-
-                                    const user_ptr = try client.getOrCreateUser(nick);
-
-                                    try channel.addMember(user_ptr, .{ .prefix = prefix, .sort = false });
-                                }
-
-                                channel.sortMembers();
-                            },
-                            .RPL_ENDOFNAMES => {
-                                // syntax: <client> <channel> :End of /NAMES list
-                                var iter = msg.paramIterator();
-                                _ = iter.next() orelse continue; // client
-                                const channel_name = iter.next() orelse continue; // channel
-                                var channel = try client.getOrCreateChannel(channel_name);
-                                channel.in_flight.names = false;
-                            },
-                            .BOUNCER => {
-                                var iter = msg.paramIterator();
-                                while (iter.next()) |param| {
-                                    if (mem.eql(u8, param, "NETWORK")) {
-                                        const id = iter.next() orelse continue;
-                                        const attr = iter.next() orelse continue;
-                                        // check if we already have this network
-                                        for (self.clients.items, 0..) |cl, i| {
-                                            if (cl.config.network_id) |net_id| {
-                                                if (mem.eql(u8, net_id, id)) {
-                                                    if (mem.eql(u8, attr, "*")) {
-                                                        // * means the network was
-                                                        // deleted
-                                                        cl.deinit();
-                                                        _ = self.clients.swapRemove(i);
-                                                    }
-                                                    continue :loop;
-                                                }
-                                            }
-                                        }
-
-                                        var cfg = client.config;
-                                        cfg.network_id = try self.alloc.dupe(u8, id);
-
-                                        var attr_iter = std.mem.splitScalar(u8, attr, ';');
-                                        while (attr_iter.next()) |kv| {
-                                            const n = std.mem.indexOfScalar(u8, kv, '=') orelse continue;
-                                            const key = kv[0..n];
-                                            if (mem.eql(u8, key, "name"))
-                                                cfg.name = try self.alloc.dupe(u8, kv[n + 1 ..])
-                                            else if (mem.eql(u8, key, "nickname"))
-                                                cfg.network_nick = try self.alloc.dupe(u8, kv[n + 1 ..]);
-                                        }
-                                        loop.postEvent(.{ .connect = cfg });
-                                    }
-                                }
-                            },
-                            .AWAY => {
-                                const src = msg.source() orelse continue :loop;
-                                var iter = msg.paramIterator();
-                                const n = std.mem.indexOfScalar(u8, src, '!') orelse src.len;
-                                const user = try client.getOrCreateUser(src[0..n]);
-                                // If there are any params, the user is away. Otherwise
-                                // they are back.
-                                user.away = if (iter.next()) |_| true else false;
-                            },
-                            .BATCH => {
-                                var iter = msg.paramIterator();
-                                const tag = iter.next() orelse continue;
-                                switch (tag[0]) {
-                                    '+' => {
-                                        const batch_type = iter.next() orelse continue;
-                                        if (mem.eql(u8, batch_type, "chathistory")) {
-                                            const target = iter.next() orelse continue;
-                                            var channel = try client.getOrCreateChannel(target);
-                                            channel.at_oldest = true;
-                                            const duped_tag = try self.alloc.dupe(u8, tag[1..]);
-                                            try client.batches.put(duped_tag, channel);
-                                        }
-                                    },
-                                    '-' => {
-                                        const key = client.batches.getKey(tag[1..]) orelse continue;
-                                        var chan = client.batches.get(key) orelse @panic("key should exist here");
-                                        chan.history_requested = false;
-                                        _ = client.batches.remove(key);
-                                        self.alloc.free(key);
-                                    },
-                                    else => {},
-                                }
-                            },
-                            .CHATHISTORY => {
-                                var iter = msg.paramIterator();
-                                const should_targets = iter.next() orelse continue;
-                                if (!mem.eql(u8, should_targets, "TARGETS")) continue;
-                                const target = iter.next() orelse continue;
-                                // we only add direct messages, not more channels
-                                assert(target.len > 0);
-                                if (target[0] == '#') continue;
-
-                                var channel = try client.getOrCreateChannel(target);
-                                const user_ptr = try client.getOrCreateUser(target);
-                                const me_ptr = try client.getOrCreateUser(client.nickname());
-                                try channel.addMember(user_ptr, .{});
-                                try channel.addMember(me_ptr, .{});
-                                // we set who_requested so we don't try to request
-                                // who on DMs
-                                channel.who_requested = true;
-                                var buf: [128]u8 = undefined;
-                                const mark_read = try std.fmt.bufPrint(
-                                    &buf,
-                                    "MARKREAD {s}\r\n",
-                                    .{channel.name},
-                                );
-                                try client.queueWrite(mark_read);
-                                try client.requestHistory(.after, channel);
-                            },
-                            .JOIN => {
-                                // get the user
-                                const src = msg.source() orelse continue :loop;
-                                const n = std.mem.indexOfScalar(u8, src, '!') orelse src.len;
-                                const user = try client.getOrCreateUser(src[0..n]);
-
-                                // get the channel
-                                var iter = msg.paramIterator();
-                                const target = iter.next() orelse continue;
-                                var channel = try client.getOrCreateChannel(target);
-
-                                // If it's our nick, we request chat history
-                                if (mem.eql(u8, user.nick, client.nickname())) {
-                                    try client.requestHistory(.after, channel);
-                                    if (self.explicit_join) {
-                                        self.selectChannelName(client, target);
-                                        self.explicit_join = false;
-                                    }
-                                } else try channel.addMember(user, .{});
-                            },
-                            .MARKREAD => {
-                                var iter = msg.paramIterator();
-                                const target = iter.next() orelse continue;
-                                const timestamp = iter.next() orelse continue;
-                                const equal = std.mem.indexOfScalar(u8, timestamp, '=') orelse continue;
-                                const last_read = zeit.instant(.{
-                                    .source = .{
-                                        .iso8601 = timestamp[equal + 1 ..],
-                                    },
-                                }) catch |err| {
-                                    log.err("couldn't convert timestamp: {}", .{err});
-                                    continue;
-                                };
-                                var channel = try client.getOrCreateChannel(target);
-                                channel.last_read = last_read.unixTimestamp();
-                                const last_msg = channel.messages.getLastOrNull() orelse continue;
-                                const time = last_msg.time() orelse continue;
-                                if (time.unixTimestamp() > channel.last_read)
-                                    channel.has_unread = true
-                                else
-                                    channel.has_unread = false;
-                            },
-                            .PART => {
-                                // get the user
-                                const src = msg.source() orelse continue :loop;
-                                const n = std.mem.indexOfScalar(u8, src, '!') orelse src.len;
-                                const user = try client.getOrCreateUser(src[0..n]);
-
-                                // get the channel
-                                var iter = msg.paramIterator();
-                                const target = iter.next() orelse continue;
-
-                                if (mem.eql(u8, user.nick, client.nickname())) {
-                                    for (client.channels.items, 0..) |channel, i| {
-                                        if (!mem.eql(u8, channel.name, target)) continue;
-                                        var chan = client.channels.orderedRemove(i);
-                                        self.state.buffers.selected_idx -|= 1;
-                                        chan.deinit(self.alloc);
-                                        break;
-                                    }
-                                } else {
-                                    const channel = try client.getOrCreateChannel(target);
-                                    channel.removeMember(user);
-                                }
-                            },
-                            .PRIVMSG, .NOTICE => {
-                                // syntax: <target> :<message>
-                                const msg2: irc.Message = .{
-                                    .bytes = try self.alloc.dupe(u8, msg.bytes),
-                                };
-                                var iter = msg2.paramIterator();
-                                const target = blk: {
-                                    const tgt = iter.next() orelse continue;
-                                    if (mem.eql(u8, tgt, client.nickname())) {
-                                        // If the target is us, it likely has our
-                                        // hostname in it.
-                                        const source = msg2.source() orelse continue;
-                                        const n = mem.indexOfScalar(u8, source, '!') orelse source.len;
-                                        break :blk source[0..n];
-                                    } else break :blk tgt;
-                                };
-
-                                // We handle batches separately. When we encounter a
-                                // PRIVMSG from a batch, we use the original target
-                                // from the batch start. We also never notify from a
-                                // batched message. Batched messages also require
-                                // sorting
-                                var tag_iter = msg2.tagIterator();
-                                while (tag_iter.next()) |tag| {
-                                    if (mem.eql(u8, tag.key, "batch")) {
-                                        const entry = client.batches.getEntry(tag.value) orelse @panic("TODO");
-                                        var channel = entry.value_ptr.*;
-                                        try channel.messages.append(msg2);
-                                        std.sort.insertion(irc.Message, channel.messages.items, {}, irc.Message.compareTime);
-                                        channel.at_oldest = false;
-                                        const time = msg2.time() orelse continue;
-                                        if (time.unixTimestamp() > channel.last_read) {
-                                            channel.has_unread = true;
-                                            const content = iter.next() orelse continue;
-                                            if (std.mem.indexOf(u8, content, client.nickname())) |_| {
-                                                channel.has_unread_highlight = true;
-                                            }
-                                        }
-                                        break;
-                                    }
-                                } else {
-                                    // standard handling
-                                    var channel = try client.getOrCreateChannel(target);
-                                    try channel.messages.append(msg2);
-                                    const content = iter.next() orelse continue;
-                                    var has_highlight = false;
-                                    {
-                                        const sender: []const u8 = blk: {
-                                            const src = msg2.source() orelse break :blk "";
-                                            const l = std.mem.indexOfScalar(u8, src, '!') orelse
-                                                std.mem.indexOfScalar(u8, src, '@') orelse
-                                                src.len;
-                                            break :blk src[0..l];
-                                        };
-                                        try lua.onMessage(lua_state, client, channel.name, sender, content);
-                                    }
-                                    if (std.mem.indexOf(u8, content, client.nickname())) |_| {
-                                        var buf: [64]u8 = undefined;
-                                        const title_or_err = if (msg2.source()) |source|
-                                            std.fmt.bufPrint(&buf, "{s} - {s}", .{ channel.name, source })
-                                        else
-                                            std.fmt.bufPrint(&buf, "{s}", .{channel.name});
-                                        const title = title_or_err catch title: {
-                                            const len = @min(buf.len, channel.name.len);
-                                            @memcpy(buf[0..len], channel.name[0..len]);
-                                            break :title buf[0..len];
-                                        };
-                                        try self.vx.notify(writer, title, content);
-                                        has_highlight = true;
-                                    }
-                                    const time = msg2.time() orelse continue;
-                                    if (time.unixTimestamp() > channel.last_read) {
-                                        channel.has_unread_highlight = has_highlight;
-                                        channel.has_unread = true;
-                                    }
-                                }
-
-                                // If we get a message from the current user mark the channel as
-                                // read, since they must have just sent the message.
-                                const sender: []const u8 = blk: {
-                                    const src = msg2.source() orelse break :blk "";
-                                    const l = std.mem.indexOfScalar(u8, src, '!') orelse
-                                        std.mem.indexOfScalar(u8, src, '@') orelse
-                                        src.len;
-                                    break :blk src[0..l];
-                                };
-                                if (std.mem.eql(u8, sender, client.nickname())) {
-                                    self.markSelectedChannelRead();
-                                }
-                            },
-                        }
-                    },
-                }
-            }
-
-            if (redraw) {
-                try self.draw(&input);
-                last_frame = std.time.milliTimestamp();
-            }
+            },
+            else => {},
         }
     }
+
+    fn typeErasedEventHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
+        const self: *App = @ptrCast(@alignCast(ptr));
+        switch (event) {
+            .init => try ctx.tick(8, self.widget()),
+            .key_press => |key| {
+                if (key.matches('c', .{ .ctrl = true })) {
+                    ctx.quit = true;
+                }
+            },
+            .tick => {
+                for (self.clients.items) |client| {
+                    client.drainFifo();
+                }
+                try ctx.tick(8, self.widget());
+            },
+            else => {},
+        }
+    }
+
+    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        const self: *App = @ptrCast(@alignCast(ptr));
+
+        var children = std.ArrayList(vxfw.SubSurface).init(ctx.arena);
+        _ = &children;
+
+        const text: vxfw.Text = .{ .text = "hey" };
+        _ = text;
+        return .{
+            .size = ctx.max.size(),
+            .widget = self.widget(),
+            .buffer = &.{},
+            .children = children.items,
+        };
+    }
+
+    // pub fn run(self: *App, lua_state: *Lua) !void {
+    //     const writer = self.tty.anyWriter();
+    //
+    //     var loop: comlink.EventLoop = .{ .vaxis = &self.vx, .tty = &self.tty };
+    //     try loop.init();
+    //     try loop.start();
+    //     defer loop.stop();
+    //
+    //     try self.vx.enterAltScreen(writer);
+    //     try self.vx.queryTerminal(writer, 1 * std.time.ns_per_s);
+    //     try self.vx.setMouseMode(writer, true);
+    //     try self.vx.setBracketedPaste(writer, true);
+    //
+    //     // start our write thread
+    //     var write_queue: comlink.WriteQueue = .{};
+    //     const write_thread = try std.Thread.spawn(.{}, writeLoop, .{ self.alloc, &write_queue });
+    //     defer {
+    //         write_queue.push(.join);
+    //         write_thread.join();
+    //     }
+    //
+    //     // initialize lua state
+    //     try lua.init(self, lua_state, &loop);
+    //
+    //     var input = TextInput.init(self.alloc, &self.vx.unicode);
+    //     defer input.deinit();
+    //
+    //     var last_frame: i64 = std.time.milliTimestamp();
+    //     loop: while (!self.should_quit) {
+    //         var redraw: bool = false;
+    //         std.time.sleep(8 * std.time.ns_per_ms);
+    //         if (self.state.messages.pending_scroll != 0) {
+    //             redraw = true;
+    //             if (self.state.messages.pending_scroll > 0) {
+    //                 self.state.messages.pending_scroll -= 1;
+    //                 self.state.messages.scroll_offset += 1;
+    //             } else {
+    //                 self.state.messages.pending_scroll += 1;
+    //                 self.state.messages.scroll_offset -|= 1;
+    //             }
+    //         }
+    //         while (loop.tryEvent()) |event| {
+    //             redraw = true;
+    //             switch (event) {
+    //                 .redraw => {},
+    //                 .key_press => |key| {
+    //                     if (self.state.paste.showDialog()) {
+    //                         if (key.matches(vaxis.Key.escape, .{})) {
+    //                             self.state.paste.has_newline = false;
+    //                             self.paste_buffer.clearAndFree();
+    //                         }
+    //                         break;
+    //                     }
+    //                     if (self.state.paste.pasting) {
+    //                         if (key.matches(vaxis.Key.enter, .{})) {
+    //                             self.state.paste.has_newline = true;
+    //                             try self.paste_buffer.append('\n');
+    //                             continue :loop;
+    //                         }
+    //                         const text = key.text orelse continue :loop;
+    //                         try self.paste_buffer.appendSlice(text);
+    //                         continue;
+    //                     }
+    //                     for (self.binds.items) |bind| {
+    //                         if (key.matches(bind.key.codepoint, bind.key.mods)) {
+    //                             switch (bind.command) {
+    //                                 .quit => self.should_quit = true,
+    //                                 .@"next-channel" => self.nextChannel(),
+    //                                 .@"prev-channel" => self.prevChannel(),
+    //                                 .redraw => self.vx.queueRefresh(),
+    //                                 .lua_function => |ref| try lua.execFn(lua_state, ref),
+    //                                 else => {},
+    //                             }
+    //                             break;
+    //                         }
+    //                     } else if (key.matches(vaxis.Key.tab, .{})) {
+    //                         // if we already have a completion word, then we are
+    //                         // cycling through the options
+    //                         if (self.completer) |*completer| {
+    //                             const line = completer.next();
+    //                             input.clearRetainingCapacity();
+    //                             try input.insertSliceAtCursor(line);
+    //                         } else {
+    //                             var completion_buf: [irc.maximum_message_size]u8 = undefined;
+    //                             const content = input.sliceToCursor(&completion_buf);
+    //                             self.completer = try Completer.init(self.alloc, content);
+    //                         }
+    //                     } else if (key.matches(vaxis.Key.tab, .{ .shift = true })) {
+    //                         if (self.completer) |*completer| {
+    //                             const line = completer.prev();
+    //                             input.clearRetainingCapacity();
+    //                             try input.insertSliceAtCursor(line);
+    //                         }
+    //                     } else if (key.matches(vaxis.Key.enter, .{})) {
+    //                         const buffer = self.selectedBuffer() orelse @panic("no buffer");
+    //                         const content = try input.toOwnedSlice();
+    //                         if (content.len == 0) continue;
+    //                         defer self.alloc.free(content);
+    //                         if (content[0] == '/')
+    //                             self.handleCommand(lua_state, buffer, content) catch |err| {
+    //                                 log.err("couldn't handle command: {}", .{err});
+    //                             }
+    //                         else {
+    //                             switch (buffer) {
+    //                                 .channel => |channel| {
+    //                                     var buf: [1024]u8 = undefined;
+    //                                     const msg = try std.fmt.bufPrint(
+    //                                         &buf,
+    //                                         "PRIVMSG {s} :{s}\r\n",
+    //                                         .{
+    //                                             channel.name,
+    //                                             content,
+    //                                         },
+    //                                     );
+    //                                     try channel.client.queueWrite(msg);
+    //                                 },
+    //                                 .client => log.err("can't send message to client", .{}),
+    //                             }
+    //                         }
+    //                         if (self.completer != null) {
+    //                             self.completer.?.deinit();
+    //                             self.completer = null;
+    //                         }
+    //                     } else if (key.matches(vaxis.Key.page_up, .{})) {
+    //                         self.state.messages.scroll_offset +|= 3;
+    //                     } else if (key.matches(vaxis.Key.page_down, .{})) {
+    //                         self.state.messages.scroll_offset -|= 3;
+    //                     } else if (key.matches(vaxis.Key.home, .{})) {
+    //                         self.state.messages.scroll_offset = 0;
+    //                     } else {
+    //                         if (self.completer != null and !key.isModifier()) {
+    //                             self.completer.?.deinit();
+    //                             self.completer = null;
+    //                         }
+    //                         log.debug("{}", .{key});
+    //                         try input.update(.{ .key_press = key });
+    //                     }
+    //                 },
+    //                 .paste_start => self.state.paste.pasting = true,
+    //                 .paste_end => {
+    //                     self.state.paste.pasting = false;
+    //                     if (self.state.paste.has_newline) {
+    //                         log.warn("NEWLINE", .{});
+    //                     } else {
+    //                         try input.insertSliceAtCursor(self.paste_buffer.items);
+    //                         defer self.paste_buffer.clearAndFree();
+    //                     }
+    //                 },
+    //                 .focus_out => self.state.mouse = null,
+    //                 .mouse => |mouse| {
+    //                     self.state.mouse = mouse;
+    //                 },
+    //                 .winsize => |ws| try self.vx.resize(self.alloc, writer, ws),
+    //                 .connect => |cfg| {
+    //                     const client = try self.alloc.create(irc.Client);
+    //                     client.* = try irc.Client.init(self.alloc, self, &write_queue, cfg);
+    //                     client.thread = try std.Thread.spawn(.{}, irc.Client.readLoop, .{ client, &loop });
+    //                     try self.clients.append(client);
+    //                 },
+    //                 .irc => |irc_event| {
+    //                     const msg: irc.Message = .{ .bytes = irc_event.msg.slice() };
+    //                     const client = irc_event.client;
+    //                     defer irc_event.msg.deinit();
+    //                     switch (msg.command()) {
+    //                         .unknown => {},
+    //                         .CAP => {
+    //                             // syntax: <client> <ACK/NACK> :caps
+    //                             var iter = msg.paramIterator();
+    //                             _ = iter.next() orelse continue; // client
+    //                             const ack_or_nak = iter.next() orelse continue;
+    //                             const caps = iter.next() orelse continue;
+    //                             var cap_iter = mem.splitScalar(u8, caps, ' ');
+    //                             while (cap_iter.next()) |cap| {
+    //                                 if (mem.eql(u8, ack_or_nak, "ACK")) {
+    //                                     client.ack(cap);
+    //                                     if (mem.eql(u8, cap, "sasl"))
+    //                                         try client.queueWrite("AUTHENTICATE PLAIN\r\n");
+    //                                 } else if (mem.eql(u8, ack_or_nak, "NAK")) {
+    //                                     log.debug("CAP not supported {s}", .{cap});
+    //                                 }
+    //                             }
+    //                         },
+    //                         .AUTHENTICATE => {
+    //                             var iter = msg.paramIterator();
+    //                             while (iter.next()) |param| {
+    //                                 // A '+' is the continuuation to send our
+    //                                 // AUTHENTICATE info
+    //                                 if (!mem.eql(u8, param, "+")) continue;
+    //                                 var buf: [4096]u8 = undefined;
+    //                                 const config = client.config;
+    //                                 const sasl = try std.fmt.bufPrint(
+    //                                     &buf,
+    //                                     "{s}\x00{s}\x00{s}",
+    //                                     .{ config.user, config.nick, config.password },
+    //                                 );
+    //
+    //                                 // Create a buffer big enough for the base64 encoded string
+    //                                 const b64_buf = try self.alloc.alloc(u8, Base64Encoder.calcSize(sasl.len));
+    //                                 defer self.alloc.free(b64_buf);
+    //                                 const encoded = Base64Encoder.encode(b64_buf, sasl);
+    //                                 // Make our message
+    //                                 const auth = try std.fmt.bufPrint(
+    //                                     &buf,
+    //                                     "AUTHENTICATE {s}\r\n",
+    //                                     .{encoded},
+    //                                 );
+    //                                 try client.queueWrite(auth);
+    //                                 if (config.network_id) |id| {
+    //                                     const bind = try std.fmt.bufPrint(
+    //                                         &buf,
+    //                                         "BOUNCER BIND {s}\r\n",
+    //                                         .{id},
+    //                                     );
+    //                                     try client.queueWrite(bind);
+    //                                 }
+    //                                 try client.queueWrite("CAP END\r\n");
+    //                             }
+    //                         },
+    //                         .RPL_WELCOME => {
+    //                             const now = try zeit.instant(.{});
+    //                             var now_buf: [30]u8 = undefined;
+    //                             const now_fmt = try now.time().bufPrint(&now_buf, .rfc3339);
+    //
+    //                             const past = try now.subtract(.{ .days = 7 });
+    //                             var past_buf: [30]u8 = undefined;
+    //                             const past_fmt = try past.time().bufPrint(&past_buf, .rfc3339);
+    //
+    //                             var buf: [128]u8 = undefined;
+    //                             const targets = try std.fmt.bufPrint(
+    //                                 &buf,
+    //                                 "CHATHISTORY TARGETS timestamp={s} timestamp={s} 50\r\n",
+    //                                 .{ now_fmt, past_fmt },
+    //                             );
+    //                             try client.queueWrite(targets);
+    //                             // on_connect callback
+    //                             try lua.onConnect(lua_state, client);
+    //                         },
+    //                         .RPL_YOURHOST => {},
+    //                         .RPL_CREATED => {},
+    //                         .RPL_MYINFO => {},
+    //                         .RPL_ISUPPORT => {
+    //                             // syntax: <client> <token>[ <token>] :are supported
+    //                             var iter = msg.paramIterator();
+    //                             _ = iter.next() orelse continue; // client
+    //                             while (iter.next()) |token| {
+    //                                 if (mem.eql(u8, token, "WHOX"))
+    //                                     client.supports.whox = true
+    //                                 else if (mem.startsWith(u8, token, "PREFIX")) {
+    //                                     const prefix = blk: {
+    //                                         const idx = mem.indexOfScalar(u8, token, ')') orelse
+    //                                             // default is "@+"
+    //                                             break :blk try self.alloc.dupe(u8, "@+");
+    //                                         break :blk try self.alloc.dupe(u8, token[idx + 1 ..]);
+    //                                     };
+    //                                     client.supports.prefix = prefix;
+    //                                 }
+    //                             }
+    //                         },
+    //                         .RPL_LOGGEDIN => {},
+    //                         .RPL_TOPIC => {
+    //                             // syntax: <client> <channel> :<topic>
+    //                             var iter = msg.paramIterator();
+    //                             _ = iter.next() orelse continue :loop; // client ("*")
+    //                             const channel_name = iter.next() orelse continue :loop; // channel
+    //                             const topic = iter.next() orelse continue :loop; // topic
+    //
+    //                             var channel = try client.getOrCreateChannel(channel_name);
+    //                             if (channel.topic) |old_topic| {
+    //                                 self.alloc.free(old_topic);
+    //                             }
+    //                             channel.topic = try self.alloc.dupe(u8, topic);
+    //                         },
+    //                         .RPL_SASLSUCCESS => {},
+    //                         .RPL_WHOREPLY => {
+    //                             // syntax: <client> <channel> <username> <host> <server> <nick> <flags> :<hopcount> <real name>
+    //                             var iter = msg.paramIterator();
+    //                             _ = iter.next() orelse continue :loop; // client
+    //                             const channel_name = iter.next() orelse continue :loop; // channel
+    //                             if (mem.eql(u8, channel_name, "*")) continue;
+    //                             _ = iter.next() orelse continue :loop; // username
+    //                             _ = iter.next() orelse continue :loop; // host
+    //                             _ = iter.next() orelse continue :loop; // server
+    //                             const nick = iter.next() orelse continue :loop; // nick
+    //                             const flags = iter.next() orelse continue :loop; // flags
+    //
+    //                             const user_ptr = try client.getOrCreateUser(nick);
+    //                             if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
+    //                             var channel = try client.getOrCreateChannel(channel_name);
+    //
+    //                             const prefix = for (flags) |c| {
+    //                                 if (std.mem.indexOfScalar(u8, client.supports.prefix, c)) |_| {
+    //                                     break c;
+    //                                 }
+    //                             } else ' ';
+    //
+    //                             try channel.addMember(user_ptr, .{ .prefix = prefix });
+    //                         },
+    //                         .RPL_WHOSPCRPL => {
+    //                             // syntax: <client> <channel> <nick> <flags> :<realname>
+    //                             var iter = msg.paramIterator();
+    //                             _ = iter.next() orelse continue;
+    //                             const channel_name = iter.next() orelse continue; // channel
+    //                             const nick = iter.next() orelse continue;
+    //                             const flags = iter.next() orelse continue;
+    //
+    //                             const user_ptr = try client.getOrCreateUser(nick);
+    //                             if (iter.next()) |real_name| {
+    //                                 if (user_ptr.real_name) |old_name| {
+    //                                     self.alloc.free(old_name);
+    //                                 }
+    //                                 user_ptr.real_name = try self.alloc.dupe(u8, real_name);
+    //                             }
+    //                             if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
+    //                             var channel = try client.getOrCreateChannel(channel_name);
+    //
+    //                             const prefix = for (flags) |c| {
+    //                                 if (std.mem.indexOfScalar(u8, client.supports.prefix, c)) |_| {
+    //                                     break c;
+    //                                 }
+    //                             } else ' ';
+    //
+    //                             try channel.addMember(user_ptr, .{ .prefix = prefix });
+    //                         },
+    //                         .RPL_ENDOFWHO => {
+    //                             // syntax: <client> <mask> :End of WHO list
+    //                             var iter = msg.paramIterator();
+    //                             _ = iter.next() orelse continue :loop; // client
+    //                             const channel_name = iter.next() orelse continue :loop; // channel
+    //                             if (mem.eql(u8, channel_name, "*")) continue;
+    //                             var channel = try client.getOrCreateChannel(channel_name);
+    //                             channel.in_flight.who = false;
+    //                         },
+    //                         .RPL_NAMREPLY => {
+    //                             // syntax: <client> <symbol> <channel> :[<prefix>]<nick>{ [<prefix>]<nick>}
+    //                             var iter = msg.paramIterator();
+    //                             _ = iter.next() orelse continue; // client
+    //                             _ = iter.next() orelse continue; // symbol
+    //                             const channel_name = iter.next() orelse continue; // channel
+    //                             const names = iter.next() orelse continue;
+    //                             var channel = try client.getOrCreateChannel(channel_name);
+    //                             var name_iter = std.mem.splitScalar(u8, names, ' ');
+    //                             while (name_iter.next()) |name| {
+    //                                 const nick, const prefix = for (client.supports.prefix) |ch| {
+    //                                     if (name[0] == ch) {
+    //                                         break .{ name[1..], name[0] };
+    //                                     }
+    //                                 } else .{ name, ' ' };
+    //
+    //                                 if (prefix != ' ') {
+    //                                     log.debug("HAS PREFIX {s}", .{name});
+    //                                 }
+    //
+    //                                 const user_ptr = try client.getOrCreateUser(nick);
+    //
+    //                                 try channel.addMember(user_ptr, .{ .prefix = prefix, .sort = false });
+    //                             }
+    //
+    //                             channel.sortMembers();
+    //                         },
+    //                         .RPL_ENDOFNAMES => {
+    //                             // syntax: <client> <channel> :End of /NAMES list
+    //                             var iter = msg.paramIterator();
+    //                             _ = iter.next() orelse continue; // client
+    //                             const channel_name = iter.next() orelse continue; // channel
+    //                             var channel = try client.getOrCreateChannel(channel_name);
+    //                             channel.in_flight.names = false;
+    //                         },
+    //                         .BOUNCER => {
+    //                             var iter = msg.paramIterator();
+    //                             while (iter.next()) |param| {
+    //                                 if (mem.eql(u8, param, "NETWORK")) {
+    //                                     const id = iter.next() orelse continue;
+    //                                     const attr = iter.next() orelse continue;
+    //                                     // check if we already have this network
+    //                                     for (self.clients.items, 0..) |cl, i| {
+    //                                         if (cl.config.network_id) |net_id| {
+    //                                             if (mem.eql(u8, net_id, id)) {
+    //                                                 if (mem.eql(u8, attr, "*")) {
+    //                                                     // * means the network was
+    //                                                     // deleted
+    //                                                     cl.deinit();
+    //                                                     _ = self.clients.swapRemove(i);
+    //                                                 }
+    //                                                 continue :loop;
+    //                                             }
+    //                                         }
+    //                                     }
+    //
+    //                                     var cfg = client.config;
+    //                                     cfg.network_id = try self.alloc.dupe(u8, id);
+    //
+    //                                     var attr_iter = std.mem.splitScalar(u8, attr, ';');
+    //                                     while (attr_iter.next()) |kv| {
+    //                                         const n = std.mem.indexOfScalar(u8, kv, '=') orelse continue;
+    //                                         const key = kv[0..n];
+    //                                         if (mem.eql(u8, key, "name"))
+    //                                             cfg.name = try self.alloc.dupe(u8, kv[n + 1 ..])
+    //                                         else if (mem.eql(u8, key, "nickname"))
+    //                                             cfg.network_nick = try self.alloc.dupe(u8, kv[n + 1 ..]);
+    //                                     }
+    //                                     loop.postEvent(.{ .connect = cfg });
+    //                                 }
+    //                             }
+    //                         },
+    //                         .AWAY => {
+    //                             const src = msg.source() orelse continue :loop;
+    //                             var iter = msg.paramIterator();
+    //                             const n = std.mem.indexOfScalar(u8, src, '!') orelse src.len;
+    //                             const user = try client.getOrCreateUser(src[0..n]);
+    //                             // If there are any params, the user is away. Otherwise
+    //                             // they are back.
+    //                             user.away = if (iter.next()) |_| true else false;
+    //                         },
+    //                         .BATCH => {
+    //                             var iter = msg.paramIterator();
+    //                             const tag = iter.next() orelse continue;
+    //                             switch (tag[0]) {
+    //                                 '+' => {
+    //                                     const batch_type = iter.next() orelse continue;
+    //                                     if (mem.eql(u8, batch_type, "chathistory")) {
+    //                                         const target = iter.next() orelse continue;
+    //                                         var channel = try client.getOrCreateChannel(target);
+    //                                         channel.at_oldest = true;
+    //                                         const duped_tag = try self.alloc.dupe(u8, tag[1..]);
+    //                                         try client.batches.put(duped_tag, channel);
+    //                                     }
+    //                                 },
+    //                                 '-' => {
+    //                                     const key = client.batches.getKey(tag[1..]) orelse continue;
+    //                                     var chan = client.batches.get(key) orelse @panic("key should exist here");
+    //                                     chan.history_requested = false;
+    //                                     _ = client.batches.remove(key);
+    //                                     self.alloc.free(key);
+    //                                 },
+    //                                 else => {},
+    //                             }
+    //                         },
+    //                         .CHATHISTORY => {
+    //                             var iter = msg.paramIterator();
+    //                             const should_targets = iter.next() orelse continue;
+    //                             if (!mem.eql(u8, should_targets, "TARGETS")) continue;
+    //                             const target = iter.next() orelse continue;
+    //                             // we only add direct messages, not more channels
+    //                             assert(target.len > 0);
+    //                             if (target[0] == '#') continue;
+    //
+    //                             var channel = try client.getOrCreateChannel(target);
+    //                             const user_ptr = try client.getOrCreateUser(target);
+    //                             const me_ptr = try client.getOrCreateUser(client.nickname());
+    //                             try channel.addMember(user_ptr, .{});
+    //                             try channel.addMember(me_ptr, .{});
+    //                             // we set who_requested so we don't try to request
+    //                             // who on DMs
+    //                             channel.who_requested = true;
+    //                             var buf: [128]u8 = undefined;
+    //                             const mark_read = try std.fmt.bufPrint(
+    //                                 &buf,
+    //                                 "MARKREAD {s}\r\n",
+    //                                 .{channel.name},
+    //                             );
+    //                             try client.queueWrite(mark_read);
+    //                             try client.requestHistory(.after, channel);
+    //                         },
+    //                         .JOIN => {
+    //                             // get the user
+    //                             const src = msg.source() orelse continue :loop;
+    //                             const n = std.mem.indexOfScalar(u8, src, '!') orelse src.len;
+    //                             const user = try client.getOrCreateUser(src[0..n]);
+    //
+    //                             // get the channel
+    //                             var iter = msg.paramIterator();
+    //                             const target = iter.next() orelse continue;
+    //                             var channel = try client.getOrCreateChannel(target);
+    //
+    //                             // If it's our nick, we request chat history
+    //                             if (mem.eql(u8, user.nick, client.nickname())) {
+    //                                 try client.requestHistory(.after, channel);
+    //                                 if (self.explicit_join) {
+    //                                     self.selectChannelName(client, target);
+    //                                     self.explicit_join = false;
+    //                                 }
+    //                             } else try channel.addMember(user, .{});
+    //                         },
+    //                         .MARKREAD => {
+    //                             var iter = msg.paramIterator();
+    //                             const target = iter.next() orelse continue;
+    //                             const timestamp = iter.next() orelse continue;
+    //                             const equal = std.mem.indexOfScalar(u8, timestamp, '=') orelse continue;
+    //                             const last_read = zeit.instant(.{
+    //                                 .source = .{
+    //                                     .iso8601 = timestamp[equal + 1 ..],
+    //                                 },
+    //                             }) catch |err| {
+    //                                 log.err("couldn't convert timestamp: {}", .{err});
+    //                                 continue;
+    //                             };
+    //                             var channel = try client.getOrCreateChannel(target);
+    //                             channel.last_read = last_read.unixTimestamp();
+    //                             const last_msg = channel.messages.getLastOrNull() orelse continue;
+    //                             const time = last_msg.time() orelse continue;
+    //                             if (time.unixTimestamp() > channel.last_read)
+    //                                 channel.has_unread = true
+    //                             else
+    //                                 channel.has_unread = false;
+    //                         },
+    //                         .PART => {
+    //                             // get the user
+    //                             const src = msg.source() orelse continue :loop;
+    //                             const n = std.mem.indexOfScalar(u8, src, '!') orelse src.len;
+    //                             const user = try client.getOrCreateUser(src[0..n]);
+    //
+    //                             // get the channel
+    //                             var iter = msg.paramIterator();
+    //                             const target = iter.next() orelse continue;
+    //
+    //                             if (mem.eql(u8, user.nick, client.nickname())) {
+    //                                 for (client.channels.items, 0..) |channel, i| {
+    //                                     if (!mem.eql(u8, channel.name, target)) continue;
+    //                                     var chan = client.channels.orderedRemove(i);
+    //                                     self.state.buffers.selected_idx -|= 1;
+    //                                     chan.deinit(self.alloc);
+    //                                     break;
+    //                                 }
+    //                             } else {
+    //                                 const channel = try client.getOrCreateChannel(target);
+    //                                 channel.removeMember(user);
+    //                             }
+    //                         },
+    //                         .PRIVMSG, .NOTICE => {
+    //                             // syntax: <target> :<message>
+    //                             const msg2: irc.Message = .{
+    //                                 .bytes = try self.alloc.dupe(u8, msg.bytes),
+    //                             };
+    //                             var iter = msg2.paramIterator();
+    //                             const target = blk: {
+    //                                 const tgt = iter.next() orelse continue;
+    //                                 if (mem.eql(u8, tgt, client.nickname())) {
+    //                                     // If the target is us, it likely has our
+    //                                     // hostname in it.
+    //                                     const source = msg2.source() orelse continue;
+    //                                     const n = mem.indexOfScalar(u8, source, '!') orelse source.len;
+    //                                     break :blk source[0..n];
+    //                                 } else break :blk tgt;
+    //                             };
+    //
+    //                             // We handle batches separately. When we encounter a
+    //                             // PRIVMSG from a batch, we use the original target
+    //                             // from the batch start. We also never notify from a
+    //                             // batched message. Batched messages also require
+    //                             // sorting
+    //                             var tag_iter = msg2.tagIterator();
+    //                             while (tag_iter.next()) |tag| {
+    //                                 if (mem.eql(u8, tag.key, "batch")) {
+    //                                     const entry = client.batches.getEntry(tag.value) orelse @panic("TODO");
+    //                                     var channel = entry.value_ptr.*;
+    //                                     try channel.messages.append(msg2);
+    //                                     std.sort.insertion(irc.Message, channel.messages.items, {}, irc.Message.compareTime);
+    //                                     channel.at_oldest = false;
+    //                                     const time = msg2.time() orelse continue;
+    //                                     if (time.unixTimestamp() > channel.last_read) {
+    //                                         channel.has_unread = true;
+    //                                         const content = iter.next() orelse continue;
+    //                                         if (std.mem.indexOf(u8, content, client.nickname())) |_| {
+    //                                             channel.has_unread_highlight = true;
+    //                                         }
+    //                                     }
+    //                                     break;
+    //                                 }
+    //                             } else {
+    //                                 // standard handling
+    //                                 var channel = try client.getOrCreateChannel(target);
+    //                                 try channel.messages.append(msg2);
+    //                                 const content = iter.next() orelse continue;
+    //                                 var has_highlight = false;
+    //                                 {
+    //                                     const sender: []const u8 = blk: {
+    //                                         const src = msg2.source() orelse break :blk "";
+    //                                         const l = std.mem.indexOfScalar(u8, src, '!') orelse
+    //                                             std.mem.indexOfScalar(u8, src, '@') orelse
+    //                                             src.len;
+    //                                         break :blk src[0..l];
+    //                                     };
+    //                                     try lua.onMessage(lua_state, client, channel.name, sender, content);
+    //                                 }
+    //                                 if (std.mem.indexOf(u8, content, client.nickname())) |_| {
+    //                                     var buf: [64]u8 = undefined;
+    //                                     const title_or_err = if (msg2.source()) |source|
+    //                                         std.fmt.bufPrint(&buf, "{s} - {s}", .{ channel.name, source })
+    //                                     else
+    //                                         std.fmt.bufPrint(&buf, "{s}", .{channel.name});
+    //                                     const title = title_or_err catch title: {
+    //                                         const len = @min(buf.len, channel.name.len);
+    //                                         @memcpy(buf[0..len], channel.name[0..len]);
+    //                                         break :title buf[0..len];
+    //                                     };
+    //                                     try self.vx.notify(writer, title, content);
+    //                                     has_highlight = true;
+    //                                 }
+    //                                 const time = msg2.time() orelse continue;
+    //                                 if (time.unixTimestamp() > channel.last_read) {
+    //                                     channel.has_unread_highlight = has_highlight;
+    //                                     channel.has_unread = true;
+    //                                 }
+    //                             }
+    //
+    //                             // If we get a message from the current user mark the channel as
+    //                             // read, since they must have just sent the message.
+    //                             const sender: []const u8 = blk: {
+    //                                 const src = msg2.source() orelse break :blk "";
+    //                                 const l = std.mem.indexOfScalar(u8, src, '!') orelse
+    //                                     std.mem.indexOfScalar(u8, src, '@') orelse
+    //                                     src.len;
+    //                                 break :blk src[0..l];
+    //                             };
+    //                             if (std.mem.eql(u8, sender, client.nickname())) {
+    //                                 self.markSelectedChannelRead();
+    //                             }
+    //                         },
+    //                     }
+    //                 },
+    //             }
+    //         }
+    //
+    //         if (redraw) {
+    //             try self.draw(&input);
+    //             last_frame = std.time.milliTimestamp();
+    //         }
+    //     }
+    // }
+
+    pub fn connect(self: *App, cfg: irc.Client.Config) !void {
+        const client = try self.alloc.create(irc.Client);
+        client.* = try irc.Client.init(self.alloc, self, &self.write_queue, cfg);
+        client.thread = try std.Thread.spawn(.{}, irc.Client.readLoop, .{client});
+        try self.clients.append(client);
+    }
+
     pub fn nextChannel(self: *App) void {
         // When leaving a channel we mark it as read, so we make sure that's done
         // before we change to the new channel.
@@ -968,7 +1042,8 @@ pub const App = struct {
                     return client.queueWrite(msg);
                 }
             },
-            .redraw => self.vx.queueRefresh(),
+            .redraw => {},
+            // .redraw => self.vx.queueRefresh(),
             .version => {
                 if (channel == null) return error.InvalidCommand;
                 const msg = try std.fmt.bufPrint(
@@ -1978,7 +2053,7 @@ pub const App = struct {
         }
     }
 
-    fn markSelectedChannelRead(self: *App) void {
+    pub fn markSelectedChannelRead(self: *App) void {
         const buffer = self.selectedBuffer() orelse return;
 
         switch (buffer) {
