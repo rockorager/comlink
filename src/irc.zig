@@ -144,7 +144,7 @@ pub const Channel = struct {
         self.messages.deinit();
     }
 
-    pub fn compare(_: void, lhs: Channel, rhs: Channel) bool {
+    pub fn compare(_: void, lhs: *Channel, rhs: *Channel) bool {
         return std.ascii.orderIgnoreCase(lhs.name, rhs.name).compare(std.math.CompareOperator.lt);
     }
 
@@ -483,7 +483,7 @@ pub const Client = struct {
     stream: std.net.Stream,
     config: Config,
 
-    channels: std.ArrayList(Channel),
+    channels: std.ArrayList(*Channel),
     users: std.StringHashMap(*User),
 
     should_close: bool = false,
@@ -516,7 +516,7 @@ pub const Client = struct {
             .client = undefined,
             .stream = undefined,
             .config = cfg,
-            .channels = std.ArrayList(Channel).init(alloc),
+            .channels = std.ArrayList(*Channel).init(alloc),
             .users = std.StringHashMap(*User).init(alloc),
             .batches = std.StringHashMap(*Channel).init(alloc),
             .write_queue = wq,
@@ -545,6 +545,7 @@ pub const Client = struct {
 
         for (self.channels.items) |channel| {
             channel.deinit(self.alloc);
+            self.alloc.destroy(channel);
         }
         self.channels.deinit();
 
@@ -936,6 +937,7 @@ pub const Client = struct {
                         var chan = client.channels.orderedRemove(i);
                         self.app.state.buffers.selected_idx -|= 1;
                         chan.deinit(self.app.alloc);
+                        self.alloc.destroy(chan);
                         break;
                     }
                 } else {
@@ -1213,10 +1215,11 @@ pub const Client = struct {
     }
 
     pub fn getOrCreateChannel(self: *Client, name: []const u8) !*Channel {
-        for (self.channels.items) |*channel| {
+        for (self.channels.items) |channel| {
             if (caseFold(name, channel.name)) return channel;
         }
-        const channel: Channel = .{
+        const channel = try self.alloc.create(Channel);
+        channel.* = .{
             .name = try self.alloc.dupe(u8, name),
             .members = std.ArrayList(Channel.Member).init(self.alloc),
             .messages = std.ArrayList(Message).init(self.alloc),
@@ -1224,8 +1227,8 @@ pub const Client = struct {
         };
         try self.channels.append(channel);
 
-        std.sort.insertion(Channel, self.channels.items, {}, Channel.compare);
-        return self.getOrCreateChannel(name);
+        std.sort.insertion(*Channel, self.channels.items, {}, Channel.compare);
+        return channel;
     }
 
     var color_indices = [_]u8{ 1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14 };

@@ -959,7 +959,7 @@ pub const App = struct {
         var i: usize = 0;
         for (self.clients.items) |client| {
             i += 1;
-            for (client.channels.items) |*channel| {
+            for (client.channels.items) |channel| {
                 if (cl == client) {
                     if (std.mem.eql(u8, name, channel.name)) {
                         self.state.buffers.selected_idx = i;
@@ -1131,7 +1131,7 @@ pub const App = struct {
         for (self.clients.items) |client| {
             if (i == self.state.buffers.selected_idx) return .{ .client = client };
             i += 1;
-            for (client.channels.items) |*channel| {
+            for (client.channels.items) |channel| {
                 if (i == self.state.buffers.selected_idx) return .{ .channel = channel };
                 i += 1;
             }
