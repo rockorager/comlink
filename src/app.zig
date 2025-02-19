@@ -30,7 +30,7 @@ const State = struct {
     mouse: ?vaxis.Mouse = null,
     members: struct {
         scroll_offset: usize = 0,
-        width: usize = 16,
+        width: u16 = 16,
         resizing: bool = false,
     } = .{},
     messages: struct {
@@ -41,7 +41,7 @@ const State = struct {
         scroll_offset: usize = 0,
         count: usize = 0,
         selected_idx: usize = 0,
-        width: usize = 16,
+        width: u16 = 16,
         resizing: bool = false,
     } = .{},
     paste: struct {
@@ -55,24 +55,24 @@ const State = struct {
 };
 
 pub const App = struct {
-    explicit_join: bool = false,
+    explicit_join: bool,
     alloc: std.mem.Allocator,
     /// System certificate bundle
-    bundle: std.crypto.Certificate.Bundle = .{},
+    bundle: std.crypto.Certificate.Bundle,
     /// List of all configured clients
     clients: std.ArrayList(*irc.Client),
     /// if we have already called deinit
-    deinited: bool = false,
+    deinited: bool,
     /// Process environment
     env: std.process.EnvMap,
     /// Local timezone
     tz: zeit.TimeZone,
 
-    state: State = .{},
+    state: State,
 
-    completer: ?Completer = null,
+    completer: ?Completer,
 
-    should_quit: bool = false,
+    should_quit: bool,
 
     binds: std.ArrayList(Bind),
 
@@ -83,10 +83,14 @@ pub const App = struct {
     write_queue: comlink.WriteQueue,
     write_thread: std.Thread,
 
+    lhs: vxfw.SplitView,
+    rhs: vxfw.SplitView,
+
     /// initialize vaxis, lua state
     pub fn init(self: *App, gpa: std.mem.Allocator) !void {
         self.* = .{
             .alloc = gpa,
+            .state = .{},
             .clients = std.ArrayList(*irc.Client).init(gpa),
             .env = try std.process.getEnvMap(gpa),
             .binds = try std.ArrayList(Bind).initCapacity(gpa, 16),
@@ -95,6 +99,22 @@ pub const App = struct {
             .lua = undefined,
             .write_queue = .{},
             .write_thread = undefined,
+            .lhs = .{
+                .width = self.state.buffers.width,
+                .lhs = self.bufferWidget(),
+                .rhs = self.rhs.widget(),
+            },
+            .rhs = .{
+                .width = self.state.members.width,
+                .constrain = .rhs,
+                .lhs = self.contentWidget(),
+                .rhs = self.memberWidget(),
+            },
+            .explicit_join = false,
+            .bundle = .{},
+            .deinited = false,
+            .completer = null,
+            .should_quit = false,
         };
 
         self.lua = try Lua.init(&self.alloc);
@@ -219,14 +239,72 @@ pub const App = struct {
         var children = std.ArrayList(vxfw.SubSurface).init(ctx.arena);
         _ = &children;
 
-        const text: vxfw.Text = .{ .text = "hey" };
-        _ = text;
+        // UI is a tree of splits
+        // │         │                  │         │
+        // │         │                  │         │
+        // │ buffers │  buffer content  │ members │
+        // │         │                  │         │
+        // │         │                  │         │
+        // │         │                  │         │
+        // │         │                  │         │
+
+        const sub: vxfw.SubSurface = .{
+            .origin = .{ .col = 0, .row = 0 },
+            .surface = try self.lhs.widget().draw(ctx),
+        };
+        try children.append(sub);
+
         return .{
             .size = ctx.max.size(),
             .widget = self.widget(),
             .buffer = &.{},
             .children = children.items,
         };
+    }
+
+    fn bufferWidget(self: *App) vxfw.Widget {
+        return .{
+            .userdata = self,
+            .captureHandler = null,
+            .eventHandler = null,
+            .drawFn = App.typeErasedBufferDrawFn,
+        };
+    }
+
+    fn typeErasedBufferDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        _ = ptr;
+        const text: vxfw.Text = .{ .text = "buffers" };
+        return text.draw(ctx);
+    }
+
+    fn contentWidget(self: *App) vxfw.Widget {
+        return .{
+            .userdata = self,
+            .captureHandler = null,
+            .eventHandler = null,
+            .drawFn = App.typeErasedContentDrawFn,
+        };
+    }
+
+    fn typeErasedContentDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        _ = ptr;
+        const text: vxfw.Text = .{ .text = "content" };
+        return text.draw(ctx);
+    }
+
+    fn memberWidget(self: *App) vxfw.Widget {
+        return .{
+            .userdata = self,
+            .captureHandler = null,
+            .eventHandler = null,
+            .drawFn = App.typeErasedMembersDrawFn,
+        };
+    }
+
+    fn typeErasedMembersDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        _ = ptr;
+        const text: vxfw.Text = .{ .text = "members" };
+        return text.draw(ctx);
     }
 
     // pub fn run(self: *App, lua_state: *Lua) !void {
