@@ -123,31 +123,19 @@ pub const App = struct {
         try lua.init(self);
 
         try self.binds.append(.{
-            .key = .{
-                .codepoint = 'c',
-                .mods = .{ .ctrl = true },
-            },
+            .key = .{ .codepoint = 'c', .mods = .{ .ctrl = true } },
             .command = .quit,
         });
         try self.binds.append(.{
-            .key = .{
-                .codepoint = vaxis.Key.up,
-                .mods = .{ .alt = true },
-            },
+            .key = .{ .codepoint = vaxis.Key.up, .mods = .{ .alt = true } },
             .command = .@"prev-channel",
         });
         try self.binds.append(.{
-            .key = .{
-                .codepoint = vaxis.Key.down,
-                .mods = .{ .alt = true },
-            },
+            .key = .{ .codepoint = vaxis.Key.down, .mods = .{ .alt = true } },
             .command = .@"next-channel",
         });
         try self.binds.append(.{
-            .key = .{
-                .codepoint = 'l',
-                .mods = .{ .ctrl = true },
-            },
+            .key = .{ .codepoint = 'l', .mods = .{ .ctrl = true } },
             .command = .redraw,
         });
 
