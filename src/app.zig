@@ -223,7 +223,7 @@ pub const App = struct {
             },
             .tick => {
                 for (self.clients.items) |client| {
-                    client.drainFifo();
+                    client.drainFifo(ctx);
                 }
                 try ctx.tick(8, self.widget());
             },
@@ -276,16 +276,31 @@ pub const App = struct {
             if (i == idx and i == cursor) {
                 return .{
                     .userdata = client,
-                    .drawFn = irc.Client.typeErasedNameSelectedDrawFn,
+                    .drawFn = irc.Client.drawNameSelected,
                 };
             }
             if (i == idx) {
                 return .{
                     .userdata = client,
-                    .drawFn = irc.Client.typeErasedNameDrawFn,
+                    .drawFn = irc.Client.drawName,
                 };
             }
             i += 1;
+            for (client.channels.items) |channel| {
+                if (i == idx and i == cursor) {
+                    return .{
+                        .userdata = channel,
+                        .drawFn = irc.Channel.drawNameSelected,
+                    };
+                }
+                if (i == idx) {
+                    return .{
+                        .userdata = channel,
+                        .drawFn = irc.Channel.drawName,
+                    };
+                }
+                i += 1;
+            }
         }
         return null;
     }

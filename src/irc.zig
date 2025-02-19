@@ -168,6 +168,30 @@ pub const Channel = struct {
         return l < r;
     }
 
+    pub fn drawName(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        const self: *Channel = @ptrCast(@alignCast(ptr));
+        const text: vxfw.RichText = .{
+            .text = &.{
+                .{ .text = "  " },
+                .{ .text = self.name },
+            },
+            .softwrap = false,
+        };
+        return text.draw(ctx);
+    }
+
+    pub fn drawNameSelected(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        const self: *Channel = @ptrCast(@alignCast(ptr));
+        const text: vxfw.RichText = .{
+            .text = &.{
+                .{ .text = "  ", .style = .{ .reverse = true } },
+                .{ .text = self.name, .style = .{ .reverse = true } },
+            },
+            .softwrap = false,
+        };
+        return text.draw(ctx);
+    }
+
     pub fn sortMembers(self: *Channel) void {
         std.sort.insertion(Member, self.members.items, {}, Member.compare);
     }
@@ -566,7 +590,7 @@ pub const Client = struct {
         self.fifo.deinit();
     }
 
-    pub fn typeErasedNameDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+    pub fn drawName(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
         const self: *Client = @ptrCast(@alignCast(ptr));
         const text: vxfw.Text = .{
             .text = self.config.name orelse self.config.server,
@@ -575,7 +599,7 @@ pub const Client = struct {
         return text.draw(ctx);
     }
 
-    pub fn typeErasedNameSelectedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+    pub fn drawNameSelected(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
         const self: *Client = @ptrCast(@alignCast(ptr));
         const text: vxfw.Text = .{
             .text = self.config.name orelse self.config.server,
@@ -585,10 +609,12 @@ pub const Client = struct {
         return text.draw(ctx);
     }
 
-    pub fn drainFifo(self: *Client) void {
+    pub fn drainFifo(self: *Client, ctx: *vxfw.EventContext) void {
         self.fifo_mutex.lock();
         defer self.fifo_mutex.unlock();
         while (self.fifo.readItem()) |item| {
+            // We redraw if we have any items
+            ctx.redraw = true;
             self.handleEvent(item) catch |err| {
                 log.err("error: {}", .{err});
             };
