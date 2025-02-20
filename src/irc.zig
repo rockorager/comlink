@@ -117,6 +117,8 @@ pub const Channel = struct {
     has_unread: bool = false,
     has_unread_highlight: bool = false,
 
+    has_mouse: bool = false,
+
     pub const Member = struct {
         user: *User,
 
@@ -168,28 +170,63 @@ pub const Channel = struct {
         return l < r;
     }
 
-    pub fn drawName(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
-        const self: *Channel = @ptrCast(@alignCast(ptr));
-        const text: vxfw.RichText = .{
-            .text = &.{
-                .{ .text = "  " },
-                .{ .text = self.name },
-            },
-            .softwrap = false,
+    pub fn nameWidget(self: *Channel, selected: bool) vxfw.Widget {
+        return .{
+            .userdata = self,
+            .eventHandler = Channel.typeErasedEventHandler,
+            .drawFn = if (selected)
+                Channel.typeErasedDrawNameSelected
+            else
+                Channel.typeErasedDrawName,
         };
-        return text.draw(ctx);
     }
 
-    pub fn drawNameSelected(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+    fn typeErasedEventHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
         const self: *Channel = @ptrCast(@alignCast(ptr));
+        switch (event) {
+            .mouse => {
+                try ctx.setMouseShape(.pointer);
+            },
+            .mouse_enter => {
+                try ctx.setMouseShape(.pointer);
+                self.has_mouse = true;
+            },
+            .mouse_leave => {
+                try ctx.setMouseShape(.default);
+                self.has_mouse = false;
+            },
+            else => {},
+        }
+    }
+
+    pub fn drawName(self: *Channel, ctx: vxfw.DrawContext, selected: bool) Allocator.Error!vxfw.Surface {
+        const style: vaxis.Style = if (selected)
+            .{ .reverse = true }
+        else if (self.has_mouse)
+            .{ .bg = .{ .index = 8 } }
+        else
+            .{};
         const text: vxfw.RichText = .{
             .text = &.{
-                .{ .text = "  ", .style = .{ .reverse = true } },
-                .{ .text = self.name, .style = .{ .reverse = true } },
+                .{ .text = "  ", .style = style },
+                .{ .text = self.name, .style = style },
             },
             .softwrap = false,
         };
-        return text.draw(ctx);
+        var surface = try text.draw(ctx);
+        // Replace the widget reference so we can handle the events
+        surface.widget = self.nameWidget(selected);
+        return surface;
+    }
+
+    fn typeErasedDrawName(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        const self: *Channel = @ptrCast(@alignCast(ptr));
+        return self.drawName(ctx, false);
+    }
+
+    fn typeErasedDrawNameSelected(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        const self: *Channel = @ptrCast(@alignCast(ptr));
+        return self.drawName(ctx, true);
     }
 
     pub fn sortMembers(self: *Channel) void {
