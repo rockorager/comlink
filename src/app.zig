@@ -87,6 +87,8 @@ pub const App = struct {
     buffer_list: vxfw.ListView,
     unicode: *const vaxis.Unicode,
 
+    title_buf: [128]u8,
+
     const default_rhs: vxfw.Text = .{ .text = "TODO: update this text" };
 
     /// initialize vaxis, lua state
@@ -122,6 +124,7 @@ pub const App = struct {
                 .draw_cursor = false,
             },
             .unicode = unicode,
+            .title_buf = undefined,
         };
 
         self.lua = try Lua.init(&self.alloc);
@@ -212,7 +215,11 @@ pub const App = struct {
     fn typeErasedEventHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
         const self: *App = @ptrCast(@alignCast(ptr));
         switch (event) {
-            .init => try ctx.tick(8, self.widget()),
+            .init => {
+                const title = try std.fmt.bufPrint(&self.title_buf, "comlink", .{});
+                try ctx.setTitle(title);
+                try ctx.tick(8, self.widget());
+            },
             .key_press => |key| {
                 if (key.matches('c', .{ .ctrl = true })) {
                     ctx.quit = true;

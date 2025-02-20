@@ -252,6 +252,19 @@ pub const Channel = struct {
                 if (mouse.type == .press and mouse.button == .left) {
                     self.client.app.selectBuffer(.{ .channel = self });
                     try ctx.requestFocus(self.text_field.widget());
+                    const buf = &self.client.app.title_buf;
+                    const suffix = " - comlink";
+                    if (self.name.len + suffix.len <= buf.len) {
+                        const title = try std.fmt.bufPrint(buf, "{s}{s}", .{ self.name, suffix });
+                        try ctx.setTitle(title);
+                    } else {
+                        const title = try std.fmt.bufPrint(
+                            buf,
+                            "{s}{s}",
+                            .{ self.name[0 .. buf.len - suffix.len], suffix },
+                        );
+                        try ctx.setTitle(title);
+                    }
                     return ctx.consumeAndRedraw();
                 }
             },
@@ -302,7 +315,7 @@ pub const Channel = struct {
     pub fn addMember(self: *Channel, user: *User, args: struct {
         prefix: ?u8 = null,
         sort: bool = true,
-    }) !void {
+    }) Allocator.Error!void {
         if (args.prefix) |p| {
             log.debug("adding member: nick={s}, prefix={c}", .{ user.nick, p });
         }
@@ -358,6 +371,9 @@ pub const Channel = struct {
 
     fn typeErasedViewDraw(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
         const self: *Channel = @ptrCast(@alignCast(ptr));
+        if (!self.who_requested) {
+            try self.client.whox(self);
+        }
 
         const max = ctx.max.size();
         var children = std.ArrayList(vxfw.SubSurface).init(ctx.arena);
@@ -822,6 +838,20 @@ pub const Client = struct {
                 try ctx.setMouseShape(.pointer);
                 if (mouse.type == .press and mouse.button == .left) {
                     self.app.selectBuffer(.{ .client = self });
+                    const buf = &self.app.title_buf;
+                    const suffix = " - comlink";
+                    const name = self.config.name orelse self.config.server;
+                    if (name.len + suffix.len <= buf.len) {
+                        const title = try std.fmt.bufPrint(buf, "{s}{s}", .{ name, suffix });
+                        try ctx.setTitle(title);
+                    } else {
+                        const title = try std.fmt.bufPrint(
+                            buf,
+                            "{s}{s}",
+                            .{ name[0 .. buf.len - suffix.len], suffix },
+                        );
+                        try ctx.setTitle(title);
+                    }
                     return ctx.consumeAndRedraw();
                 }
             },
@@ -1488,7 +1518,7 @@ pub const Client = struct {
         );
     }
 
-    pub fn getOrCreateChannel(self: *Client, name: []const u8) !*Channel {
+    pub fn getOrCreateChannel(self: *Client, name: []const u8) Allocator.Error!*Channel {
         for (self.channels.items) |channel| {
             if (caseFold(name, channel.name)) return channel;
         }
@@ -1502,7 +1532,7 @@ pub const Client = struct {
 
     var color_indices = [_]u8{ 1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14 };
 
-    pub fn getOrCreateUser(self: *Client, nick: []const u8) !*User {
+    pub fn getOrCreateUser(self: *Client, nick: []const u8) Allocator.Error!*User {
         return self.users.get(nick) orelse {
             const color_u32 = std.hash.Fnv1a_32.hash(nick);
             const index = color_u32 % color_indices.len;
