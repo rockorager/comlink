@@ -273,18 +273,7 @@ pub const App = struct {
         const self: *const App = @ptrCast(@alignCast(ptr));
         var i: usize = 0;
         for (self.clients.items) |client| {
-            if (i == idx and i == cursor) {
-                return .{
-                    .userdata = client,
-                    .drawFn = irc.Client.drawNameSelected,
-                };
-            }
-            if (i == idx) {
-                return .{
-                    .userdata = client,
-                    .drawFn = irc.Client.drawName,
-                };
-            }
+            if (i == idx) return client.nameWidget(i == cursor);
             i += 1;
             for (client.channels.items) |channel| {
                 if (i == idx) return channel.nameWidget(i == cursor);
@@ -1173,6 +1162,36 @@ pub const App = struct {
             }
         }
         return null;
+    }
+
+    pub fn selectBuffer(self: *App, buffer: irc.Buffer) void {
+        var i: u32 = 0;
+        switch (buffer) {
+            .client => |target| {
+                for (self.clients.items) |client| {
+                    if (client == target) {
+                        self.buffer_list.cursor = i;
+                        self.buffer_list.ensureScroll();
+                        return;
+                    }
+                    i += 1;
+                    for (client.channels.items) |_| i += 1;
+                }
+            },
+            .channel => |target| {
+                for (self.clients.items) |client| {
+                    i += 1;
+                    for (client.channels.items) |channel| {
+                        if (channel == target) {
+                            self.buffer_list.cursor = i;
+                            self.buffer_list.ensureScroll();
+                            return;
+                        }
+                        i += 1;
+                    }
+                }
+            },
+        }
     }
 
     fn draw(self: *App, input: *TextInput) !void {
