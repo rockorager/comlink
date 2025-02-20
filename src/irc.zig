@@ -184,8 +184,12 @@ pub const Channel = struct {
     fn typeErasedEventHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
         const self: *Channel = @ptrCast(@alignCast(ptr));
         switch (event) {
-            .mouse => {
+            .mouse => |mouse| {
                 try ctx.setMouseShape(.pointer);
+                if (mouse.type == .press and mouse.button == .left) {
+                    self.client.app.selectBuffer(.{ .channel = self });
+                    return ctx.consumeAndRedraw();
+                }
             },
             .mouse_enter => {
                 try ctx.setMouseShape(.pointer);
@@ -200,15 +204,13 @@ pub const Channel = struct {
     }
 
     pub fn drawName(self: *Channel, ctx: vxfw.DrawContext, selected: bool) Allocator.Error!vxfw.Surface {
-        const style: vaxis.Style = if (selected)
-            .{ .reverse = true }
-        else if (self.has_mouse)
-            .{ .bg = .{ .index = 8 } }
-        else
-            .{};
+        var style: vaxis.Style = .{};
+        if (selected) style.reverse = true;
+        if (self.has_mouse) style.bg = .{ .index = 8 };
+
         const text: vxfw.RichText = .{
             .text = &.{
-                .{ .text = "  ", .style = style },
+                .{ .text = "  " },
                 .{ .text = self.name, .style = style },
             },
             .softwrap = false,
@@ -566,6 +568,8 @@ pub const Client = struct {
     fifo: std.fifo.LinearFifo(Event, .Dynamic),
     fifo_mutex: std.Thread.Mutex,
 
+    has_mouse: bool,
+
     pub fn init(
         alloc: std.mem.Allocator,
         app: *comlink.App,
@@ -585,6 +589,7 @@ pub const Client = struct {
             .redraw = std.atomic.Value(bool).init(false),
             .fifo = std.fifo.LinearFifo(Event, .Dynamic).init(alloc),
             .fifo_mutex = .{},
+            .has_mouse = false,
         };
     }
 
@@ -627,23 +632,66 @@ pub const Client = struct {
         self.fifo.deinit();
     }
 
-    pub fn drawName(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
-        const self: *Client = @ptrCast(@alignCast(ptr));
-        const text: vxfw.Text = .{
-            .text = self.config.name orelse self.config.server,
-            .softwrap = false,
+    pub fn nameWidget(self: *Client, selected: bool) vxfw.Widget {
+        return .{
+            .userdata = self,
+            .eventHandler = Client.typeErasedEventHandler,
+            .drawFn = if (selected)
+                Client.typeErasedDrawNameSelected
+            else
+                Client.typeErasedDrawName,
         };
-        return text.draw(ctx);
     }
 
-    pub fn drawNameSelected(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
-        const self: *Client = @ptrCast(@alignCast(ptr));
-        const text: vxfw.Text = .{
-            .text = self.config.name orelse self.config.server,
+    pub fn drawName(self: *Client, ctx: vxfw.DrawContext, selected: bool) Allocator.Error!vxfw.Surface {
+        var style: vaxis.Style = .{};
+        if (selected) style.reverse = true;
+        if (self.has_mouse) style.bg = .{ .index = 8 };
+
+        const name = self.config.name orelse self.config.server;
+
+        const text: vxfw.RichText = .{
+            .text = &.{
+                .{ .text = name, .style = style },
+            },
             .softwrap = false,
-            .style = .{ .reverse = true },
         };
-        return text.draw(ctx);
+        var surface = try text.draw(ctx);
+        // Replace the widget reference so we can handle the events
+        surface.widget = self.nameWidget(selected);
+        return surface;
+    }
+
+    fn typeErasedDrawName(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        const self: *Client = @ptrCast(@alignCast(ptr));
+        return self.drawName(ctx, false);
+    }
+
+    fn typeErasedDrawNameSelected(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        const self: *Client = @ptrCast(@alignCast(ptr));
+        return self.drawName(ctx, true);
+    }
+
+    fn typeErasedEventHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
+        const self: *Client = @ptrCast(@alignCast(ptr));
+        switch (event) {
+            .mouse => |mouse| {
+                try ctx.setMouseShape(.pointer);
+                if (mouse.type == .press and mouse.button == .left) {
+                    self.app.selectBuffer(.{ .client = self });
+                    return ctx.consumeAndRedraw();
+                }
+            },
+            .mouse_enter => {
+                try ctx.setMouseShape(.pointer);
+                self.has_mouse = true;
+            },
+            .mouse_leave => {
+                try ctx.setMouseShape(.default);
+                self.has_mouse = false;
+            },
+            else => {},
+        }
     }
 
     pub fn drainFifo(self: *Client, ctx: *vxfw.EventContext) void {
