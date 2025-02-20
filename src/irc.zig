@@ -119,6 +119,11 @@ pub const Channel = struct {
 
     has_mouse: bool = false,
 
+    view: vxfw.SplitView,
+    message_view: vxfw.ListView,
+    member_view: vxfw.ListView,
+    text_field: vxfw.TextField,
+
     pub const Member = struct {
         user: *User,
 
@@ -133,9 +138,66 @@ pub const Channel = struct {
             else
                 std.ascii.orderIgnoreCase(lhs.user.nick, rhs.user.nick).compare(.lt);
         }
+
+        pub fn widget(self: *Member) vxfw.Widget {
+            return .{
+                .userdata = self,
+                .drawFn = Member.draw,
+            };
+        }
+
+        pub fn draw(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+            const self: *Member = @ptrCast(@alignCast(ptr));
+            const style: vaxis.Style = if (self.user.away)
+                .{ .dim = true }
+            else
+                .{ .fg = self.user.color };
+            var prefix = try ctx.arena.alloc(u8, 1);
+            prefix[0] = self.prefix;
+            const text: vxfw.RichText = .{
+                .text = &.{
+                    .{ .text = prefix, .style = style },
+                    .{ .text = self.user.nick, .style = style },
+                },
+                .softwrap = false,
+            };
+            return text.draw(ctx);
+        }
     };
 
-    pub fn deinit(self: *const Channel, alloc: std.mem.Allocator) void {
+    pub fn init(
+        self: *Channel,
+        gpa: Allocator,
+        client: *Client,
+        name: []const u8,
+        unicode: *const vaxis.Unicode,
+    ) Allocator.Error!void {
+        self.* = .{
+            .name = try gpa.dupe(u8, name),
+            .members = std.ArrayList(Channel.Member).init(gpa),
+            .messages = std.ArrayList(Message).init(gpa),
+            .client = client,
+            .view = .{
+                .lhs = self.contentWidget(),
+                .rhs = self.member_view.widget(),
+                .width = 16,
+                .constrain = .rhs,
+            },
+            .message_view = .{ .children = .{ .slice = &.{} } },
+            .member_view = .{
+                .children = .{
+                    .builder = .{
+                        .userdata = self,
+                        .buildFn = Channel.buildMemberList,
+                    },
+                },
+                .draw_cursor = false,
+            },
+            .text_field = vxfw.TextField.init(gpa, unicode),
+        };
+    }
+
+    pub fn deinit(self: *Channel, alloc: std.mem.Allocator) void {
         alloc.free(self.name);
         self.members.deinit();
         if (self.topic) |topic| {
@@ -145,6 +207,7 @@ pub const Channel = struct {
             alloc.free(msg.bytes);
         }
         self.messages.deinit();
+        self.text_field.deinit();
     }
 
     pub fn compare(_: void, lhs: *Channel, rhs: *Channel) bool {
@@ -188,6 +251,7 @@ pub const Channel = struct {
                 try ctx.setMouseShape(.pointer);
                 if (mouse.type == .press and mouse.button == .left) {
                     self.client.app.selectBuffer(.{ .channel = self });
+                    try ctx.requestFocus(self.text_field.widget());
                     return ctx.consumeAndRedraw();
                 }
             },
@@ -283,6 +347,72 @@ pub const Channel = struct {
                 time_tag,
             },
         );
+    }
+
+    pub fn contentWidget(self: *Channel) vxfw.Widget {
+        return .{
+            .userdata = self,
+            .drawFn = Channel.typeErasedViewDraw,
+        };
+    }
+
+    fn typeErasedViewDraw(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        const self: *Channel = @ptrCast(@alignCast(ptr));
+
+        const max = ctx.max.size();
+        var children = std.ArrayList(vxfw.SubSurface).init(ctx.arena);
+
+        {
+            // Draw the topic
+            const topic: vxfw.Text = .{
+                .text = self.topic orelse "",
+                .softwrap = false,
+            };
+
+            const topic_sub: vxfw.SubSurface = .{
+                .origin = .{ .col = 0, .row = 0 },
+                .surface = try topic.draw(ctx),
+            };
+
+            try children.append(topic_sub);
+
+            // Draw a border below the topic
+            const bot = "─";
+            var writer = try std.ArrayList(u8).initCapacity(ctx.arena, bot.len * max.width);
+            try writer.writer().writeBytesNTimes(bot, max.width);
+
+            const border: vxfw.Text = .{
+                .text = writer.items,
+                .softwrap = false,
+            };
+
+            const topic_border: vxfw.SubSurface = .{
+                .origin = .{ .col = 0, .row = 1 },
+                .surface = try border.draw(ctx),
+            };
+            try children.append(topic_border);
+        }
+
+        // Draw the text field
+        try children.append(.{
+            .origin = .{ .col = 0, .row = max.height - 1 },
+            .surface = try self.text_field.draw(ctx),
+        });
+
+        return .{
+            .size = max,
+            .widget = self.contentWidget(),
+            .buffer = &.{},
+            .children = children.items,
+        };
+    }
+
+    fn buildMemberList(ptr: *const anyopaque, idx: usize, _: usize) ?vxfw.Widget {
+        const self: *const Channel = @ptrCast(@alignCast(ptr));
+        if (idx < self.members.items.len) {
+            return self.members.items[idx].widget();
+        }
+        return null;
     }
 };
 
@@ -630,6 +760,19 @@ pub const Client = struct {
         }
         batches.deinit();
         self.fifo.deinit();
+    }
+
+    pub fn view(self: *Client) vxfw.Widget {
+        return .{
+            .userdata = self,
+            .drawFn = Client.typeErasedViewDraw,
+        };
+    }
+
+    fn typeErasedViewDraw(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        _ = ptr;
+        const text: vxfw.Text = .{ .text = "content" };
+        return text.draw(ctx);
     }
 
     pub fn nameWidget(self: *Client, selected: bool) vxfw.Widget {
@@ -1350,12 +1493,7 @@ pub const Client = struct {
             if (caseFold(name, channel.name)) return channel;
         }
         const channel = try self.alloc.create(Channel);
-        channel.* = .{
-            .name = try self.alloc.dupe(u8, name),
-            .members = std.ArrayList(Channel.Member).init(self.alloc),
-            .messages = std.ArrayList(Message).init(self.alloc),
-            .client = self,
-        };
+        try channel.init(self.alloc, self, name, self.app.unicode);
         try self.channels.append(channel);
 
         std.sort.insertion(*Channel, self.channels.items, {}, Channel.compare);

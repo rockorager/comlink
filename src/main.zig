@@ -89,7 +89,7 @@ pub fn main() !void {
     // defer app.deinit();
 
     var comlink_app: comlink.App = undefined;
-    try comlink_app.init(gpa.allocator());
+    try comlink_app.init(gpa.allocator(), &app.vx.unicode);
     defer comlink_app.deinit();
 
     try app.run(comlink_app.widget(), .{});

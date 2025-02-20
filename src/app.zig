@@ -83,12 +83,14 @@ pub const App = struct {
     write_queue: comlink.WriteQueue,
     write_thread: std.Thread,
 
-    lhs: vxfw.SplitView,
-    rhs: vxfw.SplitView,
+    view: vxfw.SplitView,
     buffer_list: vxfw.ListView,
+    unicode: *const vaxis.Unicode,
+
+    const default_rhs: vxfw.Text = .{ .text = "TODO: update this text" };
 
     /// initialize vaxis, lua state
-    pub fn init(self: *App, gpa: std.mem.Allocator) !void {
+    pub fn init(self: *App, gpa: std.mem.Allocator, unicode: *const vaxis.Unicode) !void {
         self.* = .{
             .alloc = gpa,
             .state = .{},
@@ -100,16 +102,10 @@ pub const App = struct {
             .lua = undefined,
             .write_queue = .{},
             .write_thread = undefined,
-            .lhs = .{
+            .view = .{
                 .width = self.state.buffers.width,
                 .lhs = self.buffer_list.widget(),
-                .rhs = self.rhs.widget(),
-            },
-            .rhs = .{
-                .width = self.state.members.width,
-                .constrain = .rhs,
-                .lhs = self.contentWidget(),
-                .rhs = self.memberWidget(),
+                .rhs = default_rhs.widget(),
             },
             .explicit_join = false,
             .bundle = .{},
@@ -125,6 +121,7 @@ pub const App = struct {
                 },
                 .draw_cursor = false,
             },
+            .unicode = unicode,
         };
 
         self.lua = try Lua.init(&self.alloc);
@@ -233,6 +230,12 @@ pub const App = struct {
 
     fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
         const self: *App = @ptrCast(@alignCast(ptr));
+        if (self.selectedBuffer()) |buffer| {
+            switch (buffer) {
+                .client => |client| self.view.rhs = client.view(),
+                .channel => |channel| self.view.rhs = channel.view.widget(),
+            }
+        } else self.view.rhs = default_rhs.widget();
 
         var children = std.ArrayList(vxfw.SubSurface).init(ctx.arena);
         _ = &children;
@@ -248,7 +251,7 @@ pub const App = struct {
 
         const sub: vxfw.SubSurface = .{
             .origin = .{ .col = 0, .row = 0 },
-            .surface = try self.lhs.widget().draw(ctx),
+            .surface = try self.view.widget().draw(ctx),
         };
         try children.append(sub);
 
@@ -257,15 +260,6 @@ pub const App = struct {
             .widget = self.widget(),
             .buffer = &.{},
             .children = children.items,
-        };
-    }
-
-    fn bufferWidget(self: *App) vxfw.Widget {
-        return .{
-            .userdata = self,
-            .captureHandler = null,
-            .eventHandler = null,
-            .drawFn = App.typeErasedBufferDrawFn,
         };
     }
 
@@ -281,13 +275,6 @@ pub const App = struct {
             }
         }
         return null;
-    }
-
-    fn typeErasedBufferDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
-        const self: *App = @ptrCast(@alignCast(ptr));
-        _ = self;
-        const text: vxfw.Text = .{ .text = "buffers" };
-        return text.draw(ctx);
     }
 
     fn contentWidget(self: *App) vxfw.Widget {
@@ -1154,10 +1141,10 @@ pub const App = struct {
     pub fn selectedBuffer(self: *App) ?irc.Buffer {
         var i: usize = 0;
         for (self.clients.items) |client| {
-            if (i == self.state.buffers.selected_idx) return .{ .client = client };
+            if (i == self.buffer_list.cursor) return .{ .client = client };
             i += 1;
             for (client.channels.items) |channel| {
-                if (i == self.state.buffers.selected_idx) return .{ .channel = channel };
+                if (i == self.buffer_list.cursor) return .{ .channel = channel };
                 i += 1;
             }
         }
