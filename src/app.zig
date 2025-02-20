@@ -287,18 +287,7 @@ pub const App = struct {
             }
             i += 1;
             for (client.channels.items) |channel| {
-                if (i == idx and i == cursor) {
-                    return .{
-                        .userdata = channel,
-                        .drawFn = irc.Channel.drawNameSelected,
-                    };
-                }
-                if (i == idx) {
-                    return .{
-                        .userdata = channel,
-                        .drawFn = irc.Channel.drawName,
-                    };
-                }
+                if (i == idx) return channel.nameWidget(i == cursor);
                 i += 1;
             }
         }
