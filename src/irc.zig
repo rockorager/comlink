@@ -526,7 +526,10 @@ pub const Channel = struct {
 
     fn drawMessageView(self: *Channel, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
         const max = ctx.max.size();
-        if (max.width == 0 or max.height == 0) {
+        if (max.width == 0 or
+            max.height == 0 or
+            self.messages.items.len == 0)
+        {
             return .{
                 .size = max,
                 .widget = self.messageViewWidget(),
@@ -539,17 +542,67 @@ pub const Channel = struct {
 
         // Row is the row we are printing on. We add the offset to achieve our scroll location
         var row: i17 = max.height + self.scroll.offset;
-
+        // Message offset
         const offset = self.scroll.msg_offset orelse self.messages.items.len;
-
-        var iter = std.mem.reverseIterator(self.messages.items[0..offset]);
+        // Timezone ref
+        // Gutter (left side where time is printed) width
         const gutter_width = 6;
+
+        const messages = self.messages.items[0..offset];
+        var iter = std.mem.reverseIterator(messages);
+
+        var sender: []const u8 = "";
+        var maybe_instant: ?zeit.Instant = null;
+
+        {
+            assert(messages.len > 0);
+            // Initialize sender and maybe_instant to the last message values
+            const last_msg = iter.next() orelse unreachable;
+            // Reset iter index
+            iter.index += 1;
+            sender = last_msg.senderNick() orelse "";
+            maybe_instant = last_msg.localTime(&self.client.app.tz);
+        }
+
         while (iter.next()) |msg| {
             // Break if we have gone past the top of the screen
             if (row < 0) break;
 
+            // Get the sender nickname of the *next* message. Next meaning next message in the
+            // iterator, which is chronologically the previous message since we are printing in
+            // reverse
+            const next_sender: []const u8 = blk: {
+                const next_msg = iter.next() orelse break :blk "";
+                // Fix the index of the iterator
+                iter.index += 1;
+                break :blk next_msg.senderNick() orelse "";
+            };
+
+            // Get the server time for the *next* message. We'll use this to decide printing of
+            // username and time
+            const maybe_next_instant: ?zeit.Instant = blk: {
+                const next_msg = iter.next() orelse break :blk null;
+                // Fix the index of the iterator
+                iter.index += 1;
+                break :blk next_msg.localTime(&self.client.app.tz);
+            };
+
+            defer {
+                // After this loop, we want to save these values for the next iteration
+                maybe_instant = maybe_next_instant;
+                sender = next_sender;
+            }
+
+            // Message content
+            const content: []const u8 = blk: {
+                var param_iter = msg.paramIterator();
+                // First param is the target, we don't need it
+                _ = param_iter.next() orelse unreachable;
+                break :blk param_iter.next() orelse "";
+            };
+
             // Draw the message so we have it's wrapped height
-            const text: vxfw.Text = .{ .text = msg.bytes };
+            const text: vxfw.Text = .{ .text = content };
             const child_ctx = ctx.withConstraints(
                 .{ .height = 0, .width = 0 },
                 .{ .width = max.width -| gutter_width, .height = null },
@@ -564,22 +617,76 @@ pub const Channel = struct {
             });
 
             // If we have a time, print it in the gutter
-            if (msg.localTime(&self.client.app.tz)) |instant| {
-                const time = instant.time();
-                const buf = try std.fmt.allocPrint(
-                    ctx.arena,
-                    "{d:0>2}:{d:0>2}",
-                    .{ time.hour, time.minute },
-                );
+            if (maybe_instant) |instant| {
+                var style: vaxis.Style = .{ .dim = true };
+
+                // The time text we will print
+                const buf: []const u8 = blk: {
+                    const time = instant.time();
+                    // Check our next time. If *this* message occurs on a different day, we want to
+                    // print the date
+                    if (maybe_next_instant) |next_instant| {
+                        const next_time = next_instant.time();
+                        if (time.day != next_time.day) {
+                            style = .{};
+                            break :blk try std.fmt.allocPrint(
+                                ctx.arena,
+                                "{d:0>2}/{d:0>2}",
+                                .{ @intFromEnum(time.month), time.day },
+                            );
+                        }
+                    }
+
+                    // if it is the first message, we also want to print the date
+                    if (iter.index == 0) {
+                        style = .{};
+                        break :blk try std.fmt.allocPrint(
+                            ctx.arena,
+                            "{d:0>2}/{d:0>2}",
+                            .{ @intFromEnum(time.month), time.day },
+                        );
+                    }
+
+                    // Otherwise, we print clock time
+                    break :blk try std.fmt.allocPrint(
+                        ctx.arena,
+                        "{d:0>2}:{d:0>2}",
+                        .{ time.hour, time.minute },
+                    );
+                };
+
                 const time_text: vxfw.Text = .{
                     .text = buf,
-                    .style = .{ .dim = true },
+                    .style = style,
                     .softwrap = false,
                 };
                 try children.append(.{
                     .origin = .{ .row = row, .col = 0 },
                     .surface = try time_text.draw(child_ctx),
                 });
+
+                // Check if we need to print the sender of this message. We do this when the timegap
+                // between this message and next message is > 5 minutes, or if the sender is
+                // different
+                if (sender.len > 0 and
+                    printSender(sender, next_sender, maybe_instant, maybe_next_instant))
+                {
+                    // Back up one row to print
+                    row -= 1;
+                    // If we need to print the sender, it will be *this* messages sender
+                    const user = try self.client.getOrCreateUser(sender);
+                    const sender_text: vxfw.Text = .{
+                        .text = user.nick,
+                        .style = .{ .fg = user.color, .bold = true },
+                    };
+                    try children.append(.{
+                        .origin = .{ .row = row, .col = gutter_width },
+                        .surface = try sender_text.draw(child_ctx),
+                    });
+
+                    // Back up 1 more row for spacing
+                    row -= 1;
+                }
             }
         }
 
@@ -597,6 +704,28 @@ pub const Channel = struct {
             return self.members.items[idx].widget();
         }
         return null;
+    }
+
+    // Helper function which tells us if we should print the sender of a message, based on he
+    // current message sender and time, and the (chronologically) previous message sent
+    fn printSender(
+        a_sender: []const u8,
+        b_sender: []const u8,
+        a_instant: ?zeit.Instant,
+        b_instant: ?zeit.Instant,
+    ) bool {
+        // If sender is different, we always print the sender
+        if (!std.mem.eql(u8, a_sender, b_sender)) return true;
+
+        if (a_instant != null and b_instant != null) {
+            const a_ts = a_instant.?.timestamp_ns;
+            const b_ts = b_instant.?.timestamp_ns;
+            const delta: i64 = @intCast(a_ts - b_ts);
+            return @abs(delta) > (5 * std.time.ns_per_min);
+        }
+
+        // In any other case, we
+        return false;
     }
 };
 
@@ -815,6 +944,14 @@ pub const Message = struct {
         const rhs_time = rhs.time() orelse return false;
 
         return lhs_time.timestamp_ns < rhs_time.timestamp_ns;
+    }
+
+    /// Returns the NICK of the sender of the message
+    pub fn senderNick(self: Message) ?[]const u8 {
+        const src = self.source() orelse return null;
+        if (std.mem.indexOfScalar(u8, src, '!')) |idx| return src[0..idx];
+        if (std.mem.indexOfScalar(u8, src, '@')) |idx| return src[0..idx];
+        return src;
     }
 };
 
