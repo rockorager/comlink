@@ -135,6 +135,14 @@ pub const Channel = struct {
         pending: i16 = 0,
     } = .{},
 
+    message_view: struct {
+        mouse: ?vaxis.Mouse = null,
+        hovered_message: ?Message = null,
+    } = .{},
+
+    // Gutter (left side where time is printed) width
+    const gutter_width = 6;
+
     pub const Member = struct {
         user: *User,
 
@@ -447,6 +455,37 @@ pub const Channel = struct {
         const self: *Channel = @ptrCast(@alignCast(ptr));
         switch (event) {
             .mouse => |mouse| {
+                if (self.message_view.mouse) |last_mouse| {
+                    // We need to redraw if the column entered the gutter
+                    if (last_mouse.col >= gutter_width and mouse.col < gutter_width)
+                        ctx.redraw = true
+                        // Or if the column exited the gutter
+                    else if (last_mouse.col < gutter_width and mouse.col >= gutter_width)
+                        ctx.redraw = true
+                        // Or if the row changed
+                    else if (last_mouse.row != mouse.row)
+                        ctx.redraw = true
+                        // Or if we did a middle click, and now released it
+                    else if (last_mouse.button == .middle)
+                        ctx.redraw = true;
+                }
+
+                // Save this mouse state for when we draw
+                self.message_view.mouse = mouse;
+
+                if (mouse.type == .press and
+                    mouse.button == .middle and
+                    self.message_view.hovered_message != null)
+                {
+                    const msg = self.message_view.hovered_message orelse unreachable;
+                    var iter = msg.paramIterator();
+                    // Skip the target
+                    _ = iter.next() orelse unreachable;
+                    // Get the content
+                    const content = iter.next() orelse unreachable;
+                    try ctx.copyToClipboard(content);
+                    return ctx.consumeAndRedraw();
+                }
                 if (mouse.button == .wheel_down) {
                     self.scroll.pending -|= 3;
                     ctx.consume_event = true;
@@ -458,6 +497,11 @@ pub const Channel = struct {
                 if (self.scroll.pending != 0) {
                     return self.doScroll(ctx);
                 }
+            },
+            .mouse_leave => {
+                self.message_view.mouse = null;
+                self.message_view.hovered_message = null;
+                ctx.redraw = true;
             },
             .tick => try self.doScroll(ctx),
             else => {},
@@ -544,9 +588,6 @@ pub const Channel = struct {
         var row: i17 = max.height + self.scroll.offset;
         // Message offset
         const offset = self.scroll.msg_offset orelse self.messages.items.len;
-        // Timezone ref
-        // Gutter (left side where time is printed) width
-        const gutter_width = 6;
 
         const messages = self.messages.items[0..offset];
         var iter = std.mem.reverseIterator(messages);
@@ -604,10 +645,46 @@ pub const Channel = struct {
             // Draw the message so we have it's wrapped height
             const text: vxfw.Text = .{ .text = content };
             const child_ctx = ctx.withConstraints(
-                .{ .height = 0, .width = 0 },
+                .{ .width = 0, .height = 0 },
                 .{ .width = max.width -| gutter_width, .height = null },
             );
             const surface = try text.draw(child_ctx);
+
+            // See if our message contains the mouse. We'll highlight it if it does
+            const message_has_mouse: bool = blk: {
+                const mouse = self.message_view.mouse orelse break :blk false;
+                break :blk mouse.col >= gutter_width and
+                    mouse.row < row and
+                    mouse.row >= row - surface.size.height;
+            };
+
+            if (message_has_mouse) {
+                const last_mouse = self.message_view.mouse orelse unreachable;
+                // If we had a middle click, we highlight yellow to indicate we copied the text
+                const bg: vaxis.Color = if (last_mouse.button == .middle and last_mouse.type == .press)
+                    .{ .index = 3 }
+                else
+                    .{ .index = 8 };
+                // Set the style for the entire message
+                for (surface.buffer) |*cell| {
+                    cell.style.bg = bg;
+                }
+                // Create a surface to highlight the entire area under the message
+                const hl_surface = try vxfw.Surface.init(
+                    ctx.arena,
+                    text.widget(),
+                    .{ .width = max.width -| gutter_width, .height = surface.size.height },
+                );
+                const base: vaxis.Cell = .{ .style = .{ .bg = bg } };
+                @memset(hl_surface.buffer, base);
+
+                try children.append(.{
+                    .origin = .{ .row = row - surface.size.height, .col = gutter_width },
+                    .surface = hl_surface,
+                });
+
+                self.message_view.hovered_message = msg;
+            }
 
             // Adjust the row we print on for the wrapped height of this message
             row -= surface.size.height;
