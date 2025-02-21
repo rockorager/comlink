@@ -409,11 +409,85 @@ pub const Channel = struct {
             try children.append(topic_border);
         }
 
+        const msg_view_ctx = ctx.withConstraints(.{ .height = 0, .width = 0 }, .{
+            .height = max.height - 4,
+            .width = max.width,
+        });
+        const message_view = try self.drawMessageView(msg_view_ctx);
+        try children.append(.{
+            .origin = .{ .row = 2, .col = 0 },
+            .surface = message_view,
+        });
+
         // Draw the text field
         try children.append(.{
             .origin = .{ .col = 0, .row = max.height - 1 },
             .surface = try self.text_field.draw(ctx),
         });
+
+        return .{
+            .size = max,
+            .widget = self.contentWidget(),
+            .buffer = &.{},
+            .children = children.items,
+        };
+    }
+
+    fn drawMessageView(self: *Channel, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        const max = ctx.max.size();
+        if (max.width == 0 or max.height == 0) {
+            return .{
+                .size = max,
+                .widget = self.contentWidget(),
+                .buffer = &.{},
+                .children = &.{},
+            };
+        }
+
+        var children = std.ArrayList(vxfw.SubSurface).init(ctx.arena);
+
+        // Row is the row we are printing on.
+        var row: i17 = max.height;
+        var iter = std.mem.reverseIterator(self.messages.items);
+        const gutter_width = 6;
+        while (iter.next()) |msg| {
+            // Break if we have gone past the top of the screen
+            if (row < 0) break;
+
+            // Draw the message so we have it's wrapped height
+            const text: vxfw.Text = .{ .text = msg.bytes };
+            const child_ctx = ctx.withConstraints(
+                .{ .height = 0, .width = 0 },
+                .{ .width = max.width - gutter_width, .height = null },
+            );
+            const surface = try text.draw(child_ctx);
+
+            // Adjust the row we print on for the wrapped height of this message
+            row -= surface.size.height;
+            try children.append(.{
+                .origin = .{ .row = row, .col = gutter_width },
+                .surface = surface,
+            });
+
+            // If we have a time, print it in the gutter
+            if (msg.localTime(&self.client.app.tz)) |instant| {
+                const time = instant.time();
+                const buf = try std.fmt.allocPrint(
+                    ctx.arena,
+                    "{d:0>2}:{d:0>2}",
+                    .{ time.hour, time.minute },
+                );
+                const time_text: vxfw.Text = .{
+                    .text = buf,
+                    .style = .{ .dim = true },
+                    .softwrap = false,
+                };
+                try children.append(.{
+                    .origin = .{ .row = row, .col = 0 },
+                    .surface = try time_text.draw(child_ctx),
+                });
+            }
+        }
 
         return .{
             .size = max,
