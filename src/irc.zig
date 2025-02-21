@@ -120,9 +120,20 @@ pub const Channel = struct {
     has_mouse: bool = false,
 
     view: vxfw.SplitView,
-    message_view: vxfw.ListView,
     member_view: vxfw.ListView,
     text_field: vxfw.TextField,
+
+    scroll: struct {
+        /// Line offset from the bottom message
+        offset: u16 = 0,
+        /// Message offset into the list of messages. We use this to lock the viewport if we have a
+        /// scroll. Otherwise, when offset == 0 this is effectively ignored (and should be 0)
+        msg_offset: u32 = 0,
+
+        /// Pending scroll we have to handle while drawing. This could be up or down. By convention
+        /// we say positive is a scroll up.
+        pending: i17 = 0,
+    } = .{},
 
     pub const Member = struct {
         user: *User,
@@ -183,7 +194,6 @@ pub const Channel = struct {
                 .width = 16,
                 .constrain = .rhs,
             },
-            .message_view = .{ .children = .{ .slice = &.{} } },
             .member_view = .{
                 .children = .{
                     .builder = .{
@@ -433,12 +443,82 @@ pub const Channel = struct {
         };
     }
 
+    fn handleMessageViewEvent(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
+        const self: *Channel = @ptrCast(@alignCast(ptr));
+        switch (event) {
+            .mouse => |mouse| {
+                if (mouse.button == .wheel_down) {
+                    self.scroll.pending -|= 3;
+                    ctx.consume_event = true;
+                }
+                if (mouse.button == .wheel_up) {
+                    self.scroll.pending +|= 3;
+                    ctx.consume_event = true;
+                }
+                if (self.scroll.pending != 0) {
+                    return self.doScroll(ctx);
+                }
+            },
+            .tick => try self.doScroll(ctx),
+            else => {},
+        }
+    }
+
+    /// Consumes any pending scrolls and schedules another tick if needed
+    fn doScroll(self: *Channel, ctx: *vxfw.EventContext) anyerror!void {
+        const animation_tick: u32 = 30;
+        // No pending scroll. Return early
+        if (self.scroll.pending == 0) return;
+
+        // Scroll up
+        if (self.scroll.pending > 0) {
+            // TODO: check if we need to get more history
+            // TODO: cehck if we are at oldest, and shouldn't scroll up anymore
+
+            // Consume 1 line, and schedule a tick
+            self.scroll.offset += 1;
+            self.scroll.pending -= 1;
+            ctx.redraw = true;
+            return ctx.tick(animation_tick, self.messageViewWidget());
+        }
+
+        // From here, we only scroll down. First, we check if we are at the bottom already. If we
+        // are, we have nothing to do
+        if (self.scroll.offset == 0) {
+            // Already at bottom. Nothing to do
+            self.scroll.pending = 0;
+            return;
+        }
+
+        // Scroll down
+        if (self.scroll.pending < 0) {
+            // Consume 1 line, and schedule a tick
+            self.scroll.offset -= 1;
+            self.scroll.pending += 1;
+            ctx.redraw = true;
+            return ctx.tick(animation_tick, self.messageViewWidget());
+        }
+    }
+
+    fn messageViewWidget(self: *Channel) vxfw.Widget {
+        return .{
+            .userdata = self,
+            .eventHandler = Channel.handleMessageViewEvent,
+            .drawFn = Channel.typeErasedDrawMessageView,
+        };
+    }
+
+    fn typeErasedDrawMessageView(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        const self: *Channel = @ptrCast(@alignCast(ptr));
+        return self.drawMessageView(ctx);
+    }
+
     fn drawMessageView(self: *Channel, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
         const max = ctx.max.size();
         if (max.width == 0 or max.height == 0) {
             return .{
                 .size = max,
-                .widget = self.contentWidget(),
+                .widget = self.messageViewWidget(),
                 .buffer = &.{},
                 .children = &.{},
             };
@@ -447,7 +527,7 @@ pub const Channel = struct {
         var children = std.ArrayList(vxfw.SubSurface).init(ctx.arena);
 
         // Row is the row we are printing on.
-        var row: i17 = max.height;
+        var row: i17 = max.height + self.scroll.offset;
         var iter = std.mem.reverseIterator(self.messages.items);
         const gutter_width = 6;
         while (iter.next()) |msg| {
@@ -458,7 +538,7 @@ pub const Channel = struct {
             const text: vxfw.Text = .{ .text = msg.bytes };
             const child_ctx = ctx.withConstraints(
                 .{ .height = 0, .width = 0 },
-                .{ .width = max.width - gutter_width, .height = null },
+                .{ .width = max.width -| gutter_width, .height = null },
             );
             const surface = try text.draw(child_ctx);
 
@@ -491,7 +571,7 @@ pub const Channel = struct {
 
         return .{
             .size = max,
-            .widget = self.contentWidget(),
+            .widget = self.messageViewWidget(),
             .buffer = &.{},
             .children = children.items,
         };
