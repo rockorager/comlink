@@ -128,11 +128,11 @@ pub const Channel = struct {
         offset: u16 = 0,
         /// Message offset into the list of messages. We use this to lock the viewport if we have a
         /// scroll. Otherwise, when offset == 0 this is effectively ignored (and should be 0)
-        msg_offset: u32 = 0,
+        msg_offset: ?u16 = null,
 
         /// Pending scroll we have to handle while drawing. This could be up or down. By convention
         /// we say positive is a scroll up.
-        pending: i17 = 0,
+        pending: i16 = 0,
     } = .{},
 
     pub const Member = struct {
@@ -466,6 +466,17 @@ pub const Channel = struct {
 
     /// Consumes any pending scrolls and schedules another tick if needed
     fn doScroll(self: *Channel, ctx: *vxfw.EventContext) anyerror!void {
+        defer {
+            // At the end of this function, we anchor our msg_offset if we have any amount of
+            // scroll. This prevents new messages from automatically scrolling us
+            if (self.scroll.offset > 0 and self.scroll.msg_offset == null) {
+                self.scroll.msg_offset = @intCast(self.messages.items.len);
+            }
+            // If we have no offset, we reset our anchor
+            if (self.scroll.offset == 0) {
+                self.scroll.msg_offset = null;
+            }
+        }
         const animation_tick: u32 = 30;
         // No pending scroll. Return early
         if (self.scroll.pending == 0) return;
@@ -526,9 +537,12 @@ pub const Channel = struct {
 
         var children = std.ArrayList(vxfw.SubSurface).init(ctx.arena);
 
-        // Row is the row we are printing on.
+        // Row is the row we are printing on. We add the offset to achieve our scroll location
         var row: i17 = max.height + self.scroll.offset;
-        var iter = std.mem.reverseIterator(self.messages.items);
+
+        const offset = self.scroll.msg_offset orelse self.messages.items.len;
+
+        var iter = std.mem.reverseIterator(self.messages.items[0..offset]);
         const gutter_width = 6;
         while (iter.next()) |msg| {
             // Break if we have gone past the top of the screen
