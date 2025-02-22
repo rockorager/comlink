@@ -4,6 +4,7 @@ const vaxis = @import("vaxis");
 const emoji = @import("emoji.zig");
 
 const irc = comlink.irc;
+const vxfw = vaxis.vxfw;
 const Command = comlink.Command;
 
 const Kind = enum {
@@ -13,34 +14,67 @@ const Kind = enum {
 };
 
 pub const Completer = struct {
+    const style: vaxis.Style = .{ .bg = .{ .index = 8 } };
+    const selected: vaxis.Style = .{ .bg = .{ .index = 8 }, .reverse = true };
+
     word: []const u8,
     start_idx: usize,
-    options: std.ArrayList([]const u8),
-    selected_idx: ?usize,
+    options: std.ArrayList(vxfw.Text),
     widest: ?usize,
     buf: [irc.maximum_message_size]u8 = undefined,
     kind: Kind = .nick,
+    list_view: vxfw.ListView,
+    selected: bool,
 
-    pub fn init(alloc: std.mem.Allocator, line: []const u8) !Completer {
-        const start_idx = if (std.mem.lastIndexOfScalar(u8, line, ' ')) |idx| idx + 1 else 0;
-        const last_word = line[start_idx..];
-        var completer: Completer = .{
-            .options = std.ArrayList([]const u8).init(alloc),
-            .start_idx = start_idx,
-            .word = last_word,
-            .selected_idx = null,
+    pub fn init(gpa: std.mem.Allocator) Completer {
+        return .{
+            .options = std.ArrayList(vxfw.Text).init(gpa),
+            .start_idx = 0,
+            .word = "",
             .widest = null,
+            .list_view = undefined,
+            .selected = false,
         };
-        @memcpy(completer.buf[0..line.len], line);
-        if (last_word.len > 0 and last_word[0] == '/') {
-            completer.kind = .command;
-            try completer.findCommandMatches();
+    }
+
+    fn getWidget(ptr: *const anyopaque, idx: usize, cursor: usize) ?vxfw.Widget {
+        const self: *Completer = @constCast(@ptrCast(@alignCast(ptr)));
+        if (idx < self.options.items.len) {
+            const item = &self.options.items[idx];
+            if (idx == cursor) {
+                item.style = selected;
+            } else {
+                item.style = style;
+            }
+            return item.widget();
         }
-        if (last_word.len > 0 and last_word[0] == ':') {
-            completer.kind = .emoji;
-            try completer.findEmojiMatches();
+        return null;
+    }
+
+    pub fn reset(self: *Completer, line: []const u8) !void {
+        self.list_view = .{
+            .children = .{ .builder = .{
+                .userdata = self,
+                .buildFn = Completer.getWidget,
+            } },
+            .draw_cursor = false,
+        };
+        self.start_idx = if (std.mem.lastIndexOfScalar(u8, line, ' ')) |idx| idx + 1 else 0;
+        self.word = line[self.start_idx..];
+        @memcpy(self.buf[0..line.len], line);
+        self.options.clearAndFree();
+        self.widest = null;
+        self.kind = .nick;
+        self.selected = false;
+
+        if (self.word.len > 0 and self.word[0] == '/') {
+            self.kind = .command;
+            try self.findCommandMatches();
         }
-        return completer;
+        if (self.word.len > 0 and self.word[0] == ':') {
+            self.kind = .emoji;
+            try self.findEmojiMatches();
+        }
     }
 
     pub fn deinit(self: *Completer) void {
@@ -50,33 +84,26 @@ pub const Completer = struct {
     /// cycles to the next option, returns the replacement text. Note that we
     /// start from the bottom, so a selected_idx = 0 means we are on _the last_
     /// item
-    pub fn next(self: *Completer) []const u8 {
+    pub fn next(self: *Completer, ctx: *vxfw.EventContext) []const u8 {
         if (self.options.items.len == 0) return "";
-        {
-            const last_idx = self.options.items.len - 1;
-            if (self.selected_idx == null or self.selected_idx.? == last_idx)
-                self.selected_idx = 0
-            else
-                self.selected_idx.? +|= 1;
+        if (self.selected) {
+            self.list_view.prevItem(ctx);
         }
+        self.selected = true;
         return self.replacementText();
     }
 
-    pub fn prev(self: *Completer) []const u8 {
+    pub fn prev(self: *Completer, ctx: *vxfw.EventContext) []const u8 {
         if (self.options.items.len == 0) return "";
-        {
-            const last_idx = self.options.items.len - 1;
-            if (self.selected_idx == null or self.selected_idx.? == 0)
-                self.selected_idx = last_idx
-            else
-                self.selected_idx.? -|= 1;
-        }
+        self.list_view.nextItem(ctx);
+        self.selected = true;
         return self.replacementText();
     }
 
     pub fn replacementText(self: *Completer) []const u8 {
-        if (self.selected_idx == null or self.options.items.len == 0) return "";
-        const replacement = self.options.items[self.options.items.len - 1 - self.selected_idx.?];
+        if (self.options.items.len == 0) return "";
+        const replacement_widget = self.options.items[self.list_view.cursor];
+        const replacement = replacement_widget.text;
         switch (self.kind) {
             .command => {
                 self.buf[0] = '/';
@@ -118,10 +145,13 @@ pub const Completer = struct {
             }
         }
         std.sort.insertion(irc.Channel.Member, members.items, chan, irc.Channel.compareRecentMessages);
-        self.options = try std.ArrayList([]const u8).initCapacity(alloc, members.items.len);
+        try self.options.ensureTotalCapacity(members.items.len);
         for (members.items) |member| {
-            try self.options.append(member.user.nick);
+            try self.options.append(.{ .text = member.user.nick });
         }
+        self.list_view.cursor = @intCast(self.options.items.len -| 1);
+        self.list_view.item_count = @intCast(self.options.items.len);
+        self.list_view.ensureScroll();
     }
 
     pub fn findCommandMatches(self: *Completer) !void {
@@ -130,15 +160,18 @@ pub const Completer = struct {
         for (commands) |cmd| {
             if (std.mem.eql(u8, cmd, "lua_function")) continue;
             if (std.ascii.startsWithIgnoreCase(cmd, self.word[1..])) {
-                try self.options.append(cmd);
+                try self.options.append(.{ .text = cmd });
             }
         }
         var iter = Command.user_commands.keyIterator();
         while (iter.next()) |cmd| {
             if (std.ascii.startsWithIgnoreCase(cmd.*, self.word[1..])) {
-                try self.options.append(cmd.*);
+                try self.options.append(.{ .text = cmd.* });
             }
         }
+        self.list_view.cursor = @intCast(self.options.items.len -| 1);
+        self.list_view.item_count = @intCast(self.options.items.len);
+        self.list_view.ensureScroll();
     }
 
     pub fn findEmojiMatches(self: *Completer) !void {
@@ -148,15 +181,18 @@ pub const Completer = struct {
 
         for (keys, values) |shortcode, glyph| {
             if (std.mem.indexOf(u8, shortcode, self.word[1..])) |_|
-                try self.options.append(glyph);
+                try self.options.append(.{ .text = glyph });
         }
+        self.list_view.cursor = @intCast(self.options.items.len -| 1);
+        self.list_view.item_count = @intCast(self.options.items.len);
+        self.list_view.ensureScroll();
     }
 
-    pub fn widestMatch(self: *Completer, win: vaxis.Window) usize {
+    pub fn widestMatch(self: *Completer, ctx: vxfw.DrawContext) usize {
         if (self.widest) |w| return w;
         var widest: usize = 0;
         for (self.options.items) |opt| {
-            const width = win.gwidth(opt);
+            const width = ctx.stringWidth(opt.text);
             if (width > widest) widest = width;
         }
         self.widest = widest;
