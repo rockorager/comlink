@@ -5,7 +5,8 @@ const vxfw = vaxis.vxfw;
 const Scrollbar = @This();
 
 /// character to use for the scrollbar
-character: vaxis.Cell.Character = .{ .grapheme = "▐", .width = 1 },
+const character: vaxis.Cell.Character = .{ .grapheme = "▐", .width = 1 };
+const empty: vaxis.Cell = .{ .char = character, .style = .{ .fg = .{ .index = 8 } } };
 
 /// style to draw the bar character with
 style: vaxis.Style = .{},
@@ -54,6 +55,8 @@ pub fn draw(self: *Scrollbar, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxf
     // don't draw when all items can be shown
     if (self.view_size >= self.total) return surface;
 
+    @memset(surface.buffer, empty);
+
     // (view_size / total) * window height = size of the scroll bar
     const bar_height = @max(std.math.divCeil(usize, self.view_size * max.height, self.total) catch unreachable, 1);
 
@@ -62,7 +65,7 @@ pub fn draw(self: *Scrollbar, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxf
 
     var i: usize = 0;
     while (i <= bar_height) : (i += 1)
-        surface.writeCell(0, @intCast(bar_bottom -| i), .{ .char = self.character, .style = self.style });
+        surface.writeCell(0, @intCast(bar_bottom -| i), .{ .char = character, .style = self.style });
 
     return surface;
 }
