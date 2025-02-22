@@ -6,6 +6,7 @@ const vaxis = @import("vaxis");
 const zeit = @import("zeit");
 const bytepool = @import("pool.zig");
 
+const Scrollbar = @import("Scrollbar.zig");
 const testing = std.testing;
 const mem = std.mem;
 const vxfw = vaxis.vxfw;
@@ -463,12 +464,30 @@ pub const Channel = struct {
 
         const msg_view_ctx = ctx.withConstraints(.{ .height = 0, .width = 0 }, .{
             .height = max.height - 4,
-            .width = max.width,
+            .width = max.width - 1,
         });
         const message_view = try self.drawMessageView(msg_view_ctx);
         try children.append(.{
             .origin = .{ .row = 2, .col = 0 },
             .surface = message_view,
+        });
+
+        const scrollbar_ctx = ctx.withConstraints(
+            ctx.min,
+            .{ .width = 1, .height = max.height - 4 },
+        );
+
+        var scrollbars: Scrollbar = .{
+            // Estimate number of lines per message
+            .total = @intCast(self.messages.items.len * 3),
+            .view_size = max.height - 4,
+            .bottom = self.scroll.offset,
+        };
+        const scrollbar_surface = try scrollbars.draw(scrollbar_ctx);
+        // Draw the text field
+        try children.append(.{
+            .origin = .{ .col = max.width - 1, .row = 2 },
+            .surface = scrollbar_surface,
         });
 
         // Draw the text field
