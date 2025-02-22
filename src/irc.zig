@@ -1326,6 +1326,7 @@ pub const Client = struct {
         var style: vaxis.Style = .{};
         if (selected) style.reverse = true;
         if (self.has_mouse) style.bg = .{ .index = 8 };
+        if (self.status == .disconnected) style.fg = .{ .index = 8 };
 
         const name = self.config.name orelse self.config.server;
 
