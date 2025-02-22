@@ -1967,6 +1967,8 @@ pub const Client = struct {
                     @memcpy(buffer.slice(), buf[i..idx]);
                     assert(std.mem.eql(u8, buf[idx .. idx + 2], "\r\n"));
                     log.debug("[<-{s}] {s}", .{ self.config.name orelse self.config.server, buffer.slice() });
+                    self.fifo_mutex.lock();
+                    defer self.fifo_mutex.unlock();
                     try self.fifo.writeItem(.{ .client = self, .msg = buffer });
                 }
                 if (i != n) {
