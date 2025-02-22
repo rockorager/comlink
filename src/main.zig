@@ -11,13 +11,6 @@ const log = std.log.scoped(.main);
 
 pub const panic = vaxis.panic_handler;
 
-// pub const std_options: std.Options = .{
-//     .log_scope_levels = &.{
-//         .{ .scope = .vaxis, .level = .warn },
-//         .{ .scope = .vaxis_parser, .level = .warn },
-//     },
-// };
-
 pub const version = options.version;
 
 /// Called after receiving a terminating signal
@@ -82,32 +75,11 @@ pub fn main() !void {
     var app = try vaxis.vxfw.App.init(gpa.allocator());
     defer app.deinit();
 
-    // const lua = try Lua.init(&alloc);
-    // defer lua.deinit();
-
-    // var app = try comlink.App.init(alloc);
-    // defer app.deinit();
-
     var comlink_app: comlink.App = undefined;
     try comlink_app.init(gpa.allocator(), &app.vx.unicode);
     defer comlink_app.deinit();
 
     try app.run(comlink_app.widget(), .{});
-
-    // app.run(lua) catch |err| {
-    //     switch (err) {
-    //         // ziglua errors
-    //         error.LuaError => {
-    //             const msg = lua.toString(-1) catch "";
-    //             const duped = alloc.dupe(u8, msg) catch "";
-    //             app.deinit();
-    //             defer alloc.free(duped);
-    //             log.err("{s}", .{duped});
-    //             return err;
-    //         },
-    //         else => return err,
-    //     }
-    // };
 }
 
 fn argMatch(maybe_short: ?[]const u8, maybe_long: ?[]const u8, arg: [:0]const u8) bool {

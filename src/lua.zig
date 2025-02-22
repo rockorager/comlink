@@ -92,15 +92,6 @@ fn getApp(lua: *Lua) *App {
     return app;
 }
 
-// /// retrieves the *Loop lightuserdata from the registry index
-// fn getLoop(lua: *Lua) *EventLoop {
-//     const lua_type = lua.getField(registry_index, loop_key); // [userdata]
-//     assert(lua_type == .light_userdata); // set by comlink as a lightuserdata
-//     const loop = lua.toUserdata(comlink.EventLoop, -1) catch unreachable; // already asserted
-//     // as lightuserdata
-//     return loop;
-// }
-
 fn getClient(lua: *Lua) *irc.Client {
     const lua_type = lua.getField(registry_index, client_key); // [userdata]
     assert(lua_type == .light_userdata); // set by comlink as a lightuserdata
