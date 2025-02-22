@@ -5,6 +5,7 @@ const tls = @import("tls");
 const vaxis = @import("vaxis");
 const zeit = @import("zeit");
 
+const Completer = @import("completer.zig").Completer;
 const Scrollbar = @import("Scrollbar.zig");
 const testing = std.testing;
 const mem = std.mem;
@@ -128,13 +129,16 @@ pub const Channel = struct {
 
         /// Pending scroll we have to handle while drawing. This could be up or down. By convention
         /// we say positive is a scroll up.
-        pending: i16 = 0,
+        pending: i17 = 0,
     } = .{},
 
     message_view: struct {
         mouse: ?vaxis.Mouse = null,
         hovered_message: ?Message = null,
     } = .{},
+
+    completer: Completer,
+    completer_shown: bool = false,
 
     // Gutter (left side where time is printed) width
     const gutter_width = 6;
@@ -144,6 +148,9 @@ pub const Channel = struct {
 
         /// Highest channel membership prefix (or empty space if no prefix)
         prefix: u8,
+
+        channel: *Channel,
+        has_mouse: bool = false,
 
         pub fn compare(_: void, lhs: Member, rhs: Member) bool {
             return if (lhs.prefix != ' ' and rhs.prefix == ' ')
@@ -157,16 +164,57 @@ pub const Channel = struct {
         pub fn widget(self: *Member) vxfw.Widget {
             return .{
                 .userdata = self,
+                .eventHandler = Member.eventHandler,
                 .drawFn = Member.draw,
             };
         }
 
+        fn eventHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
+            const self: *Member = @ptrCast(@alignCast(ptr));
+            switch (event) {
+                .mouse => |mouse| {
+                    if (!self.has_mouse) {
+                        self.has_mouse = true;
+                        try ctx.setMouseShape(.pointer);
+                    }
+                    switch (mouse.type) {
+                        .press => {
+                            if (mouse.button == .left) {
+                                // Open a private message with this user
+                                const client = self.channel.client;
+                                const ch = try client.getOrCreateChannel(self.user.nick);
+                                try client.requestHistory(.after, ch);
+                                client.app.selectChannelName(client, ch.name);
+                                return ctx.consumeAndRedraw();
+                            }
+                            if (mouse.button == .right) {
+                                // Insert nick at cursor
+                                try self.channel.text_field.insertSliceAtCursor(self.user.nick);
+                                return ctx.consumeAndRedraw();
+                            }
+                        },
+                        else => {},
+                    }
+                },
+                .mouse_enter => {
+                    self.has_mouse = true;
+                    try ctx.setMouseShape(.pointer);
+                },
+                .mouse_leave => {
+                    self.has_mouse = false;
+                    try ctx.setMouseShape(.default);
+                },
+                else => {},
+            }
+        }
+
         pub fn draw(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
             const self: *Member = @ptrCast(@alignCast(ptr));
-            const style: vaxis.Style = if (self.user.away)
+            var style: vaxis.Style = if (self.user.away)
                 .{ .fg = .{ .index = 8 } }
             else
                 .{ .fg = self.user.color };
+            if (self.has_mouse) style.reverse = true;
             var prefix = try ctx.arena.alloc(u8, 1);
             prefix[0] = self.prefix;
             const text: vxfw.RichText = .{
@@ -176,7 +224,9 @@ pub const Channel = struct {
                 },
                 .softwrap = false,
             };
-            return text.draw(ctx);
+            var surface = try text.draw(ctx);
+            surface.widget = self.widget();
+            return surface;
         }
     };
 
@@ -208,6 +258,7 @@ pub const Channel = struct {
                 .draw_cursor = false,
             },
             .text_field = vxfw.TextField.init(gpa, unicode),
+            .completer = Completer.init(gpa),
         };
 
         self.text_field.userdata = self;
@@ -222,6 +273,7 @@ pub const Channel = struct {
             try self.client.print("PRIVMSG {s} :{s}\r\n", .{ self.name, input });
         }
         ctx.redraw = true;
+        self.completer_shown = false;
         self.text_field.clearAndFree();
     }
 
@@ -236,6 +288,7 @@ pub const Channel = struct {
         }
         self.messages.deinit();
         self.text_field.deinit();
+        self.completer.deinit();
     }
 
     pub fn compare(_: void, lhs: *Channel, rhs: *Channel) bool {
@@ -366,9 +419,6 @@ pub const Channel = struct {
         prefix: ?u8 = null,
         sort: bool = true,
     }) Allocator.Error!void {
-        if (args.prefix) |p| {
-            log.debug("adding member: nick={s}, prefix={c}", .{ user.nick, p });
-        }
         for (self.members.items) |*member| {
             if (user == member.user) {
                 // Update the prefix for an existing member if the prefix is
@@ -378,7 +428,11 @@ pub const Channel = struct {
             }
         }
 
-        try self.members.append(.{ .user = user, .prefix = args.prefix orelse ' ' });
+        try self.members.append(.{
+            .user = user,
+            .prefix = args.prefix orelse ' ',
+            .channel = self,
+        });
 
         if (args.sort) {
             self.sortMembers();
@@ -399,7 +453,7 @@ pub const Channel = struct {
     pub fn markRead(self: *Channel) !void {
         self.has_unread = false;
         self.has_unread_highlight = false;
-        const last_msg = self.messages.getLast();
+        const last_msg = self.messages.getLastOrNull() orelse return;
         const time_tag = last_msg.getTag("time") orelse return;
         try self.client.print(
             "MARKREAD {s} timestamp={s}\r\n",
@@ -413,8 +467,64 @@ pub const Channel = struct {
     pub fn contentWidget(self: *Channel) vxfw.Widget {
         return .{
             .userdata = self,
+            .captureHandler = Channel.captureEvent,
             .drawFn = Channel.typeErasedViewDraw,
         };
+    }
+
+    fn captureEvent(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
+        const self: *Channel = @ptrCast(@alignCast(ptr));
+        switch (event) {
+            .key_press => |key| {
+                if (key.matches(vaxis.Key.tab, .{})) {
+                    ctx.redraw = true;
+                    // if we already have a completion word, then we are
+                    // cycling through the options
+                    if (self.completer_shown) {
+                        const line = self.completer.next(ctx);
+                        self.text_field.clearRetainingCapacity();
+                        try self.text_field.insertSliceAtCursor(line);
+                    } else {
+                        var completion_buf: [maximum_message_size]u8 = undefined;
+                        const content = self.text_field.sliceToCursor(&completion_buf);
+                        try self.completer.reset(content);
+                        if (self.completer.kind == .nick) {
+                            try self.completer.findMatches(self);
+                        }
+                        self.completer_shown = true;
+                    }
+                    return;
+                }
+                if (key.matches(vaxis.Key.tab, .{ .shift = true })) {
+                    if (self.completer_shown) {
+                        const line = self.completer.prev(ctx);
+                        self.text_field.clearRetainingCapacity();
+                        try self.text_field.insertSliceAtCursor(line);
+                    }
+                    return;
+                }
+                if (key.matches(vaxis.Key.page_up, .{})) {
+                    self.scroll.pending += self.client.app.last_height / 2;
+                    try self.doScroll(ctx);
+                    return ctx.consumeAndRedraw();
+                }
+                if (key.matches(vaxis.Key.page_down, .{})) {
+                    self.scroll.pending -|= self.client.app.last_height / 2;
+                    try self.doScroll(ctx);
+                    return ctx.consumeAndRedraw();
+                }
+                if (key.matches(vaxis.Key.home, .{})) {
+                    self.scroll.pending -= self.scroll.offset;
+                    self.scroll.msg_offset = null;
+                    try self.doScroll(ctx);
+                    return ctx.consumeAndRedraw();
+                }
+                if (!key.isModifier()) {
+                    self.completer_shown = false;
+                }
+            },
+            else => {},
+        }
     }
 
     fn typeErasedViewDraw(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
@@ -479,7 +589,6 @@ pub const Channel = struct {
             .bottom = self.scroll.offset,
         };
         const scrollbar_surface = try scrollbars.draw(scrollbar_ctx);
-        // Draw the text field
         try children.append(.{
             .origin = .{ .col = max.width - 1, .row = 2 },
             .surface = scrollbar_surface,
@@ -490,6 +599,17 @@ pub const Channel = struct {
             .origin = .{ .col = 0, .row = max.height - 1 },
             .surface = try self.text_field.draw(ctx),
         });
+
+        if (self.completer_shown) {
+            const widest: u16 = @intCast(self.completer.widestMatch(ctx));
+            const completer_ctx = ctx.withConstraints(ctx.min, .{ .height = 10, .width = widest });
+            const surface = try self.completer.list_view.draw(completer_ctx);
+            const height: u16 = @intCast(@min(10, self.completer.options.items.len));
+            try children.append(.{
+                .origin = .{ .col = 0, .row = max.height -| 1 -| height },
+                .surface = surface,
+            });
+        }
 
         return .{
             .size = max,
@@ -578,9 +698,6 @@ pub const Channel = struct {
 
         // Scroll up
         if (self.scroll.pending > 0) {
-            // TODO: check if we need to get more history
-            // TODO: cehck if we are at oldest, and shouldn't scroll up anymore
-
             // Consume 1 line, and schedule a tick
             self.scroll.offset += 1;
             self.scroll.pending -= 1;
@@ -1346,14 +1463,23 @@ pub const Client = struct {
     pub fn view(self: *Client) vxfw.Widget {
         return .{
             .userdata = self,
+            .eventHandler = Client.eventHandler,
             .drawFn = Client.typeErasedViewDraw,
         };
     }
 
-    fn typeErasedViewDraw(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+    fn eventHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
         _ = ptr;
+        _ = ctx;
+        _ = event;
+    }
+
+    fn typeErasedViewDraw(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        const self: *Client = @ptrCast(@alignCast(ptr));
         const text: vxfw.Text = .{ .text = "content" };
-        return text.draw(ctx);
+        var surface = try text.draw(ctx);
+        surface.widget = self.view();
+        return surface;
     }
 
     pub fn nameWidget(self: *Client, selected: bool) vxfw.Widget {
@@ -1806,9 +1932,10 @@ pub const Client = struct {
                     for (client.channels.items, 0..) |channel, i| {
                         if (!mem.eql(u8, channel.name, target)) continue;
                         var chan = client.channels.orderedRemove(i);
-                        self.app.state.buffers.selected_idx -|= 1;
                         chan.deinit(self.app.alloc);
                         self.alloc.destroy(chan);
+                        self.app.buffer_list.cursor -|= 1;
+                        self.app.buffer_list.ensureScroll();
                         break;
                     }
                 } else {
