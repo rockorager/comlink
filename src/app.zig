@@ -990,7 +990,8 @@ pub const App = struct {
     }
 
     /// handle a command
-    pub fn handleCommand(self: *App, lua_state: *Lua, buffer: irc.Buffer, cmd: []const u8) !void {
+    pub fn handleCommand(self: *App, buffer: irc.Buffer, cmd: []const u8) !void {
+        const lua_state = self.lua;
         const command: comlink.Command = blk: {
             const start: u1 = if (cmd[0] == '/') 1 else 0;
             const end = mem.indexOfScalar(u8, cmd, ' ') orelse cmd.len;
@@ -1159,6 +1160,7 @@ pub const App = struct {
     }
 
     pub fn selectBuffer(self: *App, buffer: irc.Buffer) void {
+        self.markSelectedChannelRead();
         var i: u32 = 0;
         switch (buffer) {
             .client => |target| {
@@ -1179,6 +1181,7 @@ pub const App = struct {
                         if (channel == target) {
                             self.buffer_list.cursor = i;
                             self.buffer_list.ensureScroll();
+                            if (target.messageViewIsAtBottom()) target.has_unread = false;
                             return;
                         }
                         i += 1;
@@ -1900,280 +1903,12 @@ pub const App = struct {
         }
     }
 
-    /// generate vaxis.Segments for the message content
-    fn formatMessageContent(self: *App, client: *irc.Client, msg: irc.Message) !void {
-        const ColorState = enum {
-            ground,
-            fg,
-            bg,
-        };
-        const LinkState = enum {
-            h,
-            t1,
-            t2,
-            p,
-            s,
-            colon,
-            slash,
-            consume,
-        };
-
-        var iter = msg.paramIterator();
-        _ = iter.next() orelse return error.InvalidMessage;
-        const content = iter.next() orelse return error.InvalidMessage;
-        var start: usize = 0;
-        var i: usize = 0;
-        var style: vaxis.Style = .{};
-        while (i < content.len) : (i += 1) {
-            const b = content[i];
-            switch (b) {
-                0x01 => { // https://modern.ircdocs.horse/ctcp
-                    if (i == 0 and
-                        content.len > 7 and
-                        mem.startsWith(u8, content[1..], "ACTION"))
-                    {
-                        // get the user of this message
-                        const sender: []const u8 = blk: {
-                            const src = msg.source() orelse break :blk "";
-                            const l = std.mem.indexOfScalar(u8, src, '!') orelse
-                                std.mem.indexOfScalar(u8, src, '@') orelse
-                                src.len;
-                            break :blk src[0..l];
-                        };
-                        const user = try client.getOrCreateUser(sender);
-                        style.italic = true;
-                        const user_style: vaxis.Style = .{
-                            .fg = user.color,
-                            .italic = true,
-                        };
-                        try self.content_segments.append(.{
-                            .text = user.nick,
-                            .style = user_style,
-                        });
-                        i += 6; // "ACTION"
-                    } else {
-                        try self.content_segments.append(.{
-                            .text = content[start..i],
-                            .style = style,
-                        });
-                    }
-                    start = i + 1;
-                },
-                0x02 => {
-                    try self.content_segments.append(.{
-                        .text = content[start..i],
-                        .style = style,
-                    });
-                    style.bold = !style.bold;
-                    start = i + 1;
-                },
-                0x03 => {
-                    try self.content_segments.append(.{
-                        .text = content[start..i],
-                        .style = style,
-                    });
-                    i += 1;
-                    var state: ColorState = .ground;
-                    var fg_idx: ?u8 = null;
-                    var bg_idx: ?u8 = null;
-                    while (i < content.len) : (i += 1) {
-                        const d = content[i];
-                        switch (state) {
-                            .ground => {
-                                switch (d) {
-                                    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
-                                        state = .fg;
-                                        fg_idx = d - '0';
-                                    },
-                                    else => {
-                                        style.fg = .default;
-                                        style.bg = .default;
-                                        start = i;
-                                        break;
-                                    },
-                                }
-                            },
-                            .fg => {
-                                switch (d) {
-                                    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
-                                        const fg = fg_idx orelse 0;
-                                        if (fg > 9) {
-                                            style.fg = irc.toVaxisColor(fg);
-                                            start = i;
-                                            break;
-                                        } else {
-                                            fg_idx = fg * 10 + (d - '0');
-                                        }
-                                    },
-                                    else => {
-                                        if (fg_idx) |fg| {
-                                            style.fg = irc.toVaxisColor(fg);
-                                            start = i;
-                                        }
-                                        if (d == ',') state = .bg else break;
-                                    },
-                                }
-                            },
-                            .bg => {
-                                switch (d) {
-                                    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
-                                        const bg = bg_idx orelse 0;
-                                        if (i - start == 2) {
-                                            style.bg = irc.toVaxisColor(bg);
-                                            start = i;
-                                            break;
-                                        } else {
-                                            bg_idx = bg * 10 + (d - '0');
-                                        }
-                                    },
-                                    else => {
-                                        if (bg_idx) |bg| {
-                                            style.bg = irc.toVaxisColor(bg);
-                                            start = i;
-                                        }
-                                        break;
-                                    },
-                                }
-                            },
-                        }
-                    }
-                },
-                0x0F => {
-                    try self.content_segments.append(.{
-                        .text = content[start..i],
-                        .style = style,
-                    });
-                    style = .{};
-                    start = i + 1;
-                },
-                0x16 => {
-                    try self.content_segments.append(.{
-                        .text = content[start..i],
-                        .style = style,
-                    });
-                    style.reverse = !style.reverse;
-                    start = i + 1;
-                },
-                0x1D => {
-                    try self.content_segments.append(.{
-                        .text = content[start..i],
-                        .style = style,
-                    });
-                    style.italic = !style.italic;
-                    start = i + 1;
-                },
-                0x1E => {
-                    try self.content_segments.append(.{
-                        .text = content[start..i],
-                        .style = style,
-                    });
-                    style.strikethrough = !style.strikethrough;
-                    start = i + 1;
-                },
-                0x1F => {
-                    try self.content_segments.append(.{
-                        .text = content[start..i],
-                        .style = style,
-                    });
-
-                    style.ul_style = if (style.ul_style == .off) .single else .off;
-                    start = i + 1;
-                },
-                else => {
-                    if (b == 'h') {
-                        var state: LinkState = .h;
-                        const h_start = i;
-                        // consume until a space or EOF
-                        i += 1;
-                        while (i < content.len) : (i += 1) {
-                            const b1 = content[i];
-                            switch (state) {
-                                .h => {
-                                    if (b1 == 't') state = .t1 else break;
-                                },
-                                .t1 => {
-                                    if (b1 == 't') state = .t2 else break;
-                                },
-                                .t2 => {
-                                    if (b1 == 'p') state = .p else break;
-                                },
-                                .p => {
-                                    if (b1 == 's')
-                                        state = .s
-                                    else if (b1 == ':')
-                                        state = .colon
-                                    else
-                                        break;
-                                },
-                                .s => {
-                                    if (b1 == ':') state = .colon else break;
-                                },
-                                .colon => {
-                                    if (b1 == '/') state = .slash else break;
-                                },
-                                .slash => {
-                                    if (b1 == '/') {
-                                        state = .consume;
-                                        try self.content_segments.append(.{
-                                            .text = content[start..h_start],
-                                            .style = style,
-                                        });
-                                        start = h_start;
-                                    } else break;
-                                },
-                                .consume => {
-                                    switch (b1) {
-                                        0x00...0x20, 0x7F => {
-                                            try self.content_segments.append(.{
-                                                .text = content[h_start..i],
-                                                .style = .{
-                                                    .fg = .{ .index = 4 },
-                                                },
-                                                .link = .{
-                                                    .uri = content[h_start..i],
-                                                },
-                                            });
-                                            start = i;
-                                            // backup one
-                                            i -= 1;
-                                            break;
-                                        },
-                                        else => {
-                                            if (i == content.len) {
-                                                try self.content_segments.append(.{
-                                                    .text = content[h_start..],
-                                                    .style = .{
-                                                        .fg = .{ .index = 4 },
-                                                    },
-                                                    .link = .{
-                                                        .uri = content[h_start..],
-                                                    },
-                                                });
-                                                return;
-                                            }
-                                        },
-                                    }
-                                },
-                            }
-                        }
-                    }
-                },
-            }
-        }
-        if (start < i and start < content.len) {
-            try self.content_segments.append(.{
-                .text = content[start..],
-                .style = style,
-            });
-        }
-    }
-
     pub fn markSelectedChannelRead(self: *App) void {
         const buffer = self.selectedBuffer() orelse return;
 
         switch (buffer) {
             .channel => |channel| {
-                channel.markRead() catch return;
+                if (channel.messageViewIsAtBottom()) channel.markRead() catch return;
             },
             else => {},
         }
