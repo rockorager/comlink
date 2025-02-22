@@ -4,7 +4,6 @@ const lua = @import("lua.zig");
 const tls = @import("tls");
 const vaxis = @import("vaxis");
 const zeit = @import("zeit");
-const bytepool = @import("pool.zig");
 
 const Scrollbar = @import("Scrollbar.zig");
 const testing = std.testing;
@@ -13,8 +12,6 @@ const vxfw = vaxis.vxfw;
 
 const Allocator = std.mem.Allocator;
 const Base64Encoder = std.base64.standard.Encoder;
-pub const MessagePool = bytepool.BytePool(max_raw_msg_size * 4);
-pub const Slice = MessagePool.Slice;
 
 const assert = std.debug.assert;
 
@@ -30,8 +27,6 @@ pub const Buffer = union(enum) {
     client: *Client,
     channel: *Channel,
 };
-
-pub const Event = comlink.IrcEvent;
 
 pub const Command = enum {
     RPL_WELCOME, // 001
@@ -1207,6 +1202,12 @@ pub const Client = struct {
         prefix: []const u8 = "",
     };
 
+    pub const Status = enum(u8) {
+        disconnected,
+        connecting,
+        connected,
+    };
+
     alloc: std.mem.Allocator,
     app: *comlink.App,
     client: tls.Connection(std.net.Stream),
@@ -1217,10 +1218,7 @@ pub const Client = struct {
     users: std.StringHashMap(*User),
 
     should_close: bool = false,
-    status: enum {
-        connected,
-        disconnected,
-    } = .disconnected,
+    status: std.atomic.Value(Status),
 
     caps: Capabilities = .{},
     supports: ISupport = .{},
@@ -1231,10 +1229,11 @@ pub const Client = struct {
     thread: ?std.Thread = null,
 
     redraw: std.atomic.Value(bool),
-    fifo: std.fifo.LinearFifo(Event, .Dynamic),
-    fifo_mutex: std.Thread.Mutex,
+    read_buf_mutex: std.Thread.Mutex,
+    read_buf: std.ArrayList(u8),
 
     has_mouse: bool,
+    retry_delay_s: u8,
 
     pub fn init(
         alloc: std.mem.Allocator,
@@ -1252,22 +1251,29 @@ pub const Client = struct {
             .users = std.StringHashMap(*User).init(alloc),
             .batches = std.StringHashMap(*Channel).init(alloc),
             .write_queue = wq,
+            .status = std.atomic.Value(Status).init(.disconnected),
             .redraw = std.atomic.Value(bool).init(false),
-            .fifo = std.fifo.LinearFifo(Event, .Dynamic).init(alloc),
-            .fifo_mutex = .{},
+            .read_buf_mutex = .{},
+            .read_buf = std.ArrayList(u8).init(alloc),
             .has_mouse = false,
+            .retry_delay_s = 0,
         };
     }
 
-    pub fn deinit(self: *Client) void {
+    /// Closes the connection
+    pub fn close(self: *Client) void {
         self.should_close = true;
-        if (self.status == .connected) {
-            self.write("PING comlink\r\n") catch |err|
-                log.err("couldn't close tls conn: {}", .{err});
-            if (self.thread) |thread| {
-                thread.detach();
-                self.thread = null;
-            }
+        if (self.status.load(.unordered) == .disconnected) return;
+        if (self.config.tls) {
+            self.client.close() catch {};
+        }
+        self.stream.close();
+    }
+
+    pub fn deinit(self: *Client) void {
+        if (self.thread) |thread| {
+            thread.join();
+            self.thread = null;
         }
         // id gets allocated in the main thread. We need to deallocate it here if
         // we have one
@@ -1295,7 +1301,46 @@ pub const Client = struct {
             self.alloc.free(key.*);
         }
         batches.deinit();
-        self.fifo.deinit();
+        self.read_buf.deinit();
+    }
+
+    fn retryWidget(self: *Client) vxfw.Widget {
+        return .{
+            .userdata = self,
+            .eventHandler = Client.retryTickHandler,
+            .drawFn = Client.typeErasedDrawNameSelected,
+        };
+    }
+
+    pub fn retryTickHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
+        const self: *Client = @ptrCast(@alignCast(ptr));
+        switch (event) {
+            .tick => {
+                const status = self.status.load(.unordered);
+                switch (status) {
+                    .disconnected => {
+                        // Clean up a thread if we have one
+                        if (self.thread) |thread| {
+                            thread.join();
+                            self.thread = null;
+                        }
+                        self.status.store(.connecting, .unordered);
+                        self.thread = try std.Thread.spawn(.{}, Client.readThread, .{self});
+                    },
+                    .connecting => {},
+                    .connected => {
+                        // Reset the delay
+                        self.retry_delay_s = 0;
+                        return;
+                    },
+                }
+                // Increment the retry and try again
+                self.retry_delay_s = @max(self.retry_delay_s <<| 1, 1);
+                log.debug("retry in {d} seconds", .{self.retry_delay_s});
+                try ctx.tick(@as(u32, self.retry_delay_s) * std.time.ms_per_s, self.retryWidget());
+            },
+            else => {},
+        }
     }
 
     pub fn view(self: *Client) vxfw.Widget {
@@ -1326,7 +1371,7 @@ pub const Client = struct {
         var style: vaxis.Style = .{};
         if (selected) style.reverse = true;
         if (self.has_mouse) style.bg = .{ .index = 8 };
-        if (self.status == .disconnected) style.fg = .{ .index = 8 };
+        if (self.status.load(.unordered) == .disconnected) style.fg = .{ .index = 8 };
 
         const name = self.config.name orelse self.config.server;
 
@@ -1389,21 +1434,22 @@ pub const Client = struct {
     }
 
     pub fn drainFifo(self: *Client, ctx: *vxfw.EventContext) void {
-        self.fifo_mutex.lock();
-        defer self.fifo_mutex.unlock();
-        while (self.fifo.readItem()) |item| {
-            // We redraw if we have any items
+        self.read_buf_mutex.lock();
+        defer self.read_buf_mutex.unlock();
+        var i: usize = 0;
+        while (std.mem.indexOfPos(u8, self.read_buf.items, i, "\r\n")) |idx| {
             ctx.redraw = true;
-            self.handleEvent(item) catch |err| {
+            defer i = idx + 2;
+            self.handleEvent(self.read_buf.items[i..idx]) catch |err| {
                 log.err("error: {}", .{err});
             };
         }
+        self.read_buf.replaceRangeAssumeCapacity(0, i, "");
     }
 
-    pub fn handleEvent(self: *Client, event: Event) !void {
-        const msg: Message = .{ .bytes = event.msg.slice() };
-        const client = event.client;
-        defer event.msg.deinit();
+    pub fn handleEvent(self: *Client, line: []const u8) !void {
+        const msg: Message = .{ .bytes = line };
+        const client = self;
         switch (msg.command()) {
             .unknown => {},
             .CAP => {
@@ -1887,97 +1933,32 @@ pub const Client = struct {
         }
     }
 
-    pub fn readLoop(self: *Client) !void {
-        var delay: u64 = 1 * std.time.ns_per_s;
+    pub fn readThread(self: *Client) !void {
+        defer self.status.store(.disconnected, .unordered);
 
-        while (!self.should_close) {
-            self.status = .disconnected;
-            log.debug("reconnecting in {d} seconds...", .{@divFloor(delay, std.time.ns_per_s)});
-            self.connect() catch |err| {
-                log.err("connection error: {}", .{err});
-                self.status = .disconnected;
-                log.debug("disconnected", .{});
-                log.debug("reconnecting in {d} seconds...", .{@divFloor(delay, std.time.ns_per_s)});
-                std.time.sleep(delay);
-                delay = delay * 2;
-                if (delay > std.time.ns_per_min) delay = std.time.ns_per_min;
-                continue;
-            };
-            log.debug("connected", .{});
-            self.status = .connected;
-            delay = 1 * std.time.ns_per_s;
+        self.connect() catch |err| {
+            log.warn("couldn't connect: {}", .{err});
+            return;
+        };
 
-            var buf: [16_384]u8 = undefined;
+        try self.queueWrite("CAP LS 302\r\n");
 
-            // 4x max size. We will almost always be *way* under our maximum size, so we will have a
-            // lot more potential messages than just 4
-            var pool: MessagePool = .{};
-            pool.init();
+        const cap_names = std.meta.fieldNames(Capabilities);
+        for (cap_names) |cap| {
+            try self.print("CAP REQ :{s}\r\n", .{cap});
+        }
 
-            errdefer |err| {
-                log.err("client: {s} error: {}", .{ self.config.network_id.?, err });
-            }
+        try self.print("NICK {s}\r\n", .{self.config.nick});
 
-            const timeout = std.mem.toBytes(std.posix.timeval{
-                .tv_sec = 5,
-                .tv_usec = 0,
-            });
+        try self.print("USER {s} 0 * {s}\r\n", .{ self.config.user, self.config.real_name });
 
-            const keep_alive: i64 = 10 * std.time.ms_per_s;
-            // max round trip time equal to our timeout
-            const max_rt: i64 = 5 * std.time.ms_per_s;
-            var last_msg: i64 = std.time.milliTimestamp();
-            var start: usize = 0;
-
-            while (true) {
-                try std.posix.setsockopt(
-                    self.stream.handle,
-                    std.posix.SOL.SOCKET,
-                    std.posix.SO.RCVTIMEO,
-                    &timeout,
-                );
-                const n = self.read(buf[start..]) catch |err| {
-                    if (err != error.WouldBlock) break;
-                    const now = std.time.milliTimestamp();
-                    if (now - last_msg > keep_alive + max_rt) {
-                        // reconnect??
-                        self.status = .disconnected;
-                        self.redraw.store(true, .unordered);
-                        break;
-                    }
-                    if (now - last_msg > keep_alive) {
-                        // send a ping
-                        try self.queueWrite("PING comlink\r\n");
-                        continue;
-                    }
-                    continue;
-                };
-                if (self.should_close) return;
-                if (n == 0) {
-                    self.status = .disconnected;
-                    self.redraw.store(true, .unordered);
-                    break;
-                }
-                last_msg = std.time.milliTimestamp();
-                var i: usize = 0;
-                while (std.mem.indexOfPos(u8, buf[0 .. n + start], i, "\r\n")) |idx| {
-                    defer i = idx + 2;
-                    const buffer = pool.alloc(idx - i);
-                    // const line = try self.alloc.dupe(u8, buf[i..idx]);
-                    @memcpy(buffer.slice(), buf[i..idx]);
-                    assert(std.mem.eql(u8, buf[idx .. idx + 2], "\r\n"));
-                    log.debug("[<-{s}] {s}", .{ self.config.name orelse self.config.server, buffer.slice() });
-                    self.fifo_mutex.lock();
-                    defer self.fifo_mutex.unlock();
-                    try self.fifo.writeItem(.{ .client = self, .msg = buffer });
-                }
-                if (i != n) {
-                    // we had a part of a line read. Copy it to the beginning of the
-                    // buffer
-                    std.mem.copyForwards(u8, buf[0 .. (n + start) - i], buf[i..(n + start)]);
-                    start = (n + start) - i;
-                } else start = 0;
-            }
+        var buf: [4096]u8 = undefined;
+        while (true) {
+            const n = try self.read(&buf);
+            if (n == 0) return;
+            self.read_buf_mutex.lock();
+            defer self.read_buf_mutex.unlock();
+            try self.read_buf.appendSlice(buf[0..n]);
         }
     }
 
@@ -1999,6 +1980,10 @@ pub const Client = struct {
     }
 
     pub fn write(self: *Client, buf: []const u8) !void {
+        if (self.status.load(.unordered) == .disconnected) {
+            log.warn("disconnected: dropping write: {s}", .{buf[0 .. buf.len - 2]});
+            return;
+        }
         log.debug("[->{s}] {s}", .{ self.config.name orelse self.config.server, buf[0 .. buf.len - 2] });
         switch (self.config.tls) {
             true => try self.client.writeAll(buf),
@@ -2018,26 +2003,26 @@ pub const Client = struct {
             const port: u16 = self.config.port orelse 6667;
             self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, port);
         }
+        self.status.store(.connected, .unordered);
 
-        try self.queueWrite("CAP LS 302\r\n");
+        try self.configureKeepalive();
+    }
 
-        const cap_names = std.meta.fieldNames(Capabilities);
-        for (cap_names) |cap| {
-            try self.print(
-                "CAP REQ :{s}\r\n",
-                .{cap},
-            );
-        }
+    pub fn configureKeepalive(self: *Client) !void {
+        const sock = self.stream.handle;
 
-        try self.print(
-            "NICK {s}\r\n",
-            .{self.config.nick},
-        );
+        const posix = std.posix;
+        const enable = std.mem.toBytes(@as(i32, 1));
+        try posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.KEEPALIVE, &enable);
 
-        try self.print(
-            "USER {s} 0 * {s}\r\n",
-            .{ self.config.user, self.config.real_name },
-        );
+        const idle = std.mem.toBytes(@as(i32, 10)); // 10 seconds
+        try posix.setsockopt(sock, posix.IPPROTO.TCP, posix.TCP.KEEPIDLE, &idle);
+
+        const interval = std.mem.toBytes(@as(i32, 5)); // 5 seconds
+        try posix.setsockopt(sock, posix.IPPROTO.TCP, posix.TCP.KEEPINTVL, &interval);
+
+        const count = std.mem.toBytes(@as(i32, 3)); // 3 probes before closing
+        try posix.setsockopt(sock, posix.IPPROTO.TCP, posix.TCP.KEEPCNT, &count);
     }
 
     pub fn getOrCreateChannel(self: *Client, name: []const u8) Allocator.Error!*Channel {

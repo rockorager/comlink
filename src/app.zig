@@ -163,16 +163,14 @@ pub const App = struct {
 
         // clean up clients
         {
-            for (self.clients.items, 0..) |_, i| {
-                var client = self.clients.items[i];
+            // Loop first to close connections. This will help us close faster by getting the
+            // threads exited
+            for (self.clients.items) |client| {
+                client.close();
+            }
+            for (self.clients.items) |client| {
                 client.deinit();
-                if (builtin.mode == .Debug) {
-                    // We only clean up clients in Debug mode so we can check for memory leaks
-                    // without failing for this. We don't care about it in any other mode since we
-                    // are exiting anyways and we want to do it fast. If we destroy, our readthread
-                    // could panic so we don't do it unless we have to.
-                    self.alloc.destroy(client);
-                }
+                self.alloc.destroy(client);
             }
             self.clients.deinit();
         }
@@ -227,6 +225,12 @@ pub const App = struct {
             },
             .tick => {
                 for (self.clients.items) |client| {
+                    if (client.status.load(.unordered) == .disconnected and
+                        client.retry_delay_s == 0)
+                    {
+                        ctx.redraw = true;
+                        try irc.Client.retryTickHandler(client, ctx, .tick);
+                    }
                     client.drainFifo(ctx);
                 }
                 try ctx.tick(8, self.widget());
@@ -947,7 +951,6 @@ pub const App = struct {
     pub fn connect(self: *App, cfg: irc.Client.Config) !void {
         const client = try self.alloc.create(irc.Client);
         client.* = try irc.Client.init(self.alloc, self, &self.write_queue, cfg);
-        client.thread = try std.Thread.spawn(.{}, irc.Client.readLoop, .{client});
         try self.clients.append(client);
     }
 

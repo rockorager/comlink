@@ -7,8 +7,7 @@ pub const lua = @import("lua.zig");
 
 pub const App = app.App;
 pub const Completer = completer.Completer;
-pub const EventLoop = vaxis.Loop(Event);
-pub const WriteQueue = vaxis.Queue(WriteEvent, 256);
+pub const WriteQueue = vaxis.Queue(WriteEvent, 32);
 
 pub const Bind = struct {
     key: vaxis.Key,
@@ -70,24 +69,6 @@ pub const Command = union(enum) {
             else => false,
         };
     }
-};
-
-/// Any event our application will handle
-pub const Event = union(enum) {
-    key_press: vaxis.Key,
-    mouse: vaxis.Mouse,
-    winsize: vaxis.Winsize,
-    focus_out,
-    irc: IrcEvent,
-    connect: irc.Client.Config,
-    redraw,
-    paste_start,
-    paste_end,
-};
-
-pub const IrcEvent = struct {
-    client: *irc.Client,
-    msg: irc.Slice,
 };
 
 /// An event our write thread will handle
