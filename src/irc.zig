@@ -900,6 +900,11 @@ pub const Channel = struct {
             }
         }
 
+        // Request more history when we are within 5 messages of the top of the screen
+        if (iter.index < 5 and !self.at_oldest) {
+            try self.client.requestHistory(.before, self);
+        }
+
         return .{
             .size = max,
             .widget = self.messageViewWidget(),
@@ -1786,23 +1791,22 @@ pub const Client = struct {
                 // from the batch start. We also never notify from a
                 // batched message. Batched messages also require
                 // sorting
-                var tag_iter = msg2.tagIterator();
-                while (tag_iter.next()) |tag| {
-                    if (mem.eql(u8, tag.key, "batch")) {
-                        const entry = client.batches.getEntry(tag.value) orelse @panic("TODO");
-                        var channel = entry.value_ptr.*;
-                        try channel.messages.append(msg2);
-                        std.sort.insertion(Message, channel.messages.items, {}, Message.compareTime);
-                        channel.at_oldest = false;
-                        const time = msg2.time() orelse continue;
-                        if (time.unixTimestamp() > channel.last_read) {
-                            channel.has_unread = true;
-                            const content = iter.next() orelse continue;
-                            if (std.mem.indexOf(u8, content, client.nickname())) |_| {
-                                channel.has_unread_highlight = true;
-                            }
+                if (msg2.getTag("batch")) |tag| {
+                    const entry = client.batches.getEntry(tag) orelse @panic("TODO");
+                    var channel = entry.value_ptr.*;
+                    try channel.messages.append(msg2);
+                    std.sort.insertion(Message, channel.messages.items, {}, Message.compareTime);
+                    if (channel.scroll.msg_offset) |offset| {
+                        channel.scroll.msg_offset = offset + 1;
+                    }
+                    channel.at_oldest = false;
+                    const time = msg2.time() orelse return;
+                    if (time.unixTimestamp() > channel.last_read) {
+                        channel.has_unread = true;
+                        const content = iter.next() orelse return;
+                        if (std.mem.indexOf(u8, content, client.nickname())) |_| {
+                            channel.has_unread_highlight = true;
                         }
-                        break;
                     }
                 } else {
                     // standard handling
@@ -2099,7 +2103,11 @@ pub const Client = struct {
     }
 
     /// fetch the history for the provided channel.
-    pub fn requestHistory(self: *Client, cmd: ChatHistoryCommand, channel: *Channel) !void {
+    pub fn requestHistory(
+        self: *Client,
+        cmd: ChatHistoryCommand,
+        channel: *Channel,
+    ) Allocator.Error!void {
         if (!self.caps.@"draft/chathistory") return;
         if (channel.history_requested) return;
 
@@ -2118,8 +2126,10 @@ pub const Client = struct {
             .before => {
                 assert(channel.messages.items.len > 0);
                 const first = channel.messages.items[0];
-                const time = first.getTag("time") orelse
-                    return error.NoTimeTag;
+                const time = first.getTag("time") orelse {
+                    log.warn("can't request history: no time tag", .{});
+                    return;
+                };
                 try self.print(
                     "CHATHISTORY BEFORE {s} timestamp={s} 50\r\n",
                     .{ channel.name, time },
@@ -2129,8 +2139,10 @@ pub const Client = struct {
             .after => {
                 assert(channel.messages.items.len > 0);
                 const last = channel.messages.getLast();
-                const time = last.getTag("time") orelse
-                    return error.NoTimeTag;
+                const time = last.getTag("time") orelse {
+                    log.warn("can't request history: no time tag", .{});
+                    return;
+                };
                 try self.print(
                     // we request 500 because we have no
                     // idea how long we've been offline
