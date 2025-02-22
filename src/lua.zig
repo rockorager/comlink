@@ -440,7 +440,7 @@ const Channel = struct {
 
         if (msg.len > 0 and msg[0] == '/') {
             const app = getApp(lua);
-            app.handleCommand(lua, .{ .channel = channel }, msg) catch
+            app.handleCommand(.{ .channel = channel }, msg) catch
                 lua.raiseErrorStr("couldn't handle command", .{});
             return 0;
         }

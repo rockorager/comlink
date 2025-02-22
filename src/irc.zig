@@ -168,7 +168,7 @@ pub const Channel = struct {
         pub fn draw(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
             const self: *Member = @ptrCast(@alignCast(ptr));
             const style: vaxis.Style = if (self.user.away)
-                .{ .dim = true }
+                .{ .fg = .{ .index = 8 } }
             else
                 .{ .fg = self.user.color };
             var prefix = try ctx.arena.alloc(u8, 1);
@@ -213,6 +213,20 @@ pub const Channel = struct {
             },
             .text_field = vxfw.TextField.init(gpa, unicode),
         };
+
+        self.text_field.userdata = self;
+        self.text_field.onSubmit = Channel.onSubmit;
+    }
+
+    fn onSubmit(ptr: ?*anyopaque, ctx: *vxfw.EventContext, input: []const u8) anyerror!void {
+        const self: *Channel = @ptrCast(@alignCast(ptr orelse unreachable));
+        if (std.mem.startsWith(u8, input, "/")) {
+            try self.client.app.handleCommand(.{ .channel = self }, input);
+        } else {
+            try self.client.print("PRIVMSG {s} :{s}\r\n", .{ self.name, input });
+        }
+        ctx.redraw = true;
+        self.text_field.clearAndFree();
     }
 
     pub fn deinit(self: *Channel, alloc: std.mem.Allocator) void {
@@ -300,16 +314,38 @@ pub const Channel = struct {
 
     pub fn drawName(self: *Channel, ctx: vxfw.DrawContext, selected: bool) Allocator.Error!vxfw.Surface {
         var style: vaxis.Style = .{};
-        if (selected) style.reverse = true;
+        if (selected) style.bg = .{ .index = 8 };
         if (self.has_mouse) style.bg = .{ .index = 8 };
+        if (self.client.app.selectedBuffer()) |buffer| {
+            switch (buffer) {
+                .client => {},
+                .channel => |channel| {
+                    if (channel == self and self.messageViewIsAtBottom()) {
+                        self.has_unread = false;
+                    }
+                },
+            }
+        }
+        if (self.has_unread) style.fg = .{ .index = 4 };
 
-        const text: vxfw.RichText = .{
-            .text = &.{
-                .{ .text = "  " },
-                .{ .text = self.name, .style = style },
-            },
-            .softwrap = false,
-        };
+        const text: vxfw.RichText = if (std.mem.startsWith(u8, self.name, "#"))
+            .{
+                .text = &.{
+                    .{ .text = "  " },
+                    .{ .text = "#", .style = .{ .fg = .{ .index = 8 } } },
+                    .{ .text = self.name[1..], .style = style },
+                },
+                .softwrap = false,
+            }
+        else
+            .{
+                .text = &.{
+                    .{ .text = "  " },
+                    .{ .text = self.name, .style = style },
+                },
+                .softwrap = false,
+            };
+
         var surface = try text.draw(ctx);
         // Replace the widget reference so we can handle the events
         surface.widget = self.nameWidget(selected);
@@ -365,8 +401,6 @@ pub const Channel = struct {
     /// issue a MARKREAD command for this channel. The most recent message in the channel will be used as
     /// the last read time
     pub fn markRead(self: *Channel) !void {
-        if (!self.has_unread) return;
-
         self.has_unread = false;
         self.has_unread_highlight = false;
         const last_msg = self.messages.getLast();
@@ -473,6 +507,7 @@ pub const Channel = struct {
                 // Save this mouse state for when we draw
                 self.message_view.mouse = mouse;
 
+                // A middle press on a hovered message means we copy the content
                 if (mouse.type == .press and
                     mouse.button == .middle and
                     self.message_view.hovered_message != null)
@@ -487,15 +522,15 @@ pub const Channel = struct {
                     return ctx.consumeAndRedraw();
                 }
                 if (mouse.button == .wheel_down) {
-                    self.scroll.pending -|= 3;
+                    self.scroll.pending -|= 1;
                     ctx.consume_event = true;
                 }
                 if (mouse.button == .wheel_up) {
-                    self.scroll.pending +|= 3;
+                    self.scroll.pending +|= 1;
                     ctx.consume_event = true;
                 }
                 if (self.scroll.pending != 0) {
-                    return self.doScroll(ctx);
+                    try self.doScroll(ctx);
                 }
             },
             .mouse_leave => {
@@ -503,7 +538,9 @@ pub const Channel = struct {
                 self.message_view.hovered_message = null;
                 ctx.redraw = true;
             },
-            .tick => try self.doScroll(ctx),
+            .tick => {
+                try self.doScroll(ctx);
+            },
             else => {},
         }
     }
@@ -568,7 +605,19 @@ pub const Channel = struct {
         return self.drawMessageView(ctx);
     }
 
+    pub fn messageViewIsAtBottom(self: *Channel) bool {
+        if (self.scroll.msg_offset) |msg_offset| {
+            return self.scroll.offset == 0 and
+                msg_offset == self.messages.items.len and
+                self.scroll.pending == 0;
+        }
+        return self.scroll.offset == 0 and
+            self.scroll.msg_offset == null and
+            self.scroll.pending == 0;
+    }
+
     fn drawMessageView(self: *Channel, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        self.message_view.hovered_message = null;
         const max = ctx.max.size();
         if (max.width == 0 or
             max.height == 0 or
@@ -642,8 +691,13 @@ pub const Channel = struct {
                 break :blk param_iter.next() orelse "";
             };
 
+            // Get the user ref for this sender
+            const user = try self.client.getOrCreateUser(sender);
+
+            const spans = try formatMessage(ctx.arena, user, content);
+
             // Draw the message so we have it's wrapped height
-            const text: vxfw.Text = .{ .text = content };
+            const text: vxfw.RichText = .{ .text = spans };
             const child_ctx = ctx.withConstraints(
                 .{ .width = 0, .height = 0 },
                 .{ .width = max.width -| gutter_width, .height = null },
@@ -741,28 +795,88 @@ pub const Channel = struct {
                     .origin = .{ .row = row, .col = 0 },
                     .surface = try time_text.draw(child_ctx),
                 });
+            }
 
-                // Check if we need to print the sender of this message. We do this when the timegap
-                // between this message and next message is > 5 minutes, or if the sender is
-                // different
-                if (sender.len > 0 and
-                    printSender(sender, next_sender, maybe_instant, maybe_next_instant))
-                {
-                    // Back up one row to print
-                    row -= 1;
-                    // If we need to print the sender, it will be *this* messages sender
-                    const user = try self.client.getOrCreateUser(sender);
-                    const sender_text: vxfw.Text = .{
-                        .text = user.nick,
-                        .style = .{ .fg = user.color, .bold = true },
+            var printed_sender: bool = false;
+            // Check if we need to print the sender of this message. We do this when the timegap
+            // between this message and next message is > 5 minutes, or if the sender is
+            // different
+            if (sender.len > 0 and
+                printSender(sender, next_sender, maybe_instant, maybe_next_instant))
+            {
+                // Back up one row to print
+                row -= 1;
+                // If we need to print the sender, it will be *this* messages sender
+                const sender_text: vxfw.Text = .{
+                    .text = user.nick,
+                    .style = .{ .fg = user.color, .bold = true },
+                };
+                const sender_surface = try sender_text.draw(child_ctx);
+                try children.append(.{
+                    .origin = .{ .row = row, .col = gutter_width },
+                    .surface = sender_surface,
+                });
+                if (self.message_view.mouse) |mouse| {
+                    if (mouse.row == row and
+                        mouse.col >= gutter_width and
+                        user.real_name != null)
+                    {
+                        const realname: vxfw.Text = .{
+                            .text = user.real_name orelse unreachable,
+                            .style = .{ .fg = .{ .index = 8 }, .italic = true },
+                        };
+                        try children.append(.{
+                            .origin = .{
+                                .row = row,
+                                .col = gutter_width + sender_surface.size.width + 1,
+                            },
+                            .surface = try realname.draw(child_ctx),
+                        });
+                    }
+                }
+
+                // Back up 1 more row for spacing
+                row -= 1;
+                printed_sender = true;
+            }
+
+            // Check if we should print a "last read" line. If the next message we will print is
+            // before the last_read, and this message is after the last_read then it is our border.
+            // Before
+            if (maybe_next_instant != null and maybe_instant != null) {
+                const this = maybe_instant.?.unixTimestamp();
+                const next = maybe_next_instant.?.unixTimestamp();
+                if (this > self.last_read and next <= self.last_read) {
+                    const bot = "─";
+                    var writer = try std.ArrayList(u8).initCapacity(ctx.arena, bot.len * max.width);
+                    try writer.writer().writeBytesNTimes(bot, max.width);
+
+                    const border: vxfw.Text = .{
+                        .text = writer.items,
+                        .style = .{ .fg = .{ .index = 1 } },
+                        .softwrap = false,
                     };
-                    try children.append(.{
-                        .origin = .{ .row = row, .col = gutter_width },
-                        .surface = try sender_text.draw(child_ctx),
-                    });
 
-                    // Back up 1 more row for spacing
-                    row -= 1;
+                    // We don't need to backup a line if we printed the sender
+                    if (!printed_sender) row -= 1;
+
+                    const unread: vxfw.SubSurface = .{
+                        .origin = .{ .col = 0, .row = row },
+                        .surface = try border.draw(ctx),
+                    };
+                    try children.append(unread);
+                    const new: vxfw.RichText = .{
+                        .text = &.{
+                            .{ .text = "", .style = .{ .fg = .{ .index = 1 } } },
+                            .{ .text = " New ", .style = .{ .fg = .{ .index = 1 }, .reverse = true } },
+                        },
+                        .softwrap = false,
+                    };
+                    const new_sub: vxfw.SubSurface = .{
+                        .origin = .{ .col = max.width - 6, .row = row },
+                        .surface = try new.draw(ctx),
+                    };
+                    try children.append(new_sub);
                 }
             }
         }
@@ -2060,6 +2174,269 @@ pub fn toVaxisColor(irc: u8) vaxis.Color {
 
         else => .{ .index = irc },
     };
+}
+/// generate TextSpans for the message content
+fn formatMessage(
+    arena: Allocator,
+    user: *User,
+    content: []const u8,
+) Allocator.Error![]vxfw.RichText.TextSpan {
+    const ColorState = enum {
+        ground,
+        fg,
+        bg,
+    };
+    const LinkState = enum {
+        h,
+        t1,
+        t2,
+        p,
+        s,
+        colon,
+        slash,
+        consume,
+    };
+
+    var spans = std.ArrayList(vxfw.RichText.TextSpan).init(arena);
+
+    var start: usize = 0;
+    var i: usize = 0;
+    var style: vaxis.Style = .{};
+    while (i < content.len) : (i += 1) {
+        const b = content[i];
+        switch (b) {
+            0x01 => { // https://modern.ircdocs.horse/ctcp
+                if (i == 0 and
+                    content.len > 7 and
+                    mem.startsWith(u8, content[1..], "ACTION"))
+                {
+                    // get the user of this message
+                    style.italic = true;
+                    const user_style: vaxis.Style = .{
+                        .fg = user.color,
+                        .italic = true,
+                    };
+                    try spans.append(.{
+                        .text = user.nick,
+                        .style = user_style,
+                    });
+                    i += 6; // "ACTION"
+                } else {
+                    try spans.append(.{
+                        .text = content[start..i],
+                        .style = style,
+                    });
+                }
+                start = i + 1;
+            },
+            0x02 => {
+                try spans.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+                style.bold = !style.bold;
+                start = i + 1;
+            },
+            0x03 => {
+                try spans.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+                i += 1;
+                var state: ColorState = .ground;
+                var fg_idx: ?u8 = null;
+                var bg_idx: ?u8 = null;
+                while (i < content.len) : (i += 1) {
+                    const d = content[i];
+                    switch (state) {
+                        .ground => {
+                            switch (d) {
+                                '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
+                                    state = .fg;
+                                    fg_idx = d - '0';
+                                },
+                                else => {
+                                    style.fg = .default;
+                                    style.bg = .default;
+                                    start = i;
+                                    break;
+                                },
+                            }
+                        },
+                        .fg => {
+                            switch (d) {
+                                '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
+                                    const fg = fg_idx orelse 0;
+                                    if (fg > 9) {
+                                        style.fg = toVaxisColor(fg);
+                                        start = i;
+                                        break;
+                                    } else {
+                                        fg_idx = fg * 10 + (d - '0');
+                                    }
+                                },
+                                else => {
+                                    if (fg_idx) |fg| {
+                                        style.fg = toVaxisColor(fg);
+                                        start = i;
+                                    }
+                                    if (d == ',') state = .bg else break;
+                                },
+                            }
+                        },
+                        .bg => {
+                            switch (d) {
+                                '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
+                                    const bg = bg_idx orelse 0;
+                                    if (i - start == 2) {
+                                        style.bg = toVaxisColor(bg);
+                                        start = i;
+                                        break;
+                                    } else {
+                                        bg_idx = bg * 10 + (d - '0');
+                                    }
+                                },
+                                else => {
+                                    if (bg_idx) |bg| {
+                                        style.bg = toVaxisColor(bg);
+                                        start = i;
+                                    }
+                                    break;
+                                },
+                            }
+                        },
+                    }
+                }
+            },
+            0x0F => {
+                try spans.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+                style = .{};
+                start = i + 1;
+            },
+            0x16 => {
+                try spans.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+                style.reverse = !style.reverse;
+                start = i + 1;
+            },
+            0x1D => {
+                try spans.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+                style.italic = !style.italic;
+                start = i + 1;
+            },
+            0x1E => {
+                try spans.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+                style.strikethrough = !style.strikethrough;
+                start = i + 1;
+            },
+            0x1F => {
+                try spans.append(.{
+                    .text = content[start..i],
+                    .style = style,
+                });
+
+                style.ul_style = if (style.ul_style == .off) .single else .off;
+                start = i + 1;
+            },
+            else => {
+                if (b == 'h') {
+                    var state: LinkState = .h;
+                    const h_start = i;
+                    // consume until a space or EOF
+                    i += 1;
+                    while (i < content.len) : (i += 1) {
+                        const b1 = content[i];
+                        switch (state) {
+                            .h => {
+                                if (b1 == 't') state = .t1 else break;
+                            },
+                            .t1 => {
+                                if (b1 == 't') state = .t2 else break;
+                            },
+                            .t2 => {
+                                if (b1 == 'p') state = .p else break;
+                            },
+                            .p => {
+                                if (b1 == 's')
+                                    state = .s
+                                else if (b1 == ':')
+                                    state = .colon
+                                else
+                                    break;
+                            },
+                            .s => {
+                                if (b1 == ':') state = .colon else break;
+                            },
+                            .colon => {
+                                if (b1 == '/') state = .slash else break;
+                            },
+                            .slash => {
+                                if (b1 == '/') {
+                                    state = .consume;
+                                    try spans.append(.{
+                                        .text = content[start..h_start],
+                                        .style = style,
+                                    });
+                                    start = h_start;
+                                } else break;
+                            },
+                            .consume => {
+                                switch (b1) {
+                                    0x00...0x20, 0x7F => {
+                                        try spans.append(.{
+                                            .text = content[h_start..i],
+                                            .style = .{
+                                                .fg = .{ .index = 4 },
+                                            },
+                                            .link = .{
+                                                .uri = content[h_start..i],
+                                            },
+                                        });
+                                        start = i;
+                                        // backup one
+                                        i -= 1;
+                                        break;
+                                    },
+                                    else => {
+                                        if (i == content.len) {
+                                            try spans.append(.{
+                                                .text = content[h_start..],
+                                                .style = .{
+                                                    .fg = .{ .index = 4 },
+                                                },
+                                                .link = .{
+                                                    .uri = content[h_start..],
+                                                },
+                                            });
+                                            break;
+                                        }
+                                    },
+                                }
+                            },
+                        }
+                    }
+                }
+            },
+        }
+    }
+    if (start < i and start < content.len) {
+        try spans.append(.{
+            .text = content[start..],
+            .style = style,
+        });
+    }
+    return spans.toOwnedSlice();
 }
 
 const CaseMapAlgo = enum {
