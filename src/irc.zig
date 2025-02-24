@@ -387,16 +387,20 @@ pub const Channel = struct {
                 .channel => |channel| {
                     if (channel == self and self.messageViewIsAtBottom()) {
                         self.has_unread = false;
+                        self.has_unread_highlight = false;
                     }
                 },
             }
         }
         if (self.has_unread) style.fg = .{ .index = 4 };
-
+        const prefix: vxfw.RichText.TextSpan = if (self.has_unread_highlight)
+            .{ .text = " ●︎", .style = .{ .fg = .{ .index = 1 } } }
+        else
+            .{ .text = "  " };
         const text: vxfw.RichText = if (std.mem.startsWith(u8, self.name, "#"))
             .{
                 .text = &.{
-                    .{ .text = "  " },
+                    prefix,
                     .{ .text = "#", .style = .{ .fg = .{ .index = 8 } } },
                     .{ .text = self.name[1..], .style = style },
                 },
