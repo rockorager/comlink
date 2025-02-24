@@ -341,7 +341,9 @@ pub const App = struct {
             self.buffer_list.nextItem(ctx);
             if (self.selectedBuffer()) |buffer| {
                 switch (buffer) {
-                    .client => {},
+                    .client => {
+                        ctx.requestFocus(self.widget()) catch {};
+                    },
                     .channel => |channel| {
                         ctx.requestFocus(channel.text_field.widget()) catch {};
                     },
@@ -358,7 +360,9 @@ pub const App = struct {
             self.buffer_list.prevItem(ctx);
             if (self.selectedBuffer()) |buffer| {
                 switch (buffer) {
-                    .client => {},
+                    .client => {
+                        ctx.requestFocus(self.widget()) catch {};
+                    },
                     .channel => |channel| {
                         ctx.requestFocus(channel.text_field.widget()) catch {};
                     },
