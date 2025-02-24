@@ -289,8 +289,6 @@ pub const Channel = struct {
             try self.client.app.handleCommand(.{ .channel = self }, local);
         } else {
             try self.client.print("PRIVMSG {s} :{s}\r\n", .{ self.name, local });
-            // Set the last_read to now
-            self.last_read = std.time.timestamp();
         }
         ctx.redraw = true;
     }
