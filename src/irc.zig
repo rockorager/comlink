@@ -276,14 +276,23 @@ pub const Channel = struct {
 
     fn onSubmit(ptr: ?*anyopaque, ctx: *vxfw.EventContext, input: []const u8) anyerror!void {
         const self: *Channel = @ptrCast(@alignCast(ptr orelse unreachable));
-        if (std.mem.startsWith(u8, input, "/")) {
-            try self.client.app.handleCommand(.{ .channel = self }, input);
+
+        // Copy the input into a temporary buffer
+        var buf: [1024]u8 = undefined;
+        @memcpy(buf[0..input.len], input);
+        const local = buf[0..input.len];
+        // Free the text field. We do this here because the command may destroy our channel
+        self.text_field.clearAndFree();
+        self.completer_shown = false;
+
+        if (std.mem.startsWith(u8, local, "/")) {
+            try self.client.app.handleCommand(.{ .channel = self }, local);
         } else {
-            try self.client.print("PRIVMSG {s} :{s}\r\n", .{ self.name, input });
+            try self.client.print("PRIVMSG {s} :{s}\r\n", .{ self.name, local });
+            // Set the last_read to now
+            self.last_read = std.time.timestamp();
         }
         ctx.redraw = true;
-        self.completer_shown = false;
-        self.text_field.clearAndFree();
     }
 
     pub fn deinit(self: *Channel, alloc: std.mem.Allocator) void {
@@ -1953,11 +1962,10 @@ pub const Client = struct {
                 if (mem.eql(u8, user.nick, client.nickname())) {
                     for (client.channels.items, 0..) |channel, i| {
                         if (!mem.eql(u8, channel.name, target)) continue;
+                        client.app.prevChannel();
                         var chan = client.channels.orderedRemove(i);
                         chan.deinit(self.app.alloc);
                         self.alloc.destroy(chan);
-                        self.app.buffer_list.cursor -|= 1;
-                        self.app.buffer_list.ensureScroll();
                         break;
                     }
                 } else {
