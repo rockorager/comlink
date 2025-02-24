@@ -2138,18 +2138,28 @@ pub const Client = struct {
     pub fn configureKeepalive(self: *Client) !void {
         const sock = self.stream.handle;
 
-        const posix = std.posix;
-        const enable = std.mem.toBytes(@as(i32, 1));
-        try posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.KEEPALIVE, &enable);
+        const os = std.c;
+        const size = @sizeOf(i32);
 
-        const idle = std.mem.toBytes(@as(i32, 10)); // 10 seconds
-        try posix.setsockopt(sock, posix.IPPROTO.TCP, posix.TCP.KEEPIDLE, &idle);
+        const enable: i32 = 1;
+        if (os.setsockopt(sock, os.SOL.SOCKET, os.SO.KEEPALIVE, &enable, size) != 0) {
+            return error.SetSockOptError;
+        }
 
-        const interval = std.mem.toBytes(@as(i32, 5)); // 5 seconds
-        try posix.setsockopt(sock, posix.IPPROTO.TCP, posix.TCP.KEEPINTVL, &interval);
+        const idle: i32 = 10; // 10 seconds
+        if (os.setsockopt(sock, os.IPPROTO.TCP, os.TCP.KEEPIDLE, &idle, size) != 0) {
+            return error.SetSockOptError;
+        }
 
-        const count = std.mem.toBytes(@as(i32, 3)); // 3 probes before closing
-        try posix.setsockopt(sock, posix.IPPROTO.TCP, posix.TCP.KEEPCNT, &count);
+        const interval: i32 = 5; // 5 seconds
+        if (os.setsockopt(sock, os.IPPROTO.TCP, os.TCP.KEEPINTVL, &interval, size) != 0) {
+            return error.SetSockOptError;
+        }
+
+        const count: i32 = 3; // 3 probes before closing
+        if (os.setsockopt(sock, os.IPPROTO.TCP, os.TCP.KEEPCNT, &count, size) != 0) {
+            return error.SetSockOptError;
+        }
     }
 
     pub fn getOrCreateChannel(self: *Client, name: []const u8) Allocator.Error!*Channel {
