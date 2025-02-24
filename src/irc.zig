@@ -930,7 +930,7 @@ pub const Channel = struct {
                 };
 
                 // If the message has our nick, we'll highlight the time
-                if (std.mem.indexOf(u8, content, self.client.config.nick)) |_| {
+                if (std.mem.indexOf(u8, content, self.client.nickname())) |_| {
                     style.fg = .{ .index = 3 };
                     style.reverse = true;
                 }
