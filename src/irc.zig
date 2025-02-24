@@ -677,11 +677,11 @@ pub const Channel = struct {
                     return ctx.consumeAndRedraw();
                 }
                 if (mouse.button == .wheel_down) {
-                    self.scroll.pending -|= 3;
+                    self.scroll.pending -|= 1;
                     ctx.consume_event = true;
                 }
                 if (mouse.button == .wheel_up) {
-                    self.scroll.pending +|= 3;
+                    self.scroll.pending +|= 1;
                     ctx.consume_event = true;
                 }
                 if (self.scroll.pending != 0) {
