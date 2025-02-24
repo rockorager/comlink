@@ -655,6 +655,9 @@ pub const Channel = struct {
                         // Or if we did a middle click, and now released it
                     else if (last_mouse.button == .middle)
                         ctx.redraw = true;
+                } else {
+                    // If we didn't have the mouse previously, we redraw
+                    ctx.redraw = true;
                 }
 
                 // Save this mouse state for when we draw
