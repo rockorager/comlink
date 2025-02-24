@@ -24,6 +24,15 @@ pub const maximum_message_size = 512;
 /// maximum size message we can receive
 const max_raw_msg_size = 512 + 8191; // see modernircdocs
 
+/// Seconds of idle connection before we start pinging
+const keepalive_idle: i32 = 15;
+
+/// Seconds between pings
+const keepalive_interval: i32 = 5;
+
+/// Number of failed pings before we consider the connection failed
+const keepalive_retries: i32 = 3;
+
 pub const Buffer = union(enum) {
     client: *Client,
     channel: *Channel,
@@ -1569,6 +1578,10 @@ pub const Client = struct {
         while (std.mem.indexOfPos(u8, self.read_buf.items, i, "\r\n")) |idx| {
             ctx.redraw = true;
             defer i = idx + 2;
+            log.debug("[<-{s}] {s}", .{
+                self.config.name orelse self.config.server,
+                self.read_buf.items[i..idx],
+            });
             self.handleEvent(self.read_buf.items[i..idx]) catch |err| {
                 log.err("error: {}", .{err});
             };
@@ -2083,9 +2096,35 @@ pub const Client = struct {
         try self.print("USER {s} 0 * {s}\r\n", .{ self.config.user, self.config.real_name });
 
         var buf: [4096]u8 = undefined;
+        var retries: u8 = 0;
         while (true) {
-            const n = try self.read(&buf);
+            const n = self.read(&buf) catch |err| {
+                // WouldBlock means our socket timeout expired
+                switch (err) {
+                    error.WouldBlock => {},
+                    else => return err,
+                }
+
+                if (retries == keepalive_retries) {
+                    log.debug("[{s}] connection closed", .{self.config.name orelse self.config.server});
+                    self.close();
+                    return;
+                }
+
+                if (retries == 0) {
+                    try self.configureKeepalive(keepalive_interval);
+                }
+                retries += 1;
+                try self.queueWrite("PING comlink\r\n");
+                continue;
+            };
             if (n == 0) return;
+
+            // If we did a connection retry, we reset the state
+            if (retries > 0) {
+                retries = 0;
+                try self.configureKeepalive(keepalive_idle);
+            }
             self.read_buf_mutex.lock();
             defer self.read_buf_mutex.unlock();
             try self.read_buf.appendSlice(buf[0..n]);
@@ -2110,6 +2149,7 @@ pub const Client = struct {
     }
 
     pub fn write(self: *Client, buf: []const u8) !void {
+        assert(std.mem.endsWith(u8, buf, "\r\n"));
         if (self.status.load(.unordered) == .disconnected) {
             log.warn("disconnected: dropping write: {s}", .{buf[0 .. buf.len - 2]});
             return;
@@ -2135,34 +2175,21 @@ pub const Client = struct {
         }
         self.status.store(.connected, .unordered);
 
-        try self.configureKeepalive();
+        try self.configureKeepalive(keepalive_idle);
     }
 
-    pub fn configureKeepalive(self: *Client) !void {
-        const sock = self.stream.handle;
+    pub fn configureKeepalive(self: *Client, seconds: i32) !void {
+        const timeout = std.mem.toBytes(std.posix.timeval{
+            .tv_sec = seconds,
+            .tv_usec = 0,
+        });
 
-        const os = std.c;
-        const size = @sizeOf(i32);
-
-        const enable: i32 = 1;
-        if (os.setsockopt(sock, os.SOL.SOCKET, os.SO.KEEPALIVE, &enable, size) != 0) {
-            return error.SetSockOptError;
-        }
-
-        const idle: i32 = 10; // 10 seconds
-        if (os.setsockopt(sock, os.IPPROTO.TCP, os.TCP.KEEPIDLE, &idle, size) != 0) {
-            return error.SetSockOptError;
-        }
-
-        const interval: i32 = 5; // 5 seconds
-        if (os.setsockopt(sock, os.IPPROTO.TCP, os.TCP.KEEPINTVL, &interval, size) != 0) {
-            return error.SetSockOptError;
-        }
-
-        const count: i32 = 3; // 3 probes before closing
-        if (os.setsockopt(sock, os.IPPROTO.TCP, os.TCP.KEEPCNT, &count, size) != 0) {
-            return error.SetSockOptError;
-        }
+        try std.posix.setsockopt(
+            self.stream.handle,
+            std.posix.SOL.SOCKET,
+            std.posix.SO.RCVTIMEO,
+            &timeout,
+        );
     }
 
     pub fn getOrCreateChannel(self: *Client, name: []const u8) Allocator.Error!*Channel {
