@@ -806,7 +806,9 @@ pub const Channel = struct {
             maybe_instant = last_msg.localTime(&self.client.app.tz);
         }
 
+        var first_iter = true;
         while (iter.next()) |msg| {
+            defer first_iter = false;
             // Break if we have gone past the top of the screen
             if (row < 0) break;
 
@@ -1001,7 +1003,7 @@ pub const Channel = struct {
             // Check if we should print a "last read" line. If the next message we will print is
             // before the last_read, and this message is after the last_read then it is our border.
             // Before
-            if (maybe_next_instant != null and maybe_instant != null) {
+            if (!first_iter and maybe_next_instant != null and maybe_instant != null) {
                 const this = maybe_instant.?.unixTimestamp();
                 const next = maybe_next_instant.?.unixTimestamp();
                 if (this > self.last_read and next <= self.last_read) {
