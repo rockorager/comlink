@@ -509,9 +509,8 @@ pub const App = struct {
                 if (target[0] != '#') {
                     for (client.channels.items, 0..) |search, i| {
                         if (!mem.eql(u8, search.name, target)) continue;
+                        client.app.prevChannel();
                         var chan = client.channels.orderedRemove(i);
-                        self.buffer_list.cursor -|= 1;
-                        self.buffer_list.ensureScroll();
                         chan.deinit(self.alloc);
                         self.alloc.destroy(chan);
                         break;
