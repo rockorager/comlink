@@ -564,6 +564,9 @@ pub const App = struct {
             .client => |target| {
                 for (self.clients.items) |client| {
                     if (client == target) {
+                        if (self.ctx) |ctx| {
+                            ctx.requestFocus(self.widget()) catch {};
+                        }
                         self.buffer_list.cursor = i;
                         self.buffer_list.ensureScroll();
                         return;
