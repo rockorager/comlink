@@ -929,6 +929,12 @@ pub const Channel = struct {
                     );
                 };
 
+                // If the message has our nick, we'll highlight the time
+                if (std.mem.indexOf(u8, content, self.client.config.nick)) |_| {
+                    style.fg = .{ .index = 3 };
+                    style.reverse = true;
+                }
+
                 const time_text: vxfw.Text = .{
                     .text = buf,
                     .style = style,
@@ -1582,14 +1588,14 @@ pub const Client = struct {
                 self.config.name orelse self.config.server,
                 self.read_buf.items[i..idx],
             });
-            self.handleEvent(self.read_buf.items[i..idx]) catch |err| {
+            self.handleEvent(self.read_buf.items[i..idx], ctx) catch |err| {
                 log.err("error: {}", .{err});
             };
         }
         self.read_buf.replaceRangeAssumeCapacity(0, i, "");
     }
 
-    pub fn handleEvent(self: *Client, line: []const u8) !void {
+    pub fn handleEvent(self: *Client, line: []const u8, ctx: *vxfw.EventContext) !void {
         const msg: Message = .{ .bytes = line };
         const client = self;
         switch (msg.command()) {
@@ -2025,9 +2031,7 @@ pub const Client = struct {
                             @memcpy(buf[0..len], channel.name[0..len]);
                             break :title buf[0..len];
                         };
-                        _ = title;
-                        // TODO: fix this
-                        // try self.vx.notify(writer, title, content);
+                        try ctx.sendNotification(title, content);
                         has_highlight = true;
                     }
                     const time = msg2.time() orelse return;
