@@ -605,7 +605,7 @@ pub const Channel = struct {
 
         if (self.completer_shown) {
             const widest: u16 = @intCast(self.completer.widestMatch(ctx));
-            const completer_ctx = ctx.withConstraints(ctx.min, .{ .height = 10, .width = widest });
+            const completer_ctx = ctx.withConstraints(ctx.min, .{ .height = 10, .width = widest + 2 });
             const surface = try self.completer.list_view.draw(completer_ctx);
             const height: u16 = @intCast(@min(10, self.completer.options.items.len));
             try children.append(.{
