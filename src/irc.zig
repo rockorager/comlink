@@ -454,14 +454,17 @@ pub const Channel = struct {
         self.has_unread = false;
         self.has_unread_highlight = false;
         const last_msg = self.messages.getLastOrNull() orelse return;
-        const time_tag = last_msg.getTag("time") orelse return;
-        try self.client.print(
-            "MARKREAD {s} timestamp={s}\r\n",
-            .{
-                self.name,
-                time_tag,
-            },
-        );
+        const time = last_msg.time() orelse return;
+        if (time.unixTimestamp() > self.last_read) {
+            const time_tag = last_msg.getTag("time") orelse return;
+            try self.client.print(
+                "MARKREAD {s} timestamp={s}\r\n",
+                .{
+                    self.name,
+                    time_tag,
+                },
+            );
+        }
     }
 
     pub fn contentWidget(self: *Channel) vxfw.Widget {
