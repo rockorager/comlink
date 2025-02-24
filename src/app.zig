@@ -204,6 +204,19 @@ pub const App = struct {
                 if (key.matches('c', .{ .ctrl = true })) {
                     ctx.quit = true;
                 }
+                for (self.binds.items) |bind| {
+                    if (key.matches(bind.key.codepoint, bind.key.mods)) {
+                        switch (bind.command) {
+                            .quit => self.should_quit = true,
+                            .@"next-channel" => self.nextChannel(),
+                            .@"prev-channel" => self.prevChannel(),
+                            .redraw => try ctx.queueRefresh(),
+                            .lua_function => |ref| try lua.execFn(self.lua, ref),
+                            else => {},
+                        }
+                        return ctx.consumeAndRedraw();
+                    }
+                }
             },
             else => {},
         }
@@ -217,24 +230,6 @@ pub const App = struct {
                 const title = try std.fmt.bufPrint(&self.title_buf, "comlink", .{});
                 try ctx.setTitle(title);
                 try ctx.tick(8, self.widget());
-            },
-            .key_press => |key| {
-                if (key.matches('c', .{ .ctrl = true })) {
-                    ctx.quit = true;
-                }
-                for (self.binds.items) |bind| {
-                    if (key.matches(bind.key.codepoint, bind.key.mods)) {
-                        switch (bind.command) {
-                            .quit => self.should_quit = true,
-                            .@"next-channel" => self.nextChannel(),
-                            .@"prev-channel" => self.prevChannel(),
-                            // .redraw => self.vx.queueRefresh(),
-                            .lua_function => |ref| try lua.execFn(self.lua, ref),
-                            else => {},
-                        }
-                        return ctx.consumeAndRedraw();
-                    }
-                }
             },
             .tick => {
                 for (self.clients.items) |client| {

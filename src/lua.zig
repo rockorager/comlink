@@ -361,18 +361,18 @@ const Comlink = struct {
         lua.argCheck(lua.isString(1), 1, "expected a string"); // [string, string]
         lua.argCheck(lua.isString(2), 2, "expected a string"); // [string, string]
         const app = getApp(lua);
-        _ = app; // autofix
         const title = lua.toString(1) catch { // [string, string]
             lua.raiseErrorStr("couldn't write notification", .{});
         };
-        _ = title; // autofix
         const body = lua.toString(2) catch { // [string, string]
             lua.raiseErrorStr("couldn't write notification", .{});
         };
-        _ = body; // autofix
         lua.pop(2); // []
-        // app.vx.notify(app.tty.anyWriter(), title, body) catch
-        //     lua.raiseErrorStr("couldn't write notification", .{});
+        if (app.ctx) |ctx| {
+            ctx.sendNotification(title, body) catch {
+                lua.raiseErrorStr("couldn't write notification", .{});
+            };
+        }
         return 0;
     }
 
