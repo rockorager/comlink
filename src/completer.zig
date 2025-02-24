@@ -37,15 +37,10 @@ pub const Completer = struct {
         };
     }
 
-    fn getWidget(ptr: *const anyopaque, idx: usize, cursor: usize) ?vxfw.Widget {
-        const self: *Completer = @constCast(@ptrCast(@alignCast(ptr)));
+    fn getWidget(ptr: *const anyopaque, idx: usize, _: usize) ?vxfw.Widget {
+        const self: *const Completer = @ptrCast(@alignCast(ptr));
         if (idx < self.options.items.len) {
             const item = &self.options.items[idx];
-            if (idx == cursor) {
-                item.style = selected;
-            } else {
-                item.style = style;
-            }
             return item.widget();
         }
         return null;
@@ -57,7 +52,6 @@ pub const Completer = struct {
                 .userdata = self,
                 .buildFn = Completer.getWidget,
             } },
-            .draw_cursor = false,
         };
         self.start_idx = if (std.mem.lastIndexOfScalar(u8, line, ' ')) |idx| idx + 1 else 0;
         self.word = line[self.start_idx..];
@@ -160,13 +154,13 @@ pub const Completer = struct {
         for (commands) |cmd| {
             if (std.mem.eql(u8, cmd, "lua_function")) continue;
             if (std.ascii.startsWithIgnoreCase(cmd, self.word[1..])) {
-                try self.options.append(.{ .text = cmd });
+                try self.options.append(.{ .text = cmd, .softwrap = false });
             }
         }
         var iter = Command.user_commands.keyIterator();
         while (iter.next()) |cmd| {
             if (std.ascii.startsWithIgnoreCase(cmd.*, self.word[1..])) {
-                try self.options.append(.{ .text = cmd.* });
+                try self.options.append(.{ .text = cmd.*, .softwrap = false });
             }
         }
         self.list_view.cursor = @intCast(self.options.items.len -| 1);
@@ -181,7 +175,7 @@ pub const Completer = struct {
 
         for (keys, values) |shortcode, glyph| {
             if (std.mem.indexOf(u8, shortcode, self.word[1..])) |_|
-                try self.options.append(.{ .text = glyph });
+                try self.options.append(.{ .text = glyph, .softwrap = false });
         }
         self.list_view.cursor = @intCast(self.options.items.len -| 1);
         self.list_view.item_count = @intCast(self.options.items.len);
