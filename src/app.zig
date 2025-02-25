@@ -59,8 +59,6 @@ pub const App = struct {
 
     completer: ?Completer,
 
-    should_quit: bool,
-
     binds: std.ArrayList(Bind),
 
     paste_buffer: std.ArrayList(u8),
@@ -104,7 +102,6 @@ pub const App = struct {
             .bundle = .{},
             .deinited = false,
             .completer = null,
-            .should_quit = false,
             .buffer_list = .{
                 .children = .{
                     .builder = .{
@@ -207,7 +204,7 @@ pub const App = struct {
                 for (self.binds.items) |bind| {
                     if (key.matches(bind.key.codepoint, bind.key.mods)) {
                         switch (bind.command) {
-                            .quit => self.should_quit = true,
+                            .quit => ctx.quit = true,
                             .@"next-channel" => self.nextChannel(),
                             .@"prev-channel" => self.prevChannel(),
                             .redraw => try ctx.queueRefresh(),
@@ -486,7 +483,9 @@ pub const App = struct {
             },
             .@"next-channel" => self.nextChannel(),
             .@"prev-channel" => self.prevChannel(),
-            .quit => self.should_quit = true,
+            .quit => {
+                if (self.ctx) |ctx| ctx.quit = true;
+            },
             .who => {
                 if (channel == null) return error.InvalidCommand;
                 const msg = try std.fmt.bufPrint(
@@ -629,22 +628,4 @@ fn writeLoop(alloc: std.mem.Allocator, queue: *comlink.WriteQueue) !void {
             },
         }
     }
-}
-
-/// Returns the number of lines the segments would consume in the given window
-fn lineCountForWindow(win: vaxis.Window, segments: []const vaxis.Segment) usize {
-    // Fastpath if we have fewer bytes than the width
-    var byte_count: usize = 0;
-    for (segments) |segment| {
-        byte_count += segment.text.len;
-    }
-    // One line if we are fewer bytes than the width
-    if (byte_count <= win.width) return 1;
-
-    // Slow path. We have to layout the text
-    const result = win.print(segments, .{ .commit = false, .wrap = .word }) catch return 0;
-    if (result.col == 0)
-        return result.row
-    else
-        return result.row + 1;
 }
