@@ -2611,7 +2611,8 @@ fn formatMessage(
                                         break;
                                     },
                                     else => {
-                                        if (i == content.len) {
+                                        if (i == content.len - 1) {
+                                            start = i + 1;
                                             try spans.append(.{
                                                 .text = content[h_start..],
                                                 .style = .{
