@@ -392,7 +392,10 @@ pub const Channel = struct {
                 },
             }
         }
-        if (self.has_unread) style.fg = .{ .index = 4 };
+        if (self.has_unread) {
+            style.fg = .{ .index = 4 };
+            style.bold = true;
+        }
         const prefix: vxfw.RichText.TextSpan = if (self.has_unread_highlight)
             .{ .text = " ●︎", .style = .{ .fg = .{ .index = 1 } } }
         else
