@@ -294,36 +294,6 @@ pub const App = struct {
         return null;
     }
 
-    fn contentWidget(self: *App) vxfw.Widget {
-        return .{
-            .userdata = self,
-            .captureHandler = null,
-            .eventHandler = null,
-            .drawFn = App.typeErasedContentDrawFn,
-        };
-    }
-
-    fn typeErasedContentDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
-        _ = ptr;
-        const text: vxfw.Text = .{ .text = "content" };
-        return text.draw(ctx);
-    }
-
-    fn memberWidget(self: *App) vxfw.Widget {
-        return .{
-            .userdata = self,
-            .captureHandler = null,
-            .eventHandler = null,
-            .drawFn = App.typeErasedMembersDrawFn,
-        };
-    }
-
-    fn typeErasedMembersDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
-        _ = ptr;
-        const text: vxfw.Text = .{ .text = "members" };
-        return text.draw(ctx);
-    }
-
     pub fn connect(self: *App, cfg: irc.Client.Config) !void {
         const client = try self.alloc.create(irc.Client);
         client.* = try irc.Client.init(self.alloc, self, &self.write_queue, cfg);
