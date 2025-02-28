@@ -620,11 +620,38 @@ pub const Channel = struct {
             .surface = scrollbar_surface,
         });
 
-        // Draw the text field
-        try children.append(.{
-            .origin = .{ .col = 0, .row = max.height - 1 },
-            .surface = try self.text_field.draw(ctx),
-        });
+        {
+            // Draw the character limit. 14 is length of message overhead "PRIVMSG  :\r\n"
+            const max_limit = maximum_message_size -| self.name.len -| 14 -| self.name.len;
+            const limit = try std.fmt.allocPrint(
+                ctx.arena,
+                "{d}/{d}",
+                .{ self.text_field.buf.realLength(), max_limit },
+            );
+            const style: vaxis.Style = if (self.text_field.buf.realLength() > max_limit)
+                .{ .fg = .{ .index = 1 } }
+            else
+                .{ .dim = true };
+            const limit_text: vxfw.Text = .{ .text = limit, .style = style };
+            const limit_ctx = ctx.withConstraints(.{}, ctx.max);
+            const limit_s = try limit_text.draw(limit_ctx);
+
+            try children.append(.{
+                .origin = .{ .col = max.width -| limit_s.size.width, .row = max.height - 1 },
+                .surface = limit_s,
+            });
+
+            const text_field_ctx = ctx.withConstraints(
+                ctx.min,
+                .{ .height = 1, .width = max.width -| limit_s.size.width -| 1 },
+            );
+
+            // Draw the text field
+            try children.append(.{
+                .origin = .{ .col = 0, .row = max.height - 1 },
+                .surface = try self.text_field.draw(text_field_ctx),
+            });
+        }
 
         if (self.completer_shown) {
             const widest: u16 = @intCast(self.completer.widestMatch(ctx));
