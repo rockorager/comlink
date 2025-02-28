@@ -198,6 +198,15 @@ pub const App = struct {
         self.ctx = ctx;
         switch (event) {
             .key_press => |key| {
+                if (self.state.paste.pasting) {
+                    ctx.consume_event = true;
+                    // Always ignore enter key
+                    if (key.codepoint == vaxis.Key.enter) return;
+                    if (key.text) |text| {
+                        try self.paste_buffer.appendSlice(text);
+                    }
+                    return;
+                }
                 if (key.matches('c', .{ .ctrl = true })) {
                     ctx.quit = true;
                 }
@@ -212,6 +221,24 @@ pub const App = struct {
                             else => {},
                         }
                         return ctx.consumeAndRedraw();
+                    }
+                }
+            },
+            .paste_start => self.state.paste.pasting = true,
+            .paste_end => {
+                self.state.paste.pasting = false;
+                if (std.mem.indexOfScalar(u8, self.paste_buffer.items, '\n')) |_| {
+                    log.debug("paste had line ending", .{});
+                    return;
+                }
+                defer self.paste_buffer.clearRetainingCapacity();
+                if (self.selectedBuffer()) |buffer| {
+                    switch (buffer) {
+                        .client => {},
+                        .channel => |channel| {
+                            try channel.text_field.insertSliceAtCursor(self.paste_buffer.items);
+                            return ctx.consumeAndRedraw();
+                        },
                     }
                 }
             },
