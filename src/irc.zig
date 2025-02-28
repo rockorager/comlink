@@ -151,6 +151,7 @@ pub const Channel = struct {
     completer: Completer,
     completer_shown: bool = false,
     typing_last_active: u32 = 0,
+    typing_last_sent: u32 = 0,
 
     // Gutter (left side where time is printed) width
     const gutter_width = 6;
@@ -276,6 +277,7 @@ pub const Channel = struct {
 
         self.text_field.userdata = self;
         self.text_field.onSubmit = Channel.onSubmit;
+        self.text_field.onChange = Channel.onChange;
     }
 
     fn onSubmit(ptr: ?*anyopaque, ctx: *vxfw.EventContext, input: []const u8) anyerror!void {
@@ -295,6 +297,25 @@ pub const Channel = struct {
             try self.client.print("PRIVMSG {s} :{s}\r\n", .{ self.name, local });
         }
         ctx.redraw = true;
+    }
+
+    fn onChange(ptr: ?*anyopaque, _: *vxfw.EventContext, input: []const u8) anyerror!void {
+        const self: *Channel = @ptrCast(@alignCast(ptr orelse unreachable));
+        if (std.mem.startsWith(u8, input, "/")) {
+            return;
+        }
+        if (input.len == 0) {
+            self.typing_last_sent = 0;
+            try self.client.print("@+typing=done TAGMSG {s}\r\n", .{self.name});
+            return;
+        }
+        const now: u32 = @intCast(std.time.timestamp());
+        // Send another typing message if it's been more than 3 seconds
+        if (self.typing_last_sent + 3 < now) {
+            try self.client.print("@+typing=active TAGMSG {s}\r\n", .{self.name});
+            self.typing_last_sent = now;
+            return;
+        }
     }
 
     pub fn deinit(self: *Channel, alloc: std.mem.Allocator) void {
@@ -2048,8 +2069,9 @@ pub const Client = struct {
                 const target = iter.next() orelse return;
                 var channel = try client.getOrCreateChannel(target);
 
+                const trimmed_nick = std.mem.trimRight(u8, user.nick, "_");
                 // If it's our nick, we request chat history
-                if (mem.eql(u8, user.nick, client.nickname())) {
+                if (mem.eql(u8, trimmed_nick, client.nickname())) {
                     try client.requestHistory(.after, channel);
                     if (self.app.explicit_join) {
                         self.app.selectChannelName(client, target);
