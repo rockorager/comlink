@@ -1751,6 +1751,8 @@ pub const Client = struct {
                             try client.queueWrite("AUTHENTICATE PLAIN\r\n");
                     } else if (mem.eql(u8, ack_or_nak, "NAK")) {
                         log.debug("CAP not supported {s}", .{cap});
+                    } else if (mem.eql(u8, ack_or_nak, "DEL")) {
+                        client.del(cap);
                     }
                 }
             },
@@ -2250,6 +2252,18 @@ pub const Client = struct {
 
     pub fn nickname(self: *Client) []const u8 {
         return self.config.network_nick orelse self.config.nick;
+    }
+
+    pub fn del(self: *Client, cap: []const u8) void {
+        const info = @typeInfo(Capabilities);
+        assert(info == .Struct);
+
+        inline for (info.Struct.fields) |field| {
+            if (std.mem.eql(u8, field.name, cap)) {
+                @field(self.caps, field.name) = false;
+                return;
+            }
+        }
     }
 
     pub fn ack(self: *Client, cap: []const u8) void {
