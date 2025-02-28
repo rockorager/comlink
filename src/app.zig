@@ -264,6 +264,7 @@ pub const App = struct {
                         try irc.Client.retryTickHandler(client, ctx, .tick);
                     }
                     client.drainFifo(ctx);
+                    client.checkTypingStatus(ctx);
                 }
                 try ctx.tick(8, self.widget());
             },
