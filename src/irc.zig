@@ -67,6 +67,7 @@ pub const Command = enum {
     NOTICE,
     PART,
     PRIVMSG,
+    TAGMSG,
 
     unknown,
 
@@ -98,6 +99,7 @@ pub const Command = enum {
         .{ "NOTICE", .NOTICE },
         .{ "PART", .PART },
         .{ "PRIVMSG", .PRIVMSG },
+        .{ "TAGMSG", .TAGMSG },
     });
 
     pub fn parse(cmd: []const u8) Command {
@@ -148,6 +150,7 @@ pub const Channel = struct {
 
     completer: Completer,
     completer_shown: bool = false,
+    typing_last_active: u32 = 0,
 
     // Gutter (left side where time is printed) width
     const gutter_width = 6;
@@ -160,6 +163,7 @@ pub const Channel = struct {
 
         channel: *Channel,
         has_mouse: bool = false,
+        typing: u32 = 0,
 
         pub fn compare(_: void, lhs: Member, rhs: Member) bool {
             return if (lhs.prefix != ' ' and rhs.prefix == ' ')
@@ -619,6 +623,51 @@ pub const Channel = struct {
             .origin = .{ .col = max.width - 1, .row = 2 },
             .surface = scrollbar_surface,
         });
+
+        // Draw typers
+        typing: {
+            var buf: [3]*User = undefined;
+            const typers = self.getTypers(&buf);
+
+            switch (typers.len) {
+                0 => break :typing,
+                1 => {
+                    const text = try std.fmt.allocPrint(
+                        ctx.arena,
+                        "{s} is typing...",
+                        .{typers[0].nick},
+                    );
+                    const typer: vxfw.Text = .{ .text = text, .style = .{ .dim = true } };
+                    const typer_ctx = ctx.withConstraints(.{}, ctx.max);
+                    try children.append(.{
+                        .origin = .{ .col = 0, .row = max.height - 2 },
+                        .surface = try typer.draw(typer_ctx),
+                    });
+                },
+                2 => {
+                    const text = try std.fmt.allocPrint(
+                        ctx.arena,
+                        "{s} and {s} are typing...",
+                        .{ typers[0].nick, typers[1].nick },
+                    );
+                    const typer: vxfw.Text = .{ .text = text, .style = .{ .dim = true } };
+                    const typer_ctx = ctx.withConstraints(.{}, ctx.max);
+                    try children.append(.{
+                        .origin = .{ .col = 0, .row = max.height - 2 },
+                        .surface = try typer.draw(typer_ctx),
+                    });
+                },
+                else => {
+                    const text = "Several people are typing...";
+                    const typer: vxfw.Text = .{ .text = text, .style = .{ .dim = true } };
+                    const typer_ctx = ctx.withConstraints(.{}, ctx.max);
+                    try children.append(.{
+                        .origin = .{ .col = 0, .row = max.height - 2 },
+                        .surface = try typer.draw(typer_ctx),
+                    });
+                },
+            }
+        }
 
         {
             // Draw the character limit. 14 is length of message overhead "PRIVMSG  :\r\n"
@@ -1115,6 +1164,37 @@ pub const Channel = struct {
 
         // In any other case, we
         return false;
+    }
+
+    fn getTypers(self: *Channel, buf: []*User) []*User {
+        const now: u32 = @intCast(std.time.timestamp());
+        var i: usize = 0;
+        for (self.members.items) |member| {
+            if (i == buf.len) {
+                return buf[0..i];
+            }
+            // The spec says we should consider people as typing if the last typing message was
+            // received within 6 seconds from now
+            if (member.typing + 6 >= now) {
+                buf[i] = member.user;
+                i += 1;
+            }
+        }
+        return buf[0..i];
+    }
+
+    fn typingCount(self: *Channel) usize {
+        const now: u32 = @intCast(std.time.timestamp());
+
+        var n: usize = 0;
+        for (self.members.items) |member| {
+            // The spec says we should consider people as typing if the last typing message was
+            // received within 6 seconds from now
+            if (member.typing + 6 >= now) {
+                n += 1;
+            }
+        }
+        return n;
     }
 };
 
@@ -1639,6 +1719,19 @@ pub const Client = struct {
         self.read_buf.replaceRangeAssumeCapacity(0, i, "");
     }
 
+    // Checks if any channel has an expired typing status. The typing status is considered expired
+    // if the last typing status received is more than 6 seconds ago. In this case, we set the last
+    // typing time to 0 and redraw.
+    pub fn checkTypingStatus(self: *Client, ctx: *vxfw.EventContext) void {
+        const now: u32 = @intCast(std.time.timestamp());
+        for (self.channels.items) |channel| {
+            if (channel.typing_last_active > 0 and
+                channel.typing_last_active + 6 >= now) continue;
+            channel.typing_last_active = 0;
+            ctx.redraw = true;
+        }
+    }
+
     pub fn handleEvent(self: *Client, line: []const u8, ctx: *vxfw.EventContext) !void {
         const msg: Message = .{ .bytes = line };
         const client = self;
@@ -2093,6 +2186,62 @@ pub const Client = struct {
                     };
                     if (std.mem.eql(u8, sender, client.nickname())) {
                         self.app.markSelectedChannelRead();
+                    }
+
+                    // Set the typing time to 0
+                    for (channel.members.items) |*member| {
+                        if (!std.mem.eql(u8, member.user.nick, sender)) {
+                            continue;
+                        }
+                        member.typing = 0;
+                        return;
+                    }
+                }
+            },
+            .TAGMSG => {
+                const msg2: Message = .{ .bytes = msg.bytes };
+                // We only care about typing tags
+                const typing = msg2.getTag("+typing") orelse return;
+
+                var iter = msg2.paramIterator();
+                const target = blk: {
+                    const tgt = iter.next() orelse return;
+                    if (mem.eql(u8, tgt, client.nickname())) {
+                        // If the target is us, it likely has our
+                        // hostname in it.
+                        const source = msg2.source() orelse return;
+                        const n = mem.indexOfScalar(u8, source, '!') orelse source.len;
+                        break :blk source[0..n];
+                    } else break :blk tgt;
+                };
+                const sender: []const u8 = blk: {
+                    const src = msg2.source() orelse break :blk "";
+                    const l = std.mem.indexOfScalar(u8, src, '!') orelse
+                        std.mem.indexOfScalar(u8, src, '@') orelse
+                        src.len;
+                    break :blk src[0..l];
+                };
+                // if (std.mem.eql(u8, sender, client.nickname())) {
+                //     // We never considuer ourselves as typing
+                //     return;
+                // }
+                const channel = try client.getOrCreateChannel(target);
+
+                for (channel.members.items) |*member| {
+                    if (!std.mem.eql(u8, member.user.nick, sender)) {
+                        continue;
+                    }
+                    if (std.mem.eql(u8, "done", typing)) {
+                        member.typing = 0;
+                        ctx.redraw = true;
+                        return;
+                    }
+                    if (std.mem.eql(u8, "active", typing)) {
+                        const time = msg2.time() orelse return;
+                        member.typing = @intCast(time.unixTimestamp());
+                        channel.typing_last_active = member.typing;
+                        ctx.redraw = true;
+                        return;
                     }
                 }
             },
