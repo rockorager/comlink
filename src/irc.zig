@@ -2245,10 +2245,11 @@ pub const Client = struct {
                         src.len;
                     break :blk src[0..l];
                 };
-                // if (std.mem.eql(u8, sender, client.nickname())) {
-                //     // We never considuer ourselves as typing
-                //     return;
-                // }
+                const sender_trimmed = std.mem.trimRight(u8, sender, "_");
+                if (std.mem.eql(u8, sender_trimmed, client.nickname())) {
+                    // We never considuer ourselves as typing
+                    return;
+                }
                 const channel = try client.getOrCreateChannel(target);
 
                 for (channel.members.items) |*member| {
