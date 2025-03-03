@@ -2236,17 +2236,17 @@ pub const Client = struct {
                         break :title buf[0..len];
                     };
                     try ctx.sendNotification(title, content);
+                }
 
-                    if (client.caps.@"message-tags") {
-                        // Set the typing time to 0. We only need to do this when the server
-                        // supports message-tags
-                        for (channel.members.items) |*member| {
-                            if (!std.mem.eql(u8, member.user.nick, sender)) {
-                                continue;
-                            }
-                            member.typing = 0;
-                            return;
+                if (client.caps.@"message-tags") {
+                    // Set the typing time to 0. We only need to do this when the server
+                    // supports message-tags
+                    for (channel.members.items) |*member| {
+                        if (!std.mem.eql(u8, member.user.nick, sender)) {
+                            continue;
                         }
+                        member.typing = 0;
+                        return;
                     }
                 }
             },
