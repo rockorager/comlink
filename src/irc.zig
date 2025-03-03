@@ -1129,7 +1129,7 @@ pub const Channel = struct {
             if (this <= self.last_read) did_scroll_to_last_read = true;
 
             if (this > self.last_read_indicator and next <= self.last_read_indicator) {
-                const bot = "─";
+                const bot = "━";
                 var writer = try std.ArrayList(u8).initCapacity(ctx.arena, bot.len * max.width);
                 try writer.writer().writeBytesNTimes(bot, max.width);
 
