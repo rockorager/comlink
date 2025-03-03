@@ -247,7 +247,19 @@ pub const App = struct {
                 }
             },
             .focus_out => self.has_focus = false,
-            .focus_in => self.has_focus = true,
+
+            .focus_in => {
+                if (self.selectedBuffer()) |buffer| {
+                    // If we have a selected channel, we reset the last_read_indicator state when
+                    // losing focus. This means that any messages received
+                    switch (buffer) {
+                        .client => {},
+                        .channel => |channel| channel.last_read_indicator = channel.last_read,
+                    }
+                }
+
+                self.has_focus = true;
+            },
 
             else => {},
         }
