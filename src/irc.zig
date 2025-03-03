@@ -126,7 +126,7 @@ pub const Channel = struct {
     // The location of the last read indicator. This doesn't necessarily match the state of
     // last_read
     last_read_indicator: u32 = 0,
-    scroll_to_last_read: bool = true,
+    scroll_to_last_read: bool = false,
     has_unread: bool = false,
     has_unread_highlight: bool = false,
 
@@ -382,6 +382,9 @@ pub const Channel = struct {
     pub fn doSelect(self: *Channel) void {
         // Set the state of the last_read_indicator
         self.last_read_indicator = self.last_read;
+        if (self.has_unread) {
+            self.scroll_to_last_read = true;
+        }
     }
 
     fn typeErasedEventHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
@@ -912,7 +915,13 @@ pub const Channel = struct {
         // True when we *don't* need to scroll to last message. False if we do. We will turn this
         // true when we have it the last message
         var did_scroll_to_last_read = !self.scroll_to_last_read;
+        // We track whether we need to reposition the viewport based on the position of the
+        // last_read scroll
+        var needs_reposition = true;
         while (iter.next()) |msg| {
+            if (row >= 0 and did_scroll_to_last_read) {
+                needs_reposition = false;
+            }
             // Break if we have gone past the top of the screen
             if (row < 0 and did_scroll_to_last_read) break;
 
@@ -1157,7 +1166,7 @@ pub const Channel = struct {
         // check that we have messages, and if we do that the top message is outside the viewport.
         // If we don't have messages, or the top message is within the viewport, we don't have to
         // reposition
-        if (self.scroll_to_last_read and
+        if (needs_reposition and
             children.items.len > 0 and
             children.getLast().origin.row < 0)
         {
@@ -1175,7 +1184,7 @@ pub const Channel = struct {
             self.scroll_to_last_read = false;
         }
 
-        if (self.has_unread and self.messageViewIsAtBottom()) {
+        if (self.has_unread and self.client.app.has_focus and self.messageViewIsAtBottom()) {
             try self.markRead();
         }
 
@@ -2225,14 +2234,9 @@ pub const Client = struct {
                         channel.has_unread_highlight = has_highlight;
                         channel.has_unread = true;
                     }
-                    // If we get a message from the current user mark the channel as
-                    // read, since they must have just sent the message.
-                    const sender = msg2.senderNick() orelse "";
-                    if (std.mem.eql(u8, sender, client.nickname())) {
-                        self.app.markSelectedChannelRead();
-                    }
 
                     // Set the typing time to 0
+                    const sender = msg2.senderNick() orelse "";
                     for (channel.members.items) |*member| {
                         if (!std.mem.eql(u8, member.user.nick, sender)) {
                             continue;

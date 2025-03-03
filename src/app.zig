@@ -78,6 +78,9 @@ pub const App = struct {
     ctx: ?*vxfw.EventContext,
     last_height: u16,
 
+    /// Whether the application has focus or not
+    has_focus: bool,
+
     const default_rhs: vxfw.Text = .{ .text = "TODO: update this text" };
 
     /// initialize vaxis, lua state
@@ -115,6 +118,7 @@ pub const App = struct {
             .title_buf = undefined,
             .ctx = null,
             .last_height = 0,
+            .has_focus = true,
         };
 
         self.lua = try Lua.init(&self.alloc);
@@ -242,6 +246,9 @@ pub const App = struct {
                     }
                 }
             },
+            .focus_out => self.has_focus = false,
+            .focus_in => self.has_focus = true,
+
             else => {},
         }
     }
@@ -329,9 +336,6 @@ pub const App = struct {
     }
 
     pub fn nextChannel(self: *App) void {
-        // When leaving a channel we mark it as read, so we make sure that's done
-        // before we change to the new channel.
-        self.markSelectedChannelRead();
         if (self.ctx) |ctx| {
             self.buffer_list.nextItem(ctx);
             if (self.selectedBuffer()) |buffer| {
@@ -348,9 +352,6 @@ pub const App = struct {
     }
 
     pub fn prevChannel(self: *App) void {
-        // When leaving a channel we mark it as read, so we make sure that's done
-        // before we change to the new channel.
-        self.markSelectedChannelRead();
         if (self.ctx) |ctx| {
             self.buffer_list.prevItem(ctx);
             if (self.selectedBuffer()) |buffer| {
@@ -555,7 +556,6 @@ pub const App = struct {
     }
 
     pub fn selectBuffer(self: *App, buffer: irc.Buffer) void {
-        self.markSelectedChannelRead();
         var i: u32 = 0;
         switch (buffer) {
             .client => |target| {
@@ -589,17 +589,6 @@ pub const App = struct {
                     }
                 }
             },
-        }
-    }
-
-    pub fn markSelectedChannelRead(self: *App) void {
-        const buffer = self.selectedBuffer() orelse return;
-
-        switch (buffer) {
-            .channel => |channel| {
-                if (channel.messageViewIsAtBottom()) channel.markRead() catch return;
-            },
-            else => {},
         }
     }
 };
