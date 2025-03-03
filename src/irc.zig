@@ -121,7 +121,11 @@ pub const Channel = struct {
     history_requested: bool = false,
     who_requested: bool = false,
     at_oldest: bool = false,
-    last_read: i64 = 0,
+    // The MARKREAD state of this channel
+    last_read: u32 = 0,
+    // The location of the last read indicator. This doesn't necessarily match the state of
+    // last_read
+    last_read_indicator: u32 = 0,
     has_unread: bool = false,
     has_unread_highlight: bool = false,
 
@@ -299,6 +303,11 @@ pub const Channel = struct {
         ctx.redraw = true;
     }
 
+    pub fn insertMessage(self: *Channel, msg: Message) !void {
+        try self.messages.append(msg);
+        std.sort.insertion(Message, self.messages.items, {}, Message.compareTime);
+    }
+
     fn onChange(ptr: ?*anyopaque, _: *vxfw.EventContext, input: []const u8) anyerror!void {
         const self: *Channel = @ptrCast(@alignCast(ptr orelse unreachable));
         if (std.mem.startsWith(u8, input, "/")) {
@@ -337,18 +346,18 @@ pub const Channel = struct {
     }
 
     pub fn compareRecentMessages(self: *Channel, lhs: Member, rhs: Member) bool {
-        var l: i64 = 0;
-        var r: i64 = 0;
+        var l: u32 = 0;
+        var r: u32 = 0;
         var iter = std.mem.reverseIterator(self.messages.items);
         while (iter.next()) |msg| {
             if (msg.source()) |source| {
                 const bang = std.mem.indexOfScalar(u8, source, '!') orelse source.len;
                 const nick = source[0..bang];
 
-                if (l == 0 and msg.time() != null and std.mem.eql(u8, lhs.user.nick, nick)) {
-                    l = msg.time().?.unixTimestamp();
-                } else if (r == 0 and msg.time() != null and std.mem.eql(u8, rhs.user.nick, nick))
-                    r = msg.time().?.unixTimestamp();
+                if (l == 0 and std.mem.eql(u8, lhs.user.nick, nick)) {
+                    l = msg.timestamp_s;
+                } else if (r == 0 and std.mem.eql(u8, rhs.user.nick, nick))
+                    r = msg.timestamp_s;
             }
             if (l > 0 and r > 0) break;
         }
@@ -502,8 +511,7 @@ pub const Channel = struct {
         self.has_unread = false;
         self.has_unread_highlight = false;
         const last_msg = self.messages.getLastOrNull() orelse return;
-        const time = last_msg.time() orelse return;
-        if (time.unixTimestamp() > self.last_read) {
+        if (last_msg.timestamp_s > self.last_read) {
             const time_tag = last_msg.getTag("time") orelse return;
             try self.client.print(
                 "MARKREAD {s} timestamp={s}\r\n",
@@ -876,10 +884,7 @@ pub const Channel = struct {
     fn drawMessageView(self: *Channel, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
         self.message_view.hovered_message = null;
         const max = ctx.max.size();
-        if (max.width == 0 or
-            max.height == 0 or
-            self.messages.items.len == 0)
-        {
+        if (max.width == 0 or max.height == 0 or self.messages.items.len == 0) {
             return .{
                 .size = max,
                 .widget = self.messageViewWidget(),
@@ -898,18 +903,13 @@ pub const Channel = struct {
         const messages = self.messages.items[0..offset];
         var iter = std.mem.reverseIterator(messages);
 
-        var sender: []const u8 = "";
-        var maybe_instant: ?zeit.Instant = null;
-
-        {
-            assert(messages.len > 0);
-            // Initialize sender and maybe_instant to the last message values
-            const last_msg = iter.next() orelse unreachable;
-            // Reset iter index
-            iter.index += 1;
-            sender = last_msg.senderNick() orelse "";
-            maybe_instant = last_msg.localTime(&self.client.app.tz);
-        }
+        assert(messages.len > 0);
+        // Initialize sender and maybe_instant to the last message values
+        const last_msg = iter.next() orelse unreachable;
+        // Reset iter index
+        iter.index += 1;
+        var sender = last_msg.senderNick() orelse "";
+        var this_instant = last_msg.localTime(&self.client.app.tz);
 
         while (iter.next()) |msg| {
             // Break if we have gone past the top of the screen
@@ -936,7 +936,9 @@ pub const Channel = struct {
 
             defer {
                 // After this loop, we want to save these values for the next iteration
-                maybe_instant = maybe_next_instant;
+                if (maybe_next_instant) |next_instant| {
+                    this_instant = next_instant;
+                }
                 sender = next_sender;
             }
 
@@ -1004,29 +1006,16 @@ pub const Channel = struct {
                 .surface = surface,
             });
 
-            // If we have a time, print it in the gutter
-            if (maybe_instant) |instant| {
-                var style: vaxis.Style = .{ .dim = true };
+            var style: vaxis.Style = .{ .dim = true };
 
-                // The time text we will print
-                const buf: []const u8 = blk: {
-                    const time = instant.time();
-                    // Check our next time. If *this* message occurs on a different day, we want to
-                    // print the date
-                    if (maybe_next_instant) |next_instant| {
-                        const next_time = next_instant.time();
-                        if (time.day != next_time.day) {
-                            style = .{};
-                            break :blk try std.fmt.allocPrint(
-                                ctx.arena,
-                                "{d:0>2}/{d:0>2}",
-                                .{ @intFromEnum(time.month), time.day },
-                            );
-                        }
-                    }
-
-                    // if it is the first message, we also want to print the date
-                    if (iter.index == 0) {
+            // The time text we will print
+            const buf: []const u8 = blk: {
+                const time = this_instant.time();
+                // Check our next time. If *this* message occurs on a different day, we want to
+                // print the date
+                if (maybe_next_instant) |next_instant| {
+                    const next_time = next_instant.time();
+                    if (time.day != next_time.day) {
                         style = .{};
                         break :blk try std.fmt.allocPrint(
                             ctx.arena,
@@ -1034,38 +1023,48 @@ pub const Channel = struct {
                             .{ @intFromEnum(time.month), time.day },
                         );
                     }
-
-                    // Otherwise, we print clock time
-                    break :blk try std.fmt.allocPrint(
-                        ctx.arena,
-                        "{d:0>2}:{d:0>2}",
-                        .{ time.hour, time.minute },
-                    );
-                };
-
-                // If the message has our nick, we'll highlight the time
-                if (std.mem.indexOf(u8, content, self.client.nickname())) |_| {
-                    style.fg = .{ .index = 3 };
-                    style.reverse = true;
                 }
 
-                const time_text: vxfw.Text = .{
-                    .text = buf,
-                    .style = style,
-                    .softwrap = false,
-                };
-                try children.append(.{
-                    .origin = .{ .row = row, .col = 0 },
-                    .surface = try time_text.draw(child_ctx),
-                });
+                // if it is the first message, we also want to print the date
+                if (iter.index == 0) {
+                    style = .{};
+                    break :blk try std.fmt.allocPrint(
+                        ctx.arena,
+                        "{d:0>2}/{d:0>2}",
+                        .{ @intFromEnum(time.month), time.day },
+                    );
+                }
+
+                // Otherwise, we print clock time
+                break :blk try std.fmt.allocPrint(
+                    ctx.arena,
+                    "{d:0>2}:{d:0>2}",
+                    .{ time.hour, time.minute },
+                );
+            };
+
+            // If the message has our nick, we'll highlight the time
+            if (std.mem.indexOf(u8, content, self.client.nickname())) |_| {
+                style.fg = .{ .index = 3 };
+                style.reverse = true;
             }
+
+            const time_text: vxfw.Text = .{
+                .text = buf,
+                .style = style,
+                .softwrap = false,
+            };
+            try children.append(.{
+                .origin = .{ .row = row, .col = 0 },
+                .surface = try time_text.draw(child_ctx),
+            });
 
             var printed_sender: bool = false;
             // Check if we need to print the sender of this message. We do this when the timegap
             // between this message and next message is > 5 minutes, or if the sender is
             // different
             if (sender.len > 0 and
-                printSender(sender, next_sender, maybe_instant, maybe_next_instant))
+                printSender(sender, next_sender, this_instant, maybe_next_instant))
             {
                 // Back up one row to print
                 row -= 1;
@@ -1106,41 +1105,41 @@ pub const Channel = struct {
             // Check if we should print a "last read" line. If the next message we will print is
             // before the last_read, and this message is after the last_read then it is our border.
             // Before
-            if (maybe_next_instant != null and maybe_instant != null) {
-                const this = maybe_instant.?.unixTimestamp();
-                const next = maybe_next_instant.?.unixTimestamp();
-                if (this > self.last_read and next <= self.last_read) {
-                    const bot = "─";
-                    var writer = try std.ArrayList(u8).initCapacity(ctx.arena, bot.len * max.width);
-                    try writer.writer().writeBytesNTimes(bot, max.width);
+            const next_instant = maybe_next_instant orelse continue;
+            const this = this_instant.unixTimestamp();
+            const next = next_instant.unixTimestamp();
 
-                    const border: vxfw.Text = .{
-                        .text = writer.items,
-                        .style = .{ .fg = .{ .index = 1 } },
-                        .softwrap = false,
-                    };
+            if (this > self.last_read_indicator and next <= self.last_read_indicator) {
+                const bot = "─";
+                var writer = try std.ArrayList(u8).initCapacity(ctx.arena, bot.len * max.width);
+                try writer.writer().writeBytesNTimes(bot, max.width);
 
-                    // We don't need to backup a line if we printed the sender
-                    if (!printed_sender) row -= 1;
+                const border: vxfw.Text = .{
+                    .text = writer.items,
+                    .style = .{ .fg = .{ .index = 1 } },
+                    .softwrap = false,
+                };
 
-                    const unread: vxfw.SubSurface = .{
-                        .origin = .{ .col = 0, .row = row },
-                        .surface = try border.draw(ctx),
-                    };
-                    try children.append(unread);
-                    const new: vxfw.RichText = .{
-                        .text = &.{
-                            .{ .text = "", .style = .{ .fg = .{ .index = 1 } } },
-                            .{ .text = " New ", .style = .{ .fg = .{ .index = 1 }, .reverse = true } },
-                        },
-                        .softwrap = false,
-                    };
-                    const new_sub: vxfw.SubSurface = .{
-                        .origin = .{ .col = max.width - 6, .row = row },
-                        .surface = try new.draw(ctx),
-                    };
-                    try children.append(new_sub);
-                }
+                // We don't need to backup a line if we printed the sender
+                if (!printed_sender) row -= 1;
+
+                const unread: vxfw.SubSurface = .{
+                    .origin = .{ .col = 0, .row = row },
+                    .surface = try border.draw(ctx),
+                };
+                try children.append(unread);
+                const new: vxfw.RichText = .{
+                    .text = &.{
+                        .{ .text = "", .style = .{ .fg = .{ .index = 1 } } },
+                        .{ .text = " New ", .style = .{ .fg = .{ .index = 1 }, .reverse = true } },
+                    },
+                    .softwrap = false,
+                };
+                const new_sub: vxfw.SubSurface = .{
+                    .origin = .{ .col = max.width - 6, .row = row },
+                    .surface = try new.draw(ctx),
+                };
+                try children.append(new_sub);
             }
         }
 
@@ -1234,6 +1233,22 @@ pub const User = struct {
 /// an irc message
 pub const Message = struct {
     bytes: []const u8,
+    timestamp_s: u32 = 0,
+
+    pub fn init(bytes: []const u8) Message {
+        var msg: Message = .{ .bytes = bytes };
+        if (msg.getTag("time")) |time_str| {
+            const inst = zeit.instant(.{ .source = .{ .iso8601 = time_str } }) catch |err| {
+                log.warn("couldn't parse time: '{s}', error: {}", .{ time_str, err });
+                msg.timestamp_s = @intCast(std.time.timestamp());
+                return msg;
+            };
+            msg.timestamp_s = @intCast(inst.unixTimestamp());
+        } else {
+            msg.timestamp_s = @intCast(std.time.timestamp());
+        }
+        return msg;
+    }
 
     pub const ParamIterator = struct {
         params: ?[]const u8,
@@ -1412,28 +1427,19 @@ pub const Message = struct {
         return null;
     }
 
-    pub fn time(self: Message) ?zeit.Instant {
-        const val = self.getTag("time") orelse return null;
-
-        // Return null if we can't parse the time
-        const instant = zeit.instant(.{
-            .source = .{ .iso8601 = val },
-            .timezone = &zeit.utc,
-        }) catch return null;
-
-        return instant;
+    pub fn time(self: Message) zeit.Instant {
+        return zeit.instant(.{
+            .source = .{ .unix_timestamp = self.timestamp_s },
+        }) catch unreachable;
     }
 
-    pub fn localTime(self: Message, tz: *const zeit.TimeZone) ?zeit.Instant {
-        const utc = self.time() orelse return null;
+    pub fn localTime(self: Message, tz: *const zeit.TimeZone) zeit.Instant {
+        const utc = self.time();
         return utc.in(tz);
     }
 
     pub fn compareTime(_: void, lhs: Message, rhs: Message) bool {
-        const lhs_time = lhs.time() orelse return false;
-        const rhs_time = rhs.time() orelse return false;
-
-        return lhs_time.timestamp_ns < rhs_time.timestamp_ns;
+        return lhs.timestamp_s < rhs.timestamp_s;
     }
 
     /// Returns the NICK of the sender of the message
@@ -1754,7 +1760,7 @@ pub const Client = struct {
     }
 
     pub fn handleEvent(self: *Client, line: []const u8, ctx: *vxfw.EventContext) !void {
-        const msg: Message = .{ .bytes = line };
+        const msg = Message.init(line);
         const client = self;
         switch (msg.command()) {
             .unknown => {},
@@ -2093,10 +2099,9 @@ pub const Client = struct {
                     return;
                 };
                 var channel = try client.getOrCreateChannel(target);
-                channel.last_read = last_read.unixTimestamp();
+                channel.last_read = @intCast(last_read.unixTimestamp());
                 const last_msg = channel.messages.getLastOrNull() orelse return;
-                const time = last_msg.time() orelse return;
-                if (time.unixTimestamp() > channel.last_read)
+                if (last_msg.timestamp_s > channel.last_read)
                     channel.has_unread = true
                 else
                     channel.has_unread = false;
@@ -2127,9 +2132,7 @@ pub const Client = struct {
             },
             .PRIVMSG, .NOTICE => {
                 // syntax: <target> :<message>
-                const msg2: Message = .{
-                    .bytes = try self.app.alloc.dupe(u8, msg.bytes),
-                };
+                const msg2 = Message.init(try self.app.alloc.dupe(u8, msg.bytes));
                 var iter = msg2.paramIterator();
                 const target = blk: {
                     const tgt = iter.next() orelse return;
@@ -2150,14 +2153,12 @@ pub const Client = struct {
                 if (msg2.getTag("batch")) |tag| {
                     const entry = client.batches.getEntry(tag) orelse @panic("TODO");
                     var channel = entry.value_ptr.*;
-                    try channel.messages.append(msg2);
-                    std.sort.insertion(Message, channel.messages.items, {}, Message.compareTime);
+                    try channel.insertMessage(msg2);
                     if (channel.scroll.msg_offset) |offset| {
                         channel.scroll.msg_offset = offset + 1;
                     }
                     channel.at_oldest = false;
-                    const time = msg2.time() orelse return;
-                    if (time.unixTimestamp() > channel.last_read) {
+                    if (msg2.timestamp_s > channel.last_read) {
                         channel.has_unread = true;
                         const content = iter.next() orelse return;
                         if (std.mem.indexOf(u8, content, client.nickname())) |_| {
@@ -2167,7 +2168,7 @@ pub const Client = struct {
                 } else {
                     // standard handling
                     var channel = try client.getOrCreateChannel(target);
-                    try channel.messages.append(msg2);
+                    try channel.insertMessage(msg2);
                     const content = iter.next() orelse return;
                     var has_highlight = false;
                     {
@@ -2194,20 +2195,13 @@ pub const Client = struct {
                         try ctx.sendNotification(title, content);
                         has_highlight = true;
                     }
-                    const time = msg2.time() orelse return;
-                    if (time.unixTimestamp() > channel.last_read) {
+                    if (msg2.timestamp_s > channel.last_read) {
                         channel.has_unread_highlight = has_highlight;
                         channel.has_unread = true;
                     }
                     // If we get a message from the current user mark the channel as
                     // read, since they must have just sent the message.
-                    const sender: []const u8 = blk: {
-                        const src = msg2.source() orelse break :blk "";
-                        const l = std.mem.indexOfScalar(u8, src, '!') orelse
-                            std.mem.indexOfScalar(u8, src, '@') orelse
-                            src.len;
-                        break :blk src[0..l];
-                    };
+                    const sender = msg2.senderNick() orelse "";
                     if (std.mem.eql(u8, sender, client.nickname())) {
                         self.app.markSelectedChannelRead();
                     }
@@ -2223,7 +2217,7 @@ pub const Client = struct {
                 }
             },
             .TAGMSG => {
-                const msg2: Message = .{ .bytes = msg.bytes };
+                const msg2 = Message.init(msg.bytes);
                 // We only care about typing tags
                 const typing = msg2.getTag("+typing") orelse return;
 
@@ -2262,8 +2256,7 @@ pub const Client = struct {
                         return;
                     }
                     if (std.mem.eql(u8, "active", typing)) {
-                        const time = msg2.time() orelse return;
-                        member.typing = @intCast(time.unixTimestamp());
+                        member.typing = msg2.timestamp_s;
                         channel.typing_last_active = member.typing;
                         ctx.redraw = true;
                         return;
