@@ -579,7 +579,7 @@ pub const App = struct {
                         if (channel == target) {
                             self.buffer_list.cursor = i;
                             self.buffer_list.ensureScroll();
-                            if (target.messageViewIsAtBottom()) target.has_unread = false;
+                            channel.doSelect();
                             if (self.ctx) |ctx| {
                                 ctx.requestFocus(channel.text_field.widget()) catch {};
                             }

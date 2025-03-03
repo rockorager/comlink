@@ -126,6 +126,7 @@ pub const Channel = struct {
     // The location of the last read indicator. This doesn't necessarily match the state of
     // last_read
     last_read_indicator: u32 = 0,
+    scroll_to_last_read: bool = true,
     has_unread: bool = false,
     has_unread_highlight: bool = false,
 
@@ -306,6 +307,9 @@ pub const Channel = struct {
     pub fn insertMessage(self: *Channel, msg: Message) !void {
         try self.messages.append(msg);
         std.sort.insertion(Message, self.messages.items, {}, Message.compareTime);
+        if (self.scroll.msg_offset) |offset| {
+            self.scroll.msg_offset = offset + 1;
+        }
     }
 
     fn onChange(ptr: ?*anyopaque, _: *vxfw.EventContext, input: []const u8) anyerror!void {
@@ -375,6 +379,11 @@ pub const Channel = struct {
         };
     }
 
+    pub fn doSelect(self: *Channel) void {
+        // Set the state of the last_read_indicator
+        self.last_read_indicator = self.last_read;
+    }
+
     fn typeErasedEventHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
         const self: *Channel = @ptrCast(@alignCast(ptr));
         switch (event) {
@@ -415,17 +424,6 @@ pub const Channel = struct {
         var style: vaxis.Style = .{};
         if (selected) style.bg = .{ .index = 8 };
         if (self.has_mouse) style.bg = .{ .index = 8 };
-        if (self.client.app.selectedBuffer()) |buffer| {
-            switch (buffer) {
-                .client => {},
-                .channel => |channel| {
-                    if (channel == self and self.messageViewIsAtBottom()) {
-                        self.has_unread = false;
-                        self.has_unread_highlight = false;
-                    }
-                },
-            }
-        }
         if (self.has_unread) {
             style.fg = .{ .index = 4 };
             style.bold = true;
@@ -507,7 +505,7 @@ pub const Channel = struct {
 
     /// issue a MARKREAD command for this channel. The most recent message in the channel will be used as
     /// the last read time
-    pub fn markRead(self: *Channel) !void {
+    pub fn markRead(self: *Channel) Allocator.Error!void {
         self.has_unread = false;
         self.has_unread_highlight = false;
         const last_msg = self.messages.getLastOrNull() orelse return;
@@ -911,9 +909,12 @@ pub const Channel = struct {
         var sender = last_msg.senderNick() orelse "";
         var this_instant = last_msg.localTime(&self.client.app.tz);
 
+        // True when we *don't* need to scroll to last message. False if we do. We will turn this
+        // true when we have it the last message
+        var did_scroll_to_last_read = !self.scroll_to_last_read;
         while (iter.next()) |msg| {
             // Break if we have gone past the top of the screen
-            if (row < 0) break;
+            if (row < 0 and did_scroll_to_last_read) break;
 
             // Get the sender nickname of the *next* message. Next meaning next message in the
             // iterator, which is chronologically the previous message since we are printing in
@@ -1109,6 +1110,10 @@ pub const Channel = struct {
             const this = this_instant.unixTimestamp();
             const next = next_instant.unixTimestamp();
 
+            // If this message is before last_read, we did any scroll_to_last_read. Set the flag to
+            // true
+            if (this <= self.last_read) did_scroll_to_last_read = true;
+
             if (this > self.last_read_indicator and next <= self.last_read_indicator) {
                 const bot = "─";
                 var writer = try std.ArrayList(u8).initCapacity(ctx.arena, bot.len * max.width);
@@ -1146,6 +1151,32 @@ pub const Channel = struct {
         // Request more history when we are within 5 messages of the top of the screen
         if (iter.index < 5 and !self.at_oldest) {
             try self.client.requestHistory(.before, self);
+        }
+
+        // If we scroll_to_last_read, we probably need to reposition all of our children. We also
+        // check that we have messages, and if we do that the top message is outside the viewport.
+        // If we don't have messages, or the top message is within the viewport, we don't have to
+        // reposition
+        if (self.scroll_to_last_read and
+            children.items.len > 0 and
+            children.getLast().origin.row < 0)
+        {
+            // We will adjust the origin of each item so that the last item we added has an origin
+            // of 0
+            const adjustment: u16 = @intCast(@abs(children.getLast().origin.row));
+            for (children.items) |*item| {
+                item.origin.row += adjustment;
+            }
+            // Our scroll offset gets adjusted as well
+            self.scroll.offset += adjustment;
+        }
+
+        if (did_scroll_to_last_read) {
+            self.scroll_to_last_read = false;
+        }
+
+        if (self.has_unread and self.messageViewIsAtBottom()) {
+            try self.markRead();
         }
 
         return .{
@@ -2101,10 +2132,8 @@ pub const Client = struct {
                 var channel = try client.getOrCreateChannel(target);
                 channel.last_read = @intCast(last_read.unixTimestamp());
                 const last_msg = channel.messages.getLastOrNull() orelse return;
-                if (last_msg.timestamp_s > channel.last_read)
-                    channel.has_unread = true
-                else
-                    channel.has_unread = false;
+                channel.has_unread = last_msg.timestamp_s > channel.last_read;
+                channel.has_unread_highlight = channel.has_unread;
             },
             .PART => {
                 // get the user
@@ -2154,9 +2183,6 @@ pub const Client = struct {
                     const entry = client.batches.getEntry(tag) orelse @panic("TODO");
                     var channel = entry.value_ptr.*;
                     try channel.insertMessage(msg2);
-                    if (channel.scroll.msg_offset) |offset| {
-                        channel.scroll.msg_offset = offset + 1;
-                    }
                     channel.at_oldest = false;
                     if (msg2.timestamp_s > channel.last_read) {
                         channel.has_unread = true;
