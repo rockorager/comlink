@@ -306,9 +306,14 @@ pub const Channel = struct {
 
     pub fn insertMessage(self: *Channel, msg: Message) !void {
         try self.messages.append(msg);
-        std.sort.insertion(Message, self.messages.items, {}, Message.compareTime);
         if (self.scroll.msg_offset) |offset| {
             self.scroll.msg_offset = offset + 1;
+        }
+        if (msg.timestamp_s > self.last_read) {
+            self.has_unread = true;
+            if (msg.containsPhrase(self.client.nickname())) {
+                self.has_unread_highlight = true;
+            }
         }
     }
 
@@ -1426,6 +1431,19 @@ pub const Message = struct {
         return Command.parse(src[i..end]);
     }
 
+    pub fn containsPhrase(self: Message, phrase: []const u8) bool {
+        switch (self.command()) {
+            .PRIVMSG, .NOTICE => {},
+            else => return false,
+        }
+        var iter = self.paramIterator();
+        // We only handle PRIVMSG and NOTICE which have syntax <target> :<content>. Skip the target
+        _ = iter.next() orelse return false;
+
+        const content = iter.next() orelse return false;
+        return std.mem.indexOf(u8, content, phrase) != null;
+    }
+
     pub fn paramIterator(msg: Message) ParamIterator {
         const src = msg.bytes;
         var i: usize = 0;
@@ -2171,78 +2189,64 @@ pub const Client = struct {
             .PRIVMSG, .NOTICE => {
                 // syntax: <target> :<message>
                 const msg2 = Message.init(try self.app.alloc.dupe(u8, msg.bytes));
-                var iter = msg2.paramIterator();
-                const target = blk: {
-                    const tgt = iter.next() orelse return;
-                    if (mem.eql(u8, tgt, client.nickname())) {
-                        // If the target is us, it likely has our
-                        // hostname in it.
-                        const source = msg2.source() orelse return;
-                        const n = mem.indexOfScalar(u8, source, '!') orelse source.len;
-                        break :blk source[0..n];
-                    } else break :blk tgt;
-                };
 
-                // We handle batches separately. When we encounter a
-                // PRIVMSG from a batch, we use the original target
-                // from the batch start. We also never notify from a
-                // batched message. Batched messages also require
-                // sorting
+                // We handle batches separately. When we encounter a PRIVMSG from a batch, we use
+                // the original target from the batch start. We also never notify from a batched
+                // message. Batched messages also require sorting
                 if (msg2.getTag("batch")) |tag| {
                     const entry = client.batches.getEntry(tag) orelse @panic("TODO");
                     var channel = entry.value_ptr.*;
                     try channel.insertMessage(msg2);
+                    std.sort.insertion(Message, channel.messages.items, {}, Message.compareTime);
                     channel.at_oldest = false;
-                    if (msg2.timestamp_s > channel.last_read) {
-                        channel.has_unread = true;
-                        const content = iter.next() orelse return;
-                        if (std.mem.indexOf(u8, content, client.nickname())) |_| {
-                            channel.has_unread_highlight = true;
-                        }
-                    }
-                } else {
-                    // standard handling
-                    var channel = try client.getOrCreateChannel(target);
-                    try channel.insertMessage(msg2);
-                    const content = iter.next() orelse return;
-                    var has_highlight = false;
-                    {
-                        const sender: []const u8 = blk: {
-                            const src = msg2.source() orelse break :blk "";
-                            const l = std.mem.indexOfScalar(u8, src, '!') orelse
-                                std.mem.indexOfScalar(u8, src, '@') orelse
-                                src.len;
-                            break :blk src[0..l];
-                        };
-                        try lua.onMessage(self.app.lua, client, channel.name, sender, content);
-                    }
-                    if (std.mem.indexOf(u8, content, client.nickname())) |_| {
-                        var buf: [64]u8 = undefined;
-                        const title_or_err = if (msg2.source()) |source|
-                            std.fmt.bufPrint(&buf, "{s} - {s}", .{ channel.name, source })
-                        else
-                            std.fmt.bufPrint(&buf, "{s}", .{channel.name});
-                        const title = title_or_err catch title: {
-                            const len = @min(buf.len, channel.name.len);
-                            @memcpy(buf[0..len], channel.name[0..len]);
-                            break :title buf[0..len];
-                        };
-                        try ctx.sendNotification(title, content);
-                        has_highlight = true;
-                    }
-                    if (msg2.timestamp_s > channel.last_read) {
-                        channel.has_unread_highlight = has_highlight;
-                        channel.has_unread = true;
-                    }
+                    return;
+                }
 
-                    // Set the typing time to 0
-                    const sender = msg2.senderNick() orelse "";
-                    for (channel.members.items) |*member| {
-                        if (!std.mem.eql(u8, member.user.nick, sender)) {
-                            continue;
+                var iter = msg2.paramIterator();
+                const target = blk: {
+                    const tgt = iter.next() orelse return;
+                    if (mem.eql(u8, tgt, client.nickname())) {
+                        // If the target is us, we use the sender nick as the identifier
+                        break :blk msg2.senderNick() orelse unreachable;
+                    } else break :blk tgt;
+                };
+                // Get the channel
+                var channel = try client.getOrCreateChannel(target);
+                // Add the message to the channel. We don't need to sort because these come
+                // chronologically
+                try channel.insertMessage(msg2);
+
+                // Get values for our lua callbacks
+                const content = iter.next() orelse return;
+                const sender = msg2.senderNick() orelse "";
+
+                // Do the lua callback
+                try lua.onMessage(self.app.lua, client, channel.name, sender, content);
+
+                // Send a notification if this has our nick
+                if (msg2.containsPhrase(client.nickname())) {
+                    var buf: [64]u8 = undefined;
+                    const title_or_err = if (sender.len > 0)
+                        std.fmt.bufPrint(&buf, "{s} - {s}", .{ channel.name, sender })
+                    else
+                        std.fmt.bufPrint(&buf, "{s}", .{channel.name});
+                    const title = title_or_err catch title: {
+                        const len = @min(buf.len, channel.name.len);
+                        @memcpy(buf[0..len], channel.name[0..len]);
+                        break :title buf[0..len];
+                    };
+                    try ctx.sendNotification(title, content);
+
+                    if (client.caps.@"message-tags") {
+                        // Set the typing time to 0. We only need to do this when the server
+                        // supports message-tags
+                        for (channel.members.items) |*member| {
+                            if (!std.mem.eql(u8, member.user.nick, sender)) {
+                                continue;
+                            }
+                            member.typing = 0;
+                            return;
                         }
-                        member.typing = 0;
-                        return;
                     }
                 }
             },
