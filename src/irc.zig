@@ -280,7 +280,7 @@ pub const Channel = struct {
             .completer = Completer.init(gpa),
         };
 
-        self.text_field.style = .{ .bg = .{ .index = 8 } };
+        self.text_field.style = .{ .bg = client.app.blend(10) };
         self.text_field.userdata = self;
         self.text_field.onSubmit = Channel.onSubmit;
         self.text_field.onChange = Channel.onChange;

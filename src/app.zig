@@ -82,6 +82,9 @@ pub const App = struct {
     /// Whether the application has focus or not
     has_focus: bool,
 
+    fg: ?[3]u8,
+    bg: ?[3]u8,
+
     const default_rhs: vxfw.Text = .{ .text = "TODO: update this text" };
 
     /// initialize vaxis, lua state
@@ -121,6 +124,8 @@ pub const App = struct {
             .ctx = null,
             .last_height = 0,
             .has_focus = true,
+            .fg = null,
+            .bg = null,
         };
 
         self.lua = try Lua.init(&self.alloc);
@@ -203,6 +208,20 @@ pub const App = struct {
         // callbacks
         self.ctx = ctx;
         switch (event) {
+            .color_report => |color| {
+                switch (color.kind) {
+                    .fg => self.fg = color.value,
+                    .bg => self.bg = color.value,
+                    else => {},
+                }
+                if (self.fg != null and self.bg != null) {
+                    for (self.clients.items) |client| {
+                        for (client.channels.items) |channel| {
+                            channel.text_field.style.bg = self.blend(10);
+                        }
+                    }
+                }
+            },
             .key_press => |key| {
                 if (self.state.paste.pasting) {
                     ctx.consume_event = true;
@@ -267,6 +286,8 @@ pub const App = struct {
                 const title = try std.fmt.bufPrint(&self.title_buf, "comlink", .{});
                 try ctx.setTitle(title);
                 try ctx.tick(8, self.widget());
+                try ctx.queryColor(.fg);
+                try ctx.queryColor(.bg);
             },
             .tick => {
                 for (self.clients.items) |client| {
@@ -386,6 +407,33 @@ pub const App = struct {
                 i += 1;
             }
         }
+    }
+
+    /// Blend fg and bg, otherwise return index 8. amt will be clamped to [0,100]. amt will be
+    /// interpreted as percentage of fg to blend into bg
+    pub fn blend(self: *App, amt: u8) vaxis.Color {
+        const bg = self.bg orelse return .{ .index = 8 };
+        const fg = self.fg orelse return .{ .index = 8 };
+        // Clamp to (0,100)
+        if (amt == 0) return .{ .rgb = bg };
+        if (amt >= 100) return .{ .rgb = fg };
+
+        const fg_r: u16 = std.math.mulWide(u8, fg[0], amt);
+        const fg_g: u16 = std.math.mulWide(u8, fg[1], amt);
+        const fg_b: u16 = std.math.mulWide(u8, fg[2], amt);
+
+        const bg_multiplier: u8 = 100 - amt;
+        const bg_r: u16 = std.math.mulWide(u8, bg[0], bg_multiplier);
+        const bg_g: u16 = std.math.mulWide(u8, bg[1], bg_multiplier);
+        const bg_b: u16 = std.math.mulWide(u8, bg[2], bg_multiplier);
+
+        return .{
+            .rgb = .{
+                @intCast((fg_r + bg_r) / 100),
+                @intCast((fg_g + bg_g) / 100),
+                @intCast((fg_b + bg_b) / 100),
+            },
+        };
     }
 
     /// handle a command
