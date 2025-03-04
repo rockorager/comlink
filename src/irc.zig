@@ -173,12 +173,10 @@ pub const Channel = struct {
         typing: u32 = 0,
 
         pub fn compare(_: void, lhs: Member, rhs: Member) bool {
-            return if (lhs.prefix != ' ' and rhs.prefix == ' ')
-                true
-            else if (lhs.prefix == ' ' and rhs.prefix != ' ')
-                false
-            else
-                std.ascii.orderIgnoreCase(lhs.user.nick, rhs.user.nick).compare(.lt);
+            if (lhs.prefix == rhs.prefix) {
+                return std.ascii.orderIgnoreCase(lhs.user.nick, rhs.user.nick).compare(.lt);
+            }
+            return lhs.prefix > rhs.prefix;
         }
 
         pub fn widget(self: *Member) vxfw.Widget {
@@ -235,8 +233,14 @@ pub const Channel = struct {
             else
                 .{ .fg = self.user.color };
             if (self.has_mouse) style.reverse = true;
-            var prefix = try ctx.arena.alloc(u8, 1);
-            prefix[0] = self.prefix;
+            const prefix: []const u8 = switch (self.prefix) {
+                '~' => "󰜥 ", // founder
+                '&' => "󰪍 ", // protected
+                '@' => " ", // operator
+                '%' => " ", // half op
+                '+' => " ", // voice
+                else => try std.fmt.allocPrint(ctx.arena, "{c} ", .{self.prefix}),
+            };
             const text: vxfw.RichText = .{
                 .text = &.{
                     .{ .text = prefix, .style = style },
