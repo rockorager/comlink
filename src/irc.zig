@@ -443,7 +443,7 @@ pub const Channel = struct {
             .{
                 .text = &.{
                     prefix,
-                    .{ .text = "#", .style = .{ .fg = .{ .index = 8 } } },
+                    .{ .text = " ", .style = .{ .fg = .{ .index = 8 } } },
                     .{ .text = self.name[1..], .style = style },
                 },
                 .softwrap = false,
@@ -451,6 +451,7 @@ pub const Channel = struct {
         else
             .{
                 .text = &.{
+                    prefix,
                     .{ .text = "  " },
                     .{ .text = self.name, .style = style },
                 },
