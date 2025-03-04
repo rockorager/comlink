@@ -461,9 +461,7 @@ const Channel = struct {
         const lua_type = lua.getField(1, "_ptr"); // [table, lightuserdata]
         lua.argCheck(lua_type == .light_userdata, 2, "expected lightuserdata");
         const channel = lua.toUserdata(irc.Channel, 2) catch unreachable;
-        channel.markRead() catch |err| {
-            std.log.err("couldn't mark channel as read: {}", .{err});
-        };
+        channel.last_read_indicator = channel.last_read;
         lua.pop(2); // []
         return 0;
     }

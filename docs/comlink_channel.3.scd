@@ -19,8 +19,8 @@ comlink_channel - a lua type representing an IRC channel
 A *channel* represents an IRC channel.
 
 *channel:mark_read*
-	Mark this channel as read. This will set the READMARKER to the time of
-	the last received message.
+	Mark this channel as read. This will update the unread indicator to the
+	position of the last read message.
 
 *channel:send_msg* 
 	A method on *channel* which accepts a string (_msg_). _Msg_ is sent to
