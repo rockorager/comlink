@@ -58,10 +58,13 @@ pub fn draw(self: *Scrollbar, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxf
     @memset(surface.buffer, empty);
 
     // (view_size / total) * window height = size of the scroll bar
-    const bar_height = @max(std.math.divCeil(usize, self.view_size * max.height, self.total) catch unreachable, 1);
+    const premul1 = std.math.mulWide(u16, self.view_size, max.height);
+    const bar_height = @max(std.math.divCeil(usize, premul1, self.total) catch unreachable, 1);
 
+    // Premultiply. We use mulWide to ensure we never overflow
+    const premul2 = std.math.mulWide(u16, self.bottom, max.height);
     // The row of the last cell of the bottom of the bar
-    const bar_bottom = (max.height - 1) -| (std.math.divCeil(usize, self.bottom * max.height, self.total) catch unreachable);
+    const bar_bottom = (max.height - 1) -| (std.math.divCeil(usize, premul2, self.total) catch unreachable);
 
     var i: usize = 0;
     while (i <= bar_height) : (i += 1)
