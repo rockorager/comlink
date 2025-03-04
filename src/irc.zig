@@ -307,9 +307,6 @@ pub const Channel = struct {
 
     pub fn insertMessage(self: *Channel, msg: Message) !void {
         try self.messages.append(msg);
-        if (self.scroll.msg_offset) |offset| {
-            self.scroll.msg_offset = offset + 1;
-        }
         if (msg.timestamp_s > self.last_read) {
             self.has_unread = true;
             if (msg.containsPhrase(self.client.nickname())) {
@@ -2218,6 +2215,11 @@ pub const Client = struct {
                     var channel = entry.value_ptr.*;
                     try channel.insertMessage(msg2);
                     std.sort.insertion(Message, channel.messages.items, {}, Message.compareTime);
+                    // We are probably adding at the top. Add to our msg_offset if we have one to
+                    // prevent scroll
+                    if (channel.scroll.msg_offset) |offset| {
+                        channel.scroll.msg_offset = offset + 1;
+                    }
                     channel.at_oldest = false;
                     return;
                 }
