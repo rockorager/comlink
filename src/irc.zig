@@ -281,7 +281,7 @@ pub const Channel = struct {
             .completer = Completer.init(gpa),
         };
 
-        self.text_field.style = .{ .bg = client.app.blend(10) };
+        self.text_field.style = .{ .bg = client.app.blendBg(10) };
         self.text_field.userdata = self;
         self.text_field.onSubmit = Channel.onSubmit;
         self.text_field.onChange = Channel.onChange;
@@ -991,10 +991,17 @@ pub const Channel = struct {
             // Draw the message so we have it's wrapped height
             const text: vxfw.RichText = .{ .text = spans };
             const child_ctx = ctx.withConstraints(
-                .{ .width = 0, .height = 0 },
+                .{ .width = max.width -| gutter_width, .height = 1 },
                 .{ .width = max.width -| gutter_width, .height = null },
             );
             const surface = try text.draw(child_ctx);
+            if (self.client.app.yellow != null and msg.containsPhrase(self.client.nickname())) {
+                const bg = self.client.app.blendYellow(30);
+                for (surface.buffer) |*cell| {
+                    if (cell.style.bg != .default) continue;
+                    cell.style.bg = bg;
+                }
+            }
 
             // See if our message contains the mouse. We'll highlight it if it does
             const message_has_mouse: bool = blk: {
@@ -1077,7 +1084,7 @@ pub const Channel = struct {
             };
 
             // If the message has our nick, we'll highlight the time
-            if (std.mem.indexOf(u8, content, self.client.nickname())) |_| {
+            if (self.client.app.yellow == null and msg.containsPhrase(self.client.nickname())) {
                 style.fg = .{ .index = 3 };
                 style.reverse = true;
             }
@@ -1087,9 +1094,13 @@ pub const Channel = struct {
                 .style = style,
                 .softwrap = false,
             };
+            const time_ctx = ctx.withConstraints(
+                .{ .width = 0, .height = 1 },
+                .{ .width = max.width -| gutter_width, .height = null },
+            );
             try children.append(.{
                 .origin = .{ .row = row, .col = 0 },
-                .surface = try time_text.draw(child_ctx),
+                .surface = try time_text.draw(time_ctx),
             });
 
             var printed_sender: bool = false;
@@ -1106,7 +1117,11 @@ pub const Channel = struct {
                     .text = user.nick,
                     .style = .{ .fg = user.color, .bold = true },
                 };
-                const sender_surface = try sender_text.draw(child_ctx);
+                const sender_ctx = ctx.withConstraints(
+                    .{ .width = 0, .height = 1 },
+                    .{ .width = max.width -| gutter_width, .height = null },
+                );
+                const sender_surface = try sender_text.draw(sender_ctx);
                 try children.append(.{
                     .origin = .{ .row = row, .col = gutter_width },
                     .surface = sender_surface,

@@ -84,6 +84,7 @@ pub const App = struct {
 
     fg: ?[3]u8,
     bg: ?[3]u8,
+    yellow: ?[3]u8,
 
     const default_rhs: vxfw.Text = .{ .text = "TODO: update this text" };
 
@@ -126,6 +127,7 @@ pub const App = struct {
             .has_focus = true,
             .fg = null,
             .bg = null,
+            .yellow = null,
         };
 
         self.lua = try Lua.init(&self.alloc);
@@ -212,12 +214,18 @@ pub const App = struct {
                 switch (color.kind) {
                     .fg => self.fg = color.value,
                     .bg => self.bg = color.value,
-                    else => {},
+                    .index => |index| {
+                        switch (index) {
+                            3 => self.yellow = color.value,
+                            else => {},
+                        }
+                    },
+                    .cursor => {},
                 }
                 if (self.fg != null and self.bg != null) {
                     for (self.clients.items) |client| {
                         for (client.channels.items) |channel| {
-                            channel.text_field.style.bg = self.blend(10);
+                            channel.text_field.style.bg = self.blendBg(10);
                         }
                     }
                 }
@@ -288,6 +296,7 @@ pub const App = struct {
                 try ctx.tick(8, self.widget());
                 try ctx.queryColor(.fg);
                 try ctx.queryColor(.bg);
+                try ctx.queryColor(.{ .index = 3 });
             },
             .tick => {
                 for (self.clients.items) |client| {
@@ -411,7 +420,7 @@ pub const App = struct {
 
     /// Blend fg and bg, otherwise return index 8. amt will be clamped to [0,100]. amt will be
     /// interpreted as percentage of fg to blend into bg
-    pub fn blend(self: *App, amt: u8) vaxis.Color {
+    pub fn blendBg(self: *App, amt: u8) vaxis.Color {
         const bg = self.bg orelse return .{ .index = 8 };
         const fg = self.fg orelse return .{ .index = 8 };
         // Clamp to (0,100)
@@ -432,6 +441,33 @@ pub const App = struct {
                 @intCast((fg_r + bg_r) / 100),
                 @intCast((fg_g + bg_g) / 100),
                 @intCast((fg_b + bg_b) / 100),
+            },
+        };
+    }
+
+    /// Blend fg and bg, otherwise return index 8. amt will be clamped to [0,100]. amt will be
+    /// interpreted as percentage of fg to blend into bg
+    pub fn blendYellow(self: *App, amt: u8) vaxis.Color {
+        const bg = self.bg orelse return .{ .index = 3 };
+        const yellow = self.yellow orelse return .{ .index = 3 };
+        // Clamp to (0,100)
+        if (amt == 0) return .{ .rgb = bg };
+        if (amt >= 100) return .{ .rgb = yellow };
+
+        const yellow_r: u16 = std.math.mulWide(u8, yellow[0], amt);
+        const yellow_g: u16 = std.math.mulWide(u8, yellow[1], amt);
+        const yellow_b: u16 = std.math.mulWide(u8, yellow[2], amt);
+
+        const bg_multiplier: u8 = 100 - amt;
+        const bg_r: u16 = std.math.mulWide(u8, bg[0], bg_multiplier);
+        const bg_g: u16 = std.math.mulWide(u8, bg[1], bg_multiplier);
+        const bg_b: u16 = std.math.mulWide(u8, bg[2], bg_multiplier);
+
+        return .{
+            .rgb = .{
+                @intCast((yellow_r + bg_r) / 100),
+                @intCast((yellow_g + bg_g) / 100),
+                @intCast((yellow_b + bg_b) / 100),
             },
         };
     }
