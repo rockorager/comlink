@@ -167,6 +167,7 @@ const Comlink = struct {
     pub fn preloader(lua: *Lua) i32 {
         const fns = [_]ziglua.FnReg{
             .{ .name = "bind", .func = ziglua.wrap(bind) },
+            .{ .name = "setup", .func = ziglua.wrap(setup) },
             .{ .name = "connect", .func = ziglua.wrap(connect) },
             .{ .name = "log", .func = ziglua.wrap(log) },
             .{ .name = "notify", .func = ziglua.wrap(notify) },
@@ -176,6 +177,34 @@ const Comlink = struct {
         lua.newLibTable(&fns); // [table]
         lua.setFuncs(&fns, 0); // [table]
         return 1;
+    }
+
+    /// Sets global configuration
+    fn setup(lua: *Lua) i32 {
+        defer lua.pop(1); // []
+        lua.argCheck(lua.isTable(1), 1, "expected a table");
+        // [table]
+        const app = getApp(lua);
+        const fields = std.meta.fieldNames(comlink.Config);
+        for (fields) |field| {
+            defer lua.pop(1); // [table]
+            const lua_type = lua.getField(1, field); // [table,type]
+            if (lua_type == .nil) {
+                // The field wasn't present
+                continue;
+            }
+            const expected_type = comlink.Config.fieldToLuaType(field);
+            if (lua_type != expected_type) {
+                std.log.warn("unexpected type: {}, expected {}", .{ lua_type, expected_type });
+                continue;
+            }
+
+            const field_enum = std.meta.stringToEnum(comlink.Config.Fields(), field) orelse continue;
+            switch (field_enum) {
+                .markread_on_focus => app.config.markread_on_focus = lua.toBoolean(1),
+            }
+        }
+        return 0;
     }
 
     /// creates a keybind. Accepts one or two string.

@@ -5,6 +5,16 @@
 ---@class comlink
 local comlink = {}
 
+---@class Configuration
+---
+---@field markread_on_focus boolean When true, the unread indicator will be reset when comlink
+---regains focus
+
+---Global configuration
+---
+---@param cfg Configuration Comlink global configuration
+function comlink.setup(cfg) end
+
 ---@class ConnectionConfiguration
 ---
 ---@field server string The server to connect to, eg "chat.sr.ht"

@@ -1192,7 +1192,11 @@ pub const Channel = struct {
             self.scroll_to_last_read = false;
         }
 
-        if (self.has_unread and self.client.app.has_focus and self.messageViewIsAtBottom()) {
+        if (self.client.app.config.markread_on_focus and
+            self.has_unread and
+            self.client.app.has_focus and
+            self.messageViewIsAtBottom())
+        {
             try self.markRead();
         }
 
@@ -1564,7 +1568,6 @@ pub const Client = struct {
     channels: std.ArrayList(*Channel),
     users: std.StringHashMap(*User),
 
-    should_close: bool = false,
     status: std.atomic.Value(Status),
 
     caps: Capabilities = .{},
@@ -1609,7 +1612,6 @@ pub const Client = struct {
 
     /// Closes the connection
     pub fn close(self: *Client) void {
-        self.should_close = true;
         if (self.status.load(.unordered) == .disconnected) return;
         if (self.config.tls) {
             self.client.close() catch {};

@@ -42,6 +42,7 @@ const State = struct {
 };
 
 pub const App = struct {
+    config: comlink.Config,
     explicit_join: bool,
     alloc: std.mem.Allocator,
     /// System certificate bundle
@@ -87,6 +88,7 @@ pub const App = struct {
     pub fn init(self: *App, gpa: std.mem.Allocator, unicode: *const vaxis.Unicode) !void {
         self.* = .{
             .alloc = gpa,
+            .config = .{},
             .state = .{},
             .clients = std.ArrayList(*irc.Client).init(gpa),
             .env = try std.process.getEnvMap(gpa),

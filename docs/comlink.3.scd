@@ -8,6 +8,8 @@ comlink - primary lua module for use in comlink configuration
 
 *local comlink = require*(_"comlink"_)
 
+*comlink.setup*(_config_)
+
 *local conn = comlink.connect*(_config_)
 
 *local channel = comlink.selected_channel*()
@@ -24,6 +26,13 @@ comlink - primary lua module for use in comlink configuration
 
 The comlink module is the entrypoint into configuring and scripting comlink.
 This module provides application level API calls.
+
+*comlink.setup* 
+	Accepts a configuration table. This table defines the global application
+	configuration. The table has the following required fields:
+
+	- *markread_on_focus*: boolean, whether to update unread indicator on
+	  focus gain
 
 *comlink.connect* 
 	Accepts a configuration table. This table defines the server
