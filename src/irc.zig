@@ -141,7 +141,7 @@ pub const Channel = struct {
         offset: u16 = 0,
         /// Message offset into the list of messages. We use this to lock the viewport if we have a
         /// scroll. Otherwise, when offset == 0 this is effectively ignored (and should be 0)
-        msg_offset: ?u16 = null,
+        msg_offset: ?usize = null,
 
         /// Pending scroll we have to handle while drawing. This could be up or down. By convention
         /// we say positive is a scroll up.
@@ -1183,6 +1183,9 @@ pub const Channel = struct {
             }
             // Our scroll offset gets adjusted as well
             self.scroll.offset += adjustment;
+            // We will set the msg offset too to prevent any bumping of the scroll state when we get
+            // a new message
+            self.scroll.msg_offset = self.messages.items.len;
         }
 
         if (did_scroll_to_last_read) {
