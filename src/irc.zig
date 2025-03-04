@@ -708,15 +708,15 @@ pub const Channel = struct {
             const max_limit = maximum_message_size -| self.name.len -| 14 -| self.name.len;
             const limit = try std.fmt.allocPrint(
                 ctx.arena,
-                "{d}/{d}",
+                " {d}/{d}",
                 .{ self.text_field.buf.realLength(), max_limit },
             );
             const style: vaxis.Style = if (self.text_field.buf.realLength() > max_limit)
-                .{ .fg = .{ .index = 1 } }
+                .{ .fg = .{ .index = 1 }, .reverse = true }
             else
-                .{ .dim = true };
+                .{ .bg = self.client.app.blendBg(30) };
             const limit_text: vxfw.Text = .{ .text = limit, .style = style };
-            const limit_ctx = ctx.withConstraints(.{}, ctx.max);
+            const limit_ctx = ctx.withConstraints(.{ .width = @intCast(limit.len) }, ctx.max);
             const limit_s = try limit_text.draw(limit_ctx);
 
             try children.append(.{
@@ -726,7 +726,7 @@ pub const Channel = struct {
 
             const text_field_ctx = ctx.withConstraints(
                 ctx.min,
-                .{ .height = 1, .width = max.width -| limit_s.size.width -| 1 },
+                .{ .height = 1, .width = max.width -| limit_s.size.width },
             );
 
             // Draw the text field
