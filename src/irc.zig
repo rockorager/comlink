@@ -1247,7 +1247,7 @@ pub const Channel = struct {
             };
             try children.append(unread);
             const no_more_history: vxfw.Text = .{
-                .text = " No more history ",
+                .text = " Perhaps the archives are incomplete ",
                 .style = .{ .fg = .{ .index = 8 } },
                 .softwrap = false,
             };
