@@ -12,7 +12,7 @@ local comlink = {}
 
 ---Global configuration
 ---
----@param cfg Configuration Comlink global configuration
+---@param cfg Configuration | {} Comlink global configuration
 function comlink.setup(cfg) end
 
 ---@class ConnectionConfiguration
