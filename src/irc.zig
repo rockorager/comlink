@@ -280,6 +280,7 @@ pub const Channel = struct {
             .completer = Completer.init(gpa),
         };
 
+        self.text_field.style = .{ .bg = .{ .index = 8 } };
         self.text_field.userdata = self;
         self.text_field.onSubmit = Channel.onSubmit;
         self.text_field.onChange = Channel.onChange;
@@ -735,13 +736,27 @@ pub const Channel = struct {
                 .origin = .{ .col = 0, .row = max.height - 1 },
                 .surface = try self.text_field.draw(text_field_ctx),
             });
+            // Write some placeholder text if we don't have anything in the text field
+            if (self.text_field.buf.realLength() == 0) {
+                const text = try std.fmt.allocPrint(ctx.arena, "Message {s}", .{self.name});
+                var text_style = self.text_field.style;
+                text_style.italic = true;
+                text_style.dim = true;
+                var ghost_text_ctx = text_field_ctx;
+                ghost_text_ctx.max.width = text_field_ctx.max.width.? -| 2;
+                const ghost_text: vxfw.Text = .{ .text = text, .style = text_style };
+                try children.append(.{
+                    .origin = .{ .col = 2, .row = max.height - 1 },
+                    .surface = try ghost_text.draw(ghost_text_ctx),
+                });
+            }
         }
 
         if (self.completer_shown) {
             const widest: u16 = @intCast(self.completer.widestMatch(ctx));
-            const completer_ctx = ctx.withConstraints(ctx.min, .{ .height = 10, .width = widest + 2 });
-            const surface = try self.completer.list_view.draw(completer_ctx);
             const height: u16 = @intCast(@min(10, self.completer.options.items.len));
+            const completer_ctx = ctx.withConstraints(ctx.min, .{ .height = height, .width = widest + 2 });
+            const surface = try self.completer.list_view.draw(completer_ctx);
             try children.append(.{
                 .origin = .{ .col = 0, .row = max.height -| 1 -| height },
                 .surface = surface,
