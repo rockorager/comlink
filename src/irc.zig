@@ -121,6 +121,7 @@ pub const Channel = struct {
     history_requested: bool = false,
     who_requested: bool = false,
     at_oldest: bool = false,
+    can_scroll_up: bool = false,
     // The MARKREAD state of this channel
     last_read: u32 = 0,
     // The location of the last read indicator. This doesn't necessarily match the state of
@@ -850,6 +851,11 @@ pub const Channel = struct {
 
         // Scroll up
         if (self.scroll.pending > 0) {
+            // Check if we can scroll up. If we can't, we are done
+            if (!self.can_scroll_up) {
+                self.scroll.pending = 0;
+                return;
+            }
             // Consume 1 line, and schedule a tick
             self.scroll.offset += 1;
             self.scroll.pending -= 1;
@@ -1198,6 +1204,39 @@ pub const Channel = struct {
             // We will set the msg offset too to prevent any bumping of the scroll state when we get
             // a new message
             self.scroll.msg_offset = self.messages.items.len;
+        }
+
+        // Set the can_scroll_up flag. this is true if we drew past the top of the screen
+        self.can_scroll_up = row <= 0;
+        if (row > 0) {
+            // If we didn't draw past the top of the screen, we must have reached the end of
+            // history. Draw an indicator letting the user know this
+            const bot = "━";
+            var writer = try std.ArrayList(u8).initCapacity(ctx.arena, bot.len * max.width);
+            try writer.writer().writeBytesNTimes(bot, max.width);
+
+            const border: vxfw.Text = .{
+                .text = writer.items,
+                .style = .{ .fg = .{ .index = 8 } },
+                .softwrap = false,
+            };
+
+            const unread: vxfw.SubSurface = .{
+                .origin = .{ .col = 0, .row = row },
+                .surface = try border.draw(ctx),
+            };
+            try children.append(unread);
+            const no_more_history: vxfw.Text = .{
+                .text = "No more history",
+                .style = .{ .fg = .{ .index = 8 } },
+                .softwrap = false,
+            };
+            const no_history_surf = try no_more_history.draw(ctx);
+            const new_sub: vxfw.SubSurface = .{
+                .origin = .{ .col = (max.width -| no_history_surf.size.width) / 2, .row = row },
+                .surface = no_history_surf,
+            };
+            try children.append(new_sub);
         }
 
         if (did_scroll_to_last_read) {
