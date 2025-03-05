@@ -210,6 +210,12 @@ pub const App = struct {
         // callbacks
         self.ctx = ctx;
         switch (event) {
+            .color_scheme => {
+                // On a color scheme event, we request the colors again
+                try ctx.queryColor(.fg);
+                try ctx.queryColor(.bg);
+                try ctx.queryColor(.{ .index = 3 });
+            },
             .color_report => |color| {
                 switch (color.kind) {
                     .fg => self.fg = color.value,
@@ -229,6 +235,7 @@ pub const App = struct {
                         }
                     }
                 }
+                ctx.redraw = true;
             },
             .key_press => |key| {
                 if (self.state.paste.pasting) {

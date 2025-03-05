@@ -8,8 +8,8 @@
             .hash = "ziglua-0.1.0-AAAAAMDKBADubTbfjHhHI0_1IS63_IV9KEsNLsy0fLm6",
         },
         .vaxis = .{
-            .url = "git+https://github.com/rockorager/libvaxis#49fcd338121e6e750c3093807fae3539232066e0",
-            .hash = "vaxis-0.1.0-BWNV_OHxCAAQonfy3m999V2NDOd5HFEXuDrdQu1J0keS",
+            .url = "../libvaxis",
+            .hash = "vaxis-0.1.0-BWNV_BzyCADK2dn8dd4IAD2HjdgAFw34iRiNMX00-14g",
         },
         .zeit = .{
             .url = "git+https://github.com/rockorager/zeit#44bebf856693332b168d8ba2c45b9d1ec15511de",
@@ -22,6 +22,10 @@
         .zzdoc = .{
             .url = "git+https://github.com/rockorager/zzdoc#57e86eb4e621bc4a96fbe0dd89ad0986db6d0483",
             .hash = "zzdoc-0.0.0-tzT1PuPZAACr1jIJxjTrdOsLbfXS6idWFGfTq0gwxJiv",
+        },
+        .comlink = .{
+            .url = "git+https://github.com/rockorager/comlink#4d450587f041aa9c34d05524473ad1d58afc9b40",
+            .hash = "comlink-0.0.0-o-Z0cKj0BwAdCT3mDm2838WTxxH8eu5ZI4-vicqTyJFt",
         },
     },
     .paths = .{""},
