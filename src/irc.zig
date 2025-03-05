@@ -1299,8 +1299,8 @@ pub const Channel = struct {
         if (!std.mem.eql(u8, a_sender, b_sender)) return true;
 
         if (a_instant != null and b_instant != null) {
-            const a_ts = a_instant.?.timestamp_ns;
-            const b_ts = b_instant.?.timestamp_ns;
+            const a_ts = a_instant.?.timestamp;
+            const b_ts = b_instant.?.timestamp;
             const delta: i64 = @intCast(a_ts - b_ts);
             return @abs(delta) > (5 * std.time.ns_per_min);
         }
@@ -2387,9 +2387,9 @@ pub const Client = struct {
 
     pub fn del(self: *Client, cap: []const u8) void {
         const info = @typeInfo(Capabilities);
-        assert(info == .Struct);
+        assert(info == .@"struct");
 
-        inline for (info.Struct.fields) |field| {
+        inline for (info.@"struct".fields) |field| {
             if (std.mem.eql(u8, field.name, cap)) {
                 @field(self.caps, field.name) = false;
                 return;
@@ -2399,9 +2399,9 @@ pub const Client = struct {
 
     pub fn ack(self: *Client, cap: []const u8) void {
         const info = @typeInfo(Capabilities);
-        assert(info == .Struct);
+        assert(info == .@"struct");
 
-        inline for (info.Struct.fields) |field| {
+        inline for (info.@"struct".fields) |field| {
             if (std.mem.eql(u8, field.name, cap)) {
                 @field(self.caps, field.name) = true;
                 return;
@@ -2507,7 +2507,7 @@ pub const Client = struct {
             self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, port);
             self.client = try tls.client(self.stream, .{
                 .host = self.config.server,
-                .root_ca = self.app.bundle,
+                .root_ca = .{ .bundle = self.app.bundle },
             });
         } else {
             const port: u16 = self.config.port orelse 6667;
@@ -2520,8 +2520,8 @@ pub const Client = struct {
 
     pub fn configureKeepalive(self: *Client, seconds: i32) !void {
         const timeout = std.mem.toBytes(std.posix.timeval{
-            .tv_sec = seconds,
-            .tv_usec = 0,
+            .sec = seconds,
+            .usec = 0,
         });
 
         try std.posix.setsockopt(

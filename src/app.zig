@@ -130,7 +130,7 @@ pub const App = struct {
             .yellow = null,
         };
 
-        self.lua = try Lua.init(&self.alloc);
+        self.lua = try Lua.init(self.alloc);
         self.write_thread = try std.Thread.spawn(.{}, writeLoop, .{ self.alloc, &self.write_queue });
 
         try lua.init(self);

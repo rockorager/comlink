@@ -18,7 +18,7 @@ paru -S comlink
 ### Zig Build System
 
 `comlink` is written in zig and can be installed using the zig build system,
-version 0.13.0.
+version 0.14.0.
 
 ```sh
 git clone https://github.com/rockorager/comlink

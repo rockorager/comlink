@@ -64,8 +64,8 @@ pub fn main() !void {
                 },
                 .flags = 0,
             };
-            try std.posix.sigaction(std.posix.SIG.INT, &action, null);
-            try std.posix.sigaction(std.posix.SIG.TERM, &action, null);
+            std.posix.sigaction(std.posix.SIG.INT, &action, null);
+            std.posix.sigaction(std.posix.SIG.TERM, &action, null);
         },
     }
 

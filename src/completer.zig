@@ -24,7 +24,7 @@ pub const Completer = struct {
     buf: [irc.maximum_message_size]u8 = undefined,
     kind: Kind = .nick,
     list_view: vxfw.ListView,
-    selected: bool,
+    has_selection: bool,
 
     pub fn init(gpa: std.mem.Allocator) Completer {
         return .{
@@ -33,7 +33,7 @@ pub const Completer = struct {
             .word = "",
             .widest = null,
             .list_view = undefined,
-            .selected = false,
+            .has_selection = false,
         };
     }
 
@@ -59,7 +59,7 @@ pub const Completer = struct {
         self.options.clearAndFree();
         self.widest = null;
         self.kind = .nick;
-        self.selected = false;
+        self.has_selection = false;
 
         if (self.word.len > 0 and self.word[0] == '/') {
             self.kind = .command;
@@ -80,17 +80,17 @@ pub const Completer = struct {
     /// item
     pub fn next(self: *Completer, ctx: *vxfw.EventContext) []const u8 {
         if (self.options.items.len == 0) return "";
-        if (self.selected) {
+        if (self.has_selection) {
             self.list_view.prevItem(ctx);
         }
-        self.selected = true;
+        self.has_selection = true;
         return self.replacementText();
     }
 
     pub fn prev(self: *Completer, ctx: *vxfw.EventContext) []const u8 {
         if (self.options.items.len == 0) return "";
         self.list_view.nextItem(ctx);
-        self.selected = true;
+        self.has_selection = true;
         return self.replacementText();
     }
 

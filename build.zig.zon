@@ -1,26 +1,27 @@
 .{
-    .name = "comlink",
+    .name = .comlink,
+    .fingerprint = 0xa8dac1987074e6a3,
     .version = "0.0.0",
     .dependencies = .{
         .ziglua = .{
-            .url = "git+https://github.com/natecraddock/ziglua?ref=main#d853aa9450ae568a39ea02d7082e85bafc33f735",
-            .hash = "1220affeb3fe37ef09411b5a213b5fdf9bb6568e9913bade204694648983a8b2776d",
+            .url = "git+https://github.com/natecraddock/ziglua#00a3c39c587b1b853748c05b5f5c1dc68f5f3683",
+            .hash = "ziglua-0.1.0-AAAAAMDKBADubTbfjHhHI0_1IS63_IV9KEsNLsy0fLm6",
         },
         .vaxis = .{
-            .url = "git+https://github.com/rockorager/libvaxis#b6043f4497cea176acaea5574ff7011383f1c706",
-            .hash = "1220d1ad3e0cd20b4a7c0810aec229a1af0a95c80bcdb4acbe69d04db4e5c0f403d3",
+            .url = "git+https://github.com/rockorager/libvaxis#49fcd338121e6e750c3093807fae3539232066e0",
+            .hash = "vaxis-0.1.0-BWNV_OHxCAAQonfy3m999V2NDOd5HFEXuDrdQu1J0keS",
         },
         .zeit = .{
-            .url = "git+https://github.com/rockorager/zeit?ref=main#d943bc4bfe9e18490460dfdd64f48e997065eba8",
-            .hash = "1220a021c15abe512e13fcf4615ee43f17ed09da80d49a0710116702666a7a04a6dd",
+            .url = "git+https://github.com/rockorager/zeit#44bebf856693332b168d8ba2c45b9d1ec15511de",
+            .hash = "zeit-0.0.0-5I6bk_pZAgB03N1p1GmVOZ--gOFwwQSRKj1UXb5tnaKS",
         },
         .tls = .{
-            .url = "git+https://github.com/ianic/tls.zig#36ae29b0e51fae564222767ffd5d7f60f9a8dd0b",
-            .hash = "1220319a215975c0ac3d251b334bfb915765adf21f7e64904028b1ec5ebcf00ea3cd",
+            .url = "git+https://github.com/ianic/tls.zig#61bb43320a556363576becacd34f5bce36f8ef8d",
+            .hash = "tls-0.1.0-ER2e0g70BABeDPnhrdr_joLOb_GSEYLSXe9EezhPG1Qg",
         },
         .zzdoc = .{
-            .url = "git+https://github.com/rockorager/zzdoc?ref=main#c36a0e7557197e97d16bb2d52a4ea132c830add6",
-            .hash = "1220b7f4bf11d7cbf1077a84fbb1a2d342c63769590898f1ae17a4305f24a1246f63",
+            .url = "git+https://github.com/rockorager/zzdoc#57e86eb4e621bc4a96fbe0dd89ad0986db6d0483",
+            .hash = "zzdoc-0.0.0-tzT1PuPZAACr1jIJxjTrdOsLbfXS6idWFGfTq0gwxJiv",
         },
     },
     .paths = .{""},

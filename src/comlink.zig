@@ -30,7 +30,7 @@ pub const Config = struct {
         }
 
         return @Type(.{
-            .Enum = .{
+            .@"enum" = .{
                 .decls = &.{},
                 .tag_type = u16,
                 .fields = &fields,
@@ -44,11 +44,11 @@ pub const Config = struct {
         inline for (fields) |f| {
             if (std.mem.eql(u8, field, f.name)) {
                 switch (@typeInfo(f.type)) {
-                    .Bool => return .boolean,
-                    .Int, .ComptimeInt => return .number,
-                    .Pointer => |ptr_info| {
+                    .bool => return .boolean,
+                    .int, .comptime_int => return .number,
+                    .pointer => |ptr_info| {
                         switch (ptr_info.size) {
-                            .Slice => {
+                            .slice => {
                                 if (ptr_info.child == u8) return .string;
                             },
                             else => {},

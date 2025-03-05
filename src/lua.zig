@@ -79,7 +79,11 @@ pub fn init(app: *App) !void {
         .luajit, .lua51 => lua.loadFile(path) catch return error.LuaError,
         else => lua.loadFile(path, .binary_text) catch return error.LuaError,
     }
-    lua.protectedCall(0, ziglua.mult_return, 0) catch return error.LuaError;
+    lua.protectedCall(.{
+        .args = 0,
+        .results = ziglua.mult_return,
+        .msg_handler = 0,
+    }) catch return error.LuaError;
 }
 
 /// retrieves the *App lightuserdata from the registry index
@@ -112,7 +116,11 @@ pub fn onConnect(lua: *Lua, client: *irc.Client) !void {
         .function => {
             // Push the table to the top since it is our argument to the function
             lua.pushValue(1); // [table, function, table]
-            lua.protectedCall(1, 0, 0) catch return error.LuaError; // [table]
+            lua.protectedCall(.{
+                .args = 1,
+                .results = 0,
+                .msg_handler = 0,
+            }) catch return error.LuaError; // [table]
             // clear the stack
             lua.pop(1); // []
         },
@@ -130,7 +138,11 @@ pub fn onMessage(lua: *Lua, client: *irc.Client, channel: []const u8, sender: []
             _ = lua.pushString(channel); // [function,string]
             _ = lua.pushString(sender); // [function,string,string]
             _ = lua.pushString(msg); // [function,string,string,string]
-            lua.protectedCall(3, 0, 0) catch return error.LuaError;
+            lua.protectedCall(.{
+                .args = 3,
+                .results = 0,
+                .msg_handler = 0,
+            }) catch return error.LuaError; // [function,string,string,string]
         },
         else => {},
     }
@@ -139,7 +151,11 @@ pub fn onMessage(lua: *Lua, client: *irc.Client, channel: []const u8, sender: []
 pub fn execFn(lua: *Lua, func: i32) !void {
     const lua_type = lua.rawGetIndex(registry_index, func); // [function]
     switch (lua_type) {
-        .function => lua.protectedCall(0, 0, 0) catch return error.LuaError,
+        .function => lua.protectedCall(.{
+            .args = 0,
+            .results = 0,
+            .msg_handler = 0,
+        }) catch return error.LuaError,
         else => lua.raiseErrorStr("not a function", .{}),
     }
 }
@@ -150,7 +166,11 @@ pub fn execUserCommand(lua: *Lua, cmdline: []const u8, func: i32) !void {
     _ = lua.pushString(cmdline); // [function, string]
 
     switch (lua_type) {
-        .function => lua.protectedCall(1, 0, 0) catch |err| {
+        .function => lua.protectedCall(.{
+            .args = 0,
+            .results = 0,
+            .msg_handler = 0,
+        }) catch |err| {
             const msg = lua.toString(-1) catch {
                 std.log.err("{}", .{err});
                 return error.LuaError;
