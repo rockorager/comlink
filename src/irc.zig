@@ -2236,7 +2236,9 @@ pub const Client = struct {
                 channel.last_read = @intCast(last_read.unixTimestamp());
                 const last_msg = channel.messages.getLastOrNull() orelse return;
                 channel.has_unread = last_msg.timestamp_s > channel.last_read;
-                channel.has_unread_highlight = channel.has_unread;
+                if (!channel.has_unread) {
+                    channel.has_unread_highlight = false;
+                }
             },
             .PART => {
                 // get the user
