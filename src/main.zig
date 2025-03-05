@@ -31,19 +31,20 @@ fn cleanUp(sig: c_int) callconv(.C) void {
         std.process.exit(1);
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        if (builtin.mode == .Debug) {
-            const deinit_status = gpa.deinit();
-            if (deinit_status == .leak) {
-                std.log.err("memory leak", .{});
-            }
-        }
-    }
-    const alloc = gpa.allocator();
+var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 
-    var args = try std.process.argsWithAllocator(alloc);
+pub fn main() !void {
+    const gpa, const is_debug = gpa: {
+        break :gpa switch (builtin.mode) {
+            .Debug, .ReleaseSafe => .{ debug_allocator.allocator(), true },
+            .ReleaseFast, .ReleaseSmall => .{ std.heap.smp_allocator, false },
+        };
+    };
+    defer if (is_debug) {
+        _ = debug_allocator.deinit();
+    };
+
+    var args = try std.process.argsWithAllocator(gpa);
     while (args.next()) |arg| {
         if (argMatch("-v", "--version", arg)) {
             const stdout = std.io.getStdOut();
@@ -69,14 +70,14 @@ pub fn main() !void {
         },
     }
 
-    comlink.Command.user_commands = std.StringHashMap(i32).init(alloc);
+    comlink.Command.user_commands = std.StringHashMap(i32).init(gpa);
     defer comlink.Command.user_commands.deinit();
 
-    var app = try vaxis.vxfw.App.init(gpa.allocator());
+    var app = try vaxis.vxfw.App.init(gpa);
     defer app.deinit();
 
     var comlink_app: comlink.App = undefined;
-    try comlink_app.init(gpa.allocator(), &app.vx.unicode);
+    try comlink_app.init(gpa, &app.vx.unicode);
     defer comlink_app.deinit();
 
     try app.run(comlink_app.widget(), .{});
