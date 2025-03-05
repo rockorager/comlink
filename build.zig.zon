@@ -16,8 +16,8 @@
             .hash = "zeit-0.0.0-5I6bk_pZAgB03N1p1GmVOZ--gOFwwQSRKj1UXb5tnaKS",
         },
         .tls = .{
-            .url = "git+https://github.com/ianic/tls.zig#61bb43320a556363576becacd34f5bce36f8ef8d",
-            .hash = "tls-0.1.0-ER2e0g70BABeDPnhrdr_joLOb_GSEYLSXe9EezhPG1Qg",
+            .url = "git+https://github.com/rockorager/tls.zig#762fffa3be7413240b797252aa4fd2569664cbe9",
+            .hash = "tls-0.1.0-ER2e0rj0BABk6bQGM-2Ls8M80M-dA14_QHBRMYZzoVto",
         },
         .zzdoc = .{
             .url = "git+https://github.com/rockorager/zzdoc#57e86eb4e621bc4a96fbe0dd89ad0986db6d0483",
