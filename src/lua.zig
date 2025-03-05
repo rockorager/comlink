@@ -167,7 +167,7 @@ pub fn execUserCommand(lua: *Lua, cmdline: []const u8, func: i32) !void {
 
     switch (lua_type) {
         .function => lua.protectedCall(.{
-            .args = 0,
+            .args = 1,
             .results = 0,
             .msg_handler = 0,
         }) catch |err| {
@@ -427,6 +427,7 @@ const Comlink = struct {
 
     /// Add a user command to the command list
     fn addCommand(lua: *Lua) i32 {
+        assert(lua.getTop() == 2);
         lua.argCheck(lua.isString(1), 1, "expected a string"); // [string, function]
         lua.argCheck(lua.isFunction(2), 2, "expected a function"); // [string, function]
         const ref = lua.ref(registry_index) catch lua.raiseErrorStr("couldn't ref function", .{}); // [string]
