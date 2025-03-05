@@ -1884,12 +1884,15 @@ pub const Client = struct {
     // if the last typing status received is more than 6 seconds ago. In this case, we set the last
     // typing time to 0 and redraw.
     pub fn checkTypingStatus(self: *Client, ctx: *vxfw.EventContext) void {
+        // We only care about typing tags if we have the message-tags cap
+        if (!self.caps.@"message-tags") return;
         const now: u32 = @intCast(std.time.timestamp());
         for (self.channels.items) |channel| {
-            if (channel.typing_last_active > 0 and
-                channel.typing_last_active + 6 >= now) continue;
-            channel.typing_last_active = 0;
-            ctx.redraw = true;
+            // If the last_active is set, and it is more than 6 seconds ago, we will redraw
+            if (channel.typing_last_active != 0 and channel.typing_last_active + 6 < now) {
+                channel.typing_last_active = 0;
+                ctx.redraw = true;
+            }
         }
     }
 
