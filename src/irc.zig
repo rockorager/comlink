@@ -1867,7 +1867,6 @@ pub const Client = struct {
         defer self.read_buf_mutex.unlock();
         var i: usize = 0;
         while (std.mem.indexOfPos(u8, self.read_buf.items, i, "\r\n")) |idx| {
-            ctx.redraw = true;
             defer i = idx + 2;
             log.debug("[<-{s}] {s}", .{
                 self.config.name orelse self.config.server,
@@ -2069,6 +2068,7 @@ pub const Client = struct {
                 if (mem.eql(u8, channel_name, "*")) return;
                 var channel = try client.getOrCreateChannel(channel_name);
                 channel.in_flight.who = false;
+                ctx.redraw = true;
             },
             .RPL_NAMREPLY => {
                 // syntax: <client> <symbol> <channel> :[<prefix>]<nick>{ [<prefix>]<nick>}
@@ -2104,6 +2104,7 @@ pub const Client = struct {
                 const channel_name = iter.next() orelse return; // channel
                 var channel = try client.getOrCreateChannel(channel_name);
                 channel.in_flight.names = false;
+                ctx.redraw = true;
             },
             .BOUNCER => {
                 var iter = msg.paramIterator();
@@ -2139,6 +2140,7 @@ pub const Client = struct {
                                 cfg.network_nick = try self.alloc.dupe(u8, kv[n + 1 ..]);
                         }
                         try self.app.connect(cfg);
+                        ctx.redraw = true;
                     }
                 }
             },
@@ -2150,6 +2152,7 @@ pub const Client = struct {
                 // If there are any params, the user is away. Otherwise
                 // they are back.
                 user.away = if (iter.next()) |_| true else false;
+                ctx.redraw = true;
             },
             .BATCH => {
                 var iter = msg.paramIterator();
@@ -2171,6 +2174,7 @@ pub const Client = struct {
                         chan.history_requested = false;
                         _ = client.batches.remove(key);
                         self.alloc.free(key);
+                        ctx.redraw = true;
                     },
                     else => {},
                 }
@@ -2221,6 +2225,7 @@ pub const Client = struct {
                         self.app.explicit_join = false;
                     }
                 } else try channel.addMember(user, .{});
+                ctx.redraw = true;
             },
             .MARKREAD => {
                 var iter = msg.paramIterator();
@@ -2242,6 +2247,7 @@ pub const Client = struct {
                 if (!channel.has_unread) {
                     channel.has_unread_highlight = false;
                 }
+                ctx.redraw = true;
             },
             .PART => {
                 // get the user
@@ -2266,8 +2272,10 @@ pub const Client = struct {
                     const channel = try client.getOrCreateChannel(target);
                     channel.removeMember(user);
                 }
+                ctx.redraw = true;
             },
             .PRIVMSG, .NOTICE => {
+                ctx.redraw = true;
                 // syntax: <target> :<message>
                 const msg2 = Message.init(try self.app.alloc.dupe(u8, msg.bytes));
 
