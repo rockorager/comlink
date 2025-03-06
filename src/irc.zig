@@ -782,13 +782,13 @@ pub const Channel = struct {
                     // We need to redraw if the column entered the gutter
                     if (last_mouse.col >= gutter_width and mouse.col < gutter_width)
                         ctx.redraw = true
-                        // Or if the column exited the gutter
+                            // Or if the column exited the gutter
                     else if (last_mouse.col < gutter_width and mouse.col >= gutter_width)
                         ctx.redraw = true
-                        // Or if the row changed
+                            // Or if the row changed
                     else if (last_mouse.row != mouse.row)
                         ctx.redraw = true
-                        // Or if we did a middle click, and now released it
+                            // Or if we did a middle click, and now released it
                     else if (last_mouse.button == .middle)
                         ctx.redraw = true;
                 } else {
