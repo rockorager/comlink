@@ -4,16 +4,16 @@
     .version = "0.0.0",
     .dependencies = .{
         .vaxis = .{
-            .url = "git+https://github.com/rockorager/libvaxis#5b48d2c40c994363f87765fe9737d57c263275a4",
-            .hash = "vaxis-0.1.0-BWNV_BzyCADK2dn8dd4IAD2HjdgAFw34iRiNMX00-14g",
+            .url = "git+https://github.com/rockorager/libvaxis#6b5a011f58eb7201a18d894383b96eba4b9101f9",
+            .hash = "vaxis-0.1.0-BWNV_NzyCADDrd6hjXVEXAZSWA3FUhwoxnE4Pk0SbeRz",
         },
         .zeit = .{
             .url = "git+https://github.com/rockorager/zeit#44bebf856693332b168d8ba2c45b9d1ec15511de",
             .hash = "zeit-0.0.0-5I6bk_pZAgB03N1p1GmVOZ--gOFwwQSRKj1UXb5tnaKS",
         },
         .tls = .{
-            .url = "git+https://github.com/ianic/tls.zig#afec3c515425bf49a8a78330e2a2fc2429a26c9c",
-            .hash = "tls-0.1.0-ER2e0hr1BACvIoI2gwGIx6RtOQAGWFv008JsSOkhXLxT",
+            .url = "git+https://github.com/ianic/tls.zig#cbcb175b9e7b23356aafd005fdd20f3f6dd80a04",
+            .hash = "tls-0.1.0-ER2e0sz1BABm_MuU6VMiQJ152-Q-wLAtEYCmgloFmVzV",
         },
         .zzdoc = .{
             .url = "git+https://github.com/rockorager/zzdoc#57e86eb4e621bc4a96fbe0dd89ad0986db6d0483",
