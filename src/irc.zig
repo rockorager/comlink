@@ -2340,7 +2340,7 @@ pub const Client = struct {
                             continue;
                         }
                         member.typing = 0;
-                        return;
+                        break;
                     }
                 }
             },
