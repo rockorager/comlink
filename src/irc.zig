@@ -616,9 +616,10 @@ pub const Channel = struct {
         var children = std.ArrayList(vxfw.SubSurface).init(ctx.arena);
 
         {
+            const spans = try formatMessage(ctx.arena, undefined, self.topic orelse "");
             // Draw the topic
-            const topic: vxfw.Text = .{
-                .text = self.topic orelse "",
+            const topic: vxfw.RichText = .{
+                .text = spans,
                 .softwrap = false,
             };
 
