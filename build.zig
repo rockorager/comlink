@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
         b.default_step.dependOn(&install_step.step);
     }
 
-    const ziglua_dep = b.dependency("ziglua", .{
+    const ziglua_dep = b.dependency("lua_wrapper", .{
         .target = target,
         .optimize = optimize,
         .lang = .lua54,
@@ -91,6 +91,25 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_exe_unit_tests.step);
+
+    {
+        // Add a check step for zls
+        const check_exe = b.addExecutable(.{
+            .name = "comlink",
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .use_llvm = target.result.cpu.arch != .x86_64,
+        });
+        check_exe.root_module.addImport("vaxis", vaxis_dep.module("vaxis"));
+        check_exe.root_module.addImport("tls", tls_dep.module("tls"));
+        check_exe.root_module.addImport("zeit", zeit_dep.module("zeit"));
+        check_exe.root_module.addImport("ziglua", ziglua_dep.module("ziglua"));
+        check_exe.root_module.addOptions("build_options", opts);
+
+        const check_step = b.step("check", "Check if comlink compiles");
+        check_step.dependOn(&check_exe.step);
+    }
 }
 
 fn version(b: *std.Build) ![]const u8 {

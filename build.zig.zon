@@ -3,10 +3,6 @@
     .fingerprint = 0xa8dac1987074e6a3,
     .version = "0.0.0",
     .dependencies = .{
-        .ziglua = .{
-            .url = "git+https://github.com/natecraddock/ziglua#00a3c39c587b1b853748c05b5f5c1dc68f5f3683",
-            .hash = "ziglua-0.1.0-AAAAAMDKBADubTbfjHhHI0_1IS63_IV9KEsNLsy0fLm6",
-        },
         .vaxis = .{
             .url = "git+https://github.com/rockorager/libvaxis#5b48d2c40c994363f87765fe9737d57c263275a4",
             .hash = "vaxis-0.1.0-BWNV_BzyCADK2dn8dd4IAD2HjdgAFw34iRiNMX00-14g",
@@ -16,12 +12,16 @@
             .hash = "zeit-0.0.0-5I6bk_pZAgB03N1p1GmVOZ--gOFwwQSRKj1UXb5tnaKS",
         },
         .tls = .{
-            .url = "git+https://github.com/rockorager/tls.zig#762fffa3be7413240b797252aa4fd2569664cbe9",
-            .hash = "tls-0.1.0-ER2e0rj0BABk6bQGM-2Ls8M80M-dA14_QHBRMYZzoVto",
+            .url = "git+https://github.com/ianic/tls.zig#afec3c515425bf49a8a78330e2a2fc2429a26c9c",
+            .hash = "tls-0.1.0-ER2e0hr1BACvIoI2gwGIx6RtOQAGWFv008JsSOkhXLxT",
         },
         .zzdoc = .{
             .url = "git+https://github.com/rockorager/zzdoc#57e86eb4e621bc4a96fbe0dd89ad0986db6d0483",
             .hash = "zzdoc-0.0.0-tzT1PuPZAACr1jIJxjTrdOsLbfXS6idWFGfTq0gwxJiv",
+        },
+        .lua_wrapper = .{
+            .url = "git+https://github.com/natecraddock/ziglua#70cf5b7c3941923fdcdb5c9d308f7c49de504ad4",
+            .hash = "lua_wrapper-0.1.0-OyMC23XKBADKmeC0WOW1mgWw5bUgS5_HEqD2X6k9Jpm_",
         },
     },
     .paths = .{""},
