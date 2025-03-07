@@ -459,6 +459,7 @@ const Channel = struct {
     fn initTable(lua: *Lua, channel: *irc.Channel) void {
         const fns = [_]ziglua.FnReg{
             .{ .name = "send_msg", .func = ziglua.wrap(Channel.sendMsg) },
+            .{ .name = "insert_text", .func = ziglua.wrap(Channel.insertText) },
             .{ .name = "name", .func = ziglua.wrap(Channel.name) },
             .{ .name = "mark_read", .func = ziglua.wrap(Channel.markRead) },
         };
@@ -493,6 +494,22 @@ const Channel = struct {
             .{ channel.name, msg },
         ) catch lua.raiseErrorStr("out of memory", .{});
         channel.client.queueWrite(msg_final) catch lua.raiseErrorStr("out of memory", .{});
+        return 0;
+    }
+
+    fn insertText(lua: *Lua) i32 {
+        lua.argCheck(lua.isTable(1), 1, "expected a table"); // [table]
+        lua.argCheck(lua.isString(2), 2, "expected a string"); // [table,string]
+        const msg = lua.toString(2) catch unreachable;
+        lua.pop(1); // [table]
+        const lua_type = lua.getField(1, "_ptr"); // [table, lightuserdata]
+        lua.argCheck(lua_type == .light_userdata, 2, "expected lightuserdata");
+        const channel = lua.toUserdata(irc.Channel, 2) catch unreachable;
+        lua.pop(1); // []
+
+        channel.text_field.insertSliceAtCursor(msg) catch {
+            lua.raiseErrorStr("couldn't insert text", .{});
+        };
         return 0;
     }
 

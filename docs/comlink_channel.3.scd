@@ -10,6 +10,8 @@ comlink_channel - a lua type representing an IRC channel
 
 *local name = channel:name*()
 
+*channel:insert_text*()
+
 *channel:mark_read*()
 
 *channel:send_msg*(_msg_)
@@ -17,6 +19,9 @@ comlink_channel - a lua type representing an IRC channel
 # DESCRIPTION
 
 A *channel* represents an IRC channel.
+
+*channel:insert_text*
+	Insert text into the text input at the cursor position
 
 *channel:mark_read*
 	Mark this channel as read. This will update the unread indicator to the
