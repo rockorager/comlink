@@ -45,7 +45,12 @@ pub const Command = enum {
     RPL_MYINFO, // 004
     RPL_ISUPPORT, // 005
 
+    RPL_TRYAGAIN, // 263
+
     RPL_ENDOFWHO, // 315
+    RPL_LISTSTART, // 321
+    RPL_LIST, // 322
+    RPL_LISTEND, // 323
     RPL_TOPIC, // 332
     RPL_WHOREPLY, // 352
     RPL_NAMREPLY, // 353
@@ -78,7 +83,12 @@ pub const Command = enum {
         .{ "004", .RPL_MYINFO },
         .{ "005", .RPL_ISUPPORT },
 
+        .{ "263", .RPL_TRYAGAIN },
+
         .{ "315", .RPL_ENDOFWHO },
+        .{ "321", .RPL_LISTSTART },
+        .{ "322", .RPL_LIST },
+        .{ "323", .RPL_LISTEND },
         .{ "332", .RPL_TOPIC },
         .{ "352", .RPL_WHOREPLY },
         .{ "353", .RPL_NAMREPLY },
@@ -1659,6 +1669,8 @@ pub const Client = struct {
     text_field: vxfw.TextField,
     completer_shown: bool,
 
+    list_modal: ListModal,
+
     pub fn init(
         self: *Client,
         alloc: std.mem.Allocator,
@@ -1684,7 +1696,9 @@ pub const Client = struct {
             .retry_delay_s = 0,
             .text_field = .init(alloc, app.unicode),
             .completer_shown = false,
+            .list_modal = undefined,
         };
+        self.list_modal.init(alloc, self);
         self.text_field.style = .{ .bg = self.app.blendBg(10) };
         self.text_field.userdata = self;
         self.text_field.onSubmit = Client.onSubmit;
@@ -1733,6 +1747,8 @@ pub const Client = struct {
             self.alloc.destroy(channel);
         }
         self.channels.deinit();
+
+        self.list_modal.deinit(self.alloc);
 
         var user_iter = self.users.valueIterator();
         while (user_iter.next()) |user| {
@@ -2090,6 +2106,23 @@ pub const Client = struct {
                 }
                 channel.topic = try self.alloc.dupe(u8, topic);
             },
+            .RPL_TRYAGAIN => {
+                if (self.list_modal.expecting_response) {
+                    self.list_modal.expecting_response = false;
+                    try self.list_modal.finish(ctx);
+                }
+            },
+            .RPL_LISTSTART => try self.list_modal.reset(),
+            .RPL_LIST => {
+                // We might not always get a RPL_LISTSTART, so we check if we have a list already
+                // and if it needs reseting
+                if (self.list_modal.finished) {
+                    try self.list_modal.reset();
+                }
+                self.list_modal.expecting_response = false;
+                try self.list_modal.addMessage(self.alloc, msg);
+            },
+            .RPL_LISTEND => try self.list_modal.finish(ctx),
             .RPL_SASLSUCCESS => {},
             .RPL_WHOREPLY => {
                 // syntax: <client> <channel> <username> <host> <server> <nick> <flags> :<hopcount> <real name>
@@ -3105,6 +3138,285 @@ pub fn caseFold(a: []const u8, b: []const u8) bool {
 pub const ChatHistoryCommand = enum {
     before,
     after,
+};
+
+pub const ListModal = struct {
+    client: *Client,
+    /// the individual items we received
+    items: std.ArrayListUnmanaged(Item),
+    /// the list view
+    list_view: vxfw.ListView,
+    text_field: vxfw.TextField,
+
+    filtered_items: std.ArrayList(Item),
+
+    finished: bool,
+    is_shown: bool,
+    expecting_response: bool,
+
+    focus: enum { text_field, list },
+
+    const name_width = 24;
+    const count_width = 8;
+
+    // Item is a single RPL_LIST response
+    const Item = struct {
+        name: []const u8,
+        topic: []const u8,
+        count_str: []const u8,
+        count: u32,
+
+        fn deinit(self: Item, alloc: Allocator) void {
+            alloc.free(self.name);
+            alloc.free(self.topic);
+            alloc.free(self.count_str);
+        }
+
+        fn widget(self: *Item) vxfw.Widget {
+            return .{
+                .userdata = self,
+                .drawFn = Item.draw,
+            };
+        }
+
+        fn lessThan(_: void, lhs: Item, rhs: Item) bool {
+            return lhs.count > rhs.count;
+        }
+
+        fn draw(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+            const self: *Item = @ptrCast(@alignCast(ptr));
+
+            var children: std.ArrayListUnmanaged(vxfw.SubSurface) = try .initCapacity(ctx.arena, 3);
+
+            const name_ctx = ctx.withConstraints(.{ .width = name_width, .height = 1 }, ctx.max);
+            const count_ctx = ctx.withConstraints(.{ .width = count_width, .height = 1 }, ctx.max);
+            const topic_ctx = ctx.withConstraints(.{
+                .width = ctx.max.width.? -| name_width -| count_width - 2,
+                .height = 1,
+            }, ctx.max);
+
+            const name: vxfw.Text = .{ .text = self.name, .softwrap = false };
+            const count: vxfw.Text = .{ .text = self.count_str, .softwrap = false, .text_align = .right };
+            const spans = try formatMessage(ctx.arena, undefined, self.topic);
+            const topic: vxfw.RichText = .{ .text = spans, .softwrap = false };
+
+            children.appendAssumeCapacity(.{
+                .origin = .{ .col = 0, .row = 0 },
+                .surface = try name.draw(name_ctx),
+            });
+            children.appendAssumeCapacity(.{
+                .origin = .{ .col = name_width, .row = 0 },
+                .surface = try topic.draw(topic_ctx),
+            });
+            children.appendAssumeCapacity(.{
+                .origin = .{ .col = ctx.max.width.? -| count_width, .row = 0 },
+                .surface = try count.draw(count_ctx),
+            });
+
+            return .{
+                .size = .{ .width = ctx.max.width.?, .height = 1 },
+                .widget = self.widget(),
+                .buffer = &.{},
+                .children = children.items,
+            };
+        }
+    };
+
+    fn init(self: *ListModal, gpa: Allocator, client: *Client) void {
+        self.* = .{
+            .client = client,
+            .filtered_items = std.ArrayList(Item).init(gpa),
+            .items = .empty,
+            .list_view = .{
+                .children = .{
+                    .builder = .{
+                        .userdata = self,
+                        .buildFn = ListModal.getItem,
+                    },
+                },
+            },
+            .text_field = .init(gpa, client.app.unicode),
+            .finished = true,
+            .is_shown = false,
+            .focus = .text_field,
+            .expecting_response = false,
+        };
+        self.text_field.style.bg = client.app.blendBg(10);
+        self.text_field.userdata = self;
+        self.text_field.onChange = ListModal.onChange;
+    }
+
+    fn reset(self: *ListModal) !void {
+        self.items.clearRetainingCapacity();
+        self.filtered_items.clearAndFree();
+        self.text_field.clearAndFree();
+        self.finished = false;
+        self.focus = .text_field;
+        self.is_shown = false;
+    }
+
+    fn show(self: *ListModal, ctx: *vxfw.EventContext) !void {
+        self.is_shown = true;
+        switch (self.focus) {
+            .text_field => try ctx.requestFocus(self.text_field.widget()),
+            .list => try ctx.requestFocus(self.list_view.widget()),
+        }
+        return ctx.consumeAndRedraw();
+    }
+
+    pub fn widget(self: *ListModal) vxfw.Widget {
+        return .{
+            .userdata = self,
+            .captureHandler = ListModal.captureHandler,
+            .drawFn = ListModal._draw,
+        };
+    }
+
+    fn deinit(self: *ListModal, alloc: std.mem.Allocator) void {
+        for (self.items.items) |item| {
+            item.deinit(alloc);
+        }
+        self.items.deinit(alloc);
+        self.filtered_items.deinit();
+        self.text_field.deinit();
+        self.* = undefined;
+    }
+
+    fn addMessage(self: *ListModal, alloc: Allocator, msg: Message) !void {
+        var iter = msg.paramIterator();
+        // client, we skip this one
+        _ = iter.next() orelse return;
+        const channel = iter.next() orelse {
+            log.warn("got RPL_LIST without channel", .{});
+            return;
+        };
+        const count = iter.next() orelse {
+            log.warn("got RPL_LIST without count", .{});
+            return;
+        };
+        const topic = iter.next() orelse {
+            log.warn("got RPL_LIST without topic", .{});
+            return;
+        };
+        const item: Item = .{
+            .name = try alloc.dupe(u8, channel),
+            .count_str = try alloc.dupe(u8, count),
+            .topic = try alloc.dupe(u8, topic),
+            .count = try std.fmt.parseUnsigned(u32, count, 10),
+        };
+        try self.items.append(alloc, item);
+    }
+
+    fn finish(self: *ListModal, ctx: *vxfw.EventContext) !void {
+        self.finished = true;
+        self.is_shown = true;
+        std.mem.sort(Item, self.items.items, {}, Item.lessThan);
+        self.filtered_items.clearRetainingCapacity();
+        try self.filtered_items.appendSlice(self.items.items);
+        try ctx.requestFocus(self.text_field.widget());
+    }
+
+    fn onChange(ptr: ?*anyopaque, ctx: *vxfw.EventContext, input: []const u8) anyerror!void {
+        const self: *ListModal = @ptrCast(@alignCast(ptr orelse unreachable));
+        self.filtered_items.clearRetainingCapacity();
+        for (self.items.items) |item| {
+            if (std.mem.indexOf(u8, item.name, input)) |_| {
+                try self.filtered_items.append(item);
+            } else if (std.mem.indexOf(u8, item.topic, input)) |_| {
+                try self.filtered_items.append(item);
+            }
+        }
+        return ctx.consumeAndRedraw();
+    }
+
+    fn captureHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
+        const self: *ListModal = @ptrCast(@alignCast(ptr));
+        switch (event) {
+            .key_press => |key| {
+                switch (self.focus) {
+                    .text_field => {
+                        if (key.matches(vaxis.Key.enter, .{})) {
+                            try ctx.requestFocus(self.list_view.widget());
+                            self.focus = .list;
+                            return ctx.consumeAndRedraw();
+                        } else if (key.matches(vaxis.Key.escape, .{})) {
+                            self.close(ctx);
+                            return;
+                        } else if (key.matches(vaxis.Key.up, .{})) {
+                            self.list_view.prevItem(ctx);
+                            return ctx.consumeAndRedraw();
+                        } else if (key.matches(vaxis.Key.down, .{})) {
+                            self.list_view.nextItem(ctx);
+                            return ctx.consumeAndRedraw();
+                        }
+                    },
+                    .list => {
+                        if (key.matches(vaxis.Key.escape, .{})) {
+                            try ctx.requestFocus(self.text_field.widget());
+                            self.focus = .text_field;
+                            return ctx.consumeAndRedraw();
+                        } else if (key.matches(vaxis.Key.enter, .{})) {
+                            if (self.filtered_items.items.len > 0) {
+                                // join the selected room, and deinit the view
+                                var buf: [128]u8 = undefined;
+                                const item = self.filtered_items.items[self.list_view.cursor];
+                                const cmd = try std.fmt.bufPrint(&buf, "/join {s}", .{item.name});
+                                try self.client.app.handleCommand(.{ .client = self.client }, cmd);
+                            }
+                            self.close(ctx);
+                            return;
+                        }
+                    },
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn close(self: *ListModal, ctx: *vxfw.EventContext) void {
+        self.is_shown = false;
+        const selected = self.client.app.selectedBuffer() orelse unreachable;
+        self.client.app.selectBuffer(selected);
+        return ctx.consumeAndRedraw();
+    }
+
+    fn getItem(ptr: *const anyopaque, idx: usize, _: usize) ?vxfw.Widget {
+        const self: *const ListModal = @ptrCast(@alignCast(ptr));
+        if (idx < self.filtered_items.items.len) {
+            return self.filtered_items.items[idx].widget();
+        }
+        return null;
+    }
+
+    fn _draw(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        const self: *ListModal = @ptrCast(@alignCast(ptr));
+        return self.draw(ctx);
+    }
+
+    fn draw(self: *ListModal, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        const max = ctx.max.size();
+        var children: std.ArrayListUnmanaged(vxfw.SubSurface) = .empty;
+
+        try children.append(ctx.arena, .{
+            .origin = .{ .col = 0, .row = 0 },
+            .surface = try self.text_field.draw(ctx),
+        });
+        const list_ctx = ctx.withConstraints(
+            ctx.min,
+            .{ .width = max.width, .height = max.height - 2 },
+        );
+        try children.append(ctx.arena, .{
+            .origin = .{ .col = 0, .row = 2 },
+            .surface = try self.list_view.draw(list_ctx),
+        });
+
+        return .{
+            .size = max,
+            .widget = self.widget(),
+            .buffer = &.{},
+            .children = children.items,
+        };
+    }
 };
 
 test "caseFold" {

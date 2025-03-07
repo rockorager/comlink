@@ -66,6 +66,7 @@ pub const Command = union(enum) {
     /// a raw irc command. Sent verbatim
     quote,
     join,
+    list,
     me,
     msg,
     query,
@@ -86,6 +87,7 @@ pub const Command = union(enum) {
     const map = std.StaticStringMap(Command).initComptime(.{
         .{ "quote", .quote },
         .{ "join", .join },
+        .{ "list", .list },
         .{ "me", .me },
         .{ "msg", .msg },
         .{ "query", .query },

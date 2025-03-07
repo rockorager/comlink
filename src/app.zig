@@ -354,6 +354,22 @@ pub const App = struct {
         };
         try children.append(sub);
 
+        for (self.clients.items) |client| {
+            if (client.list_modal.is_shown) {
+                const padding: u16 = 8;
+                const modal_ctx = ctx.withConstraints(ctx.min, .{
+                    .width = max.width -| padding * 2,
+                    .height = max.height -| padding,
+                });
+                const border: vxfw.Border = .{ .child = client.list_modal.widget() };
+                try children.append(.{
+                    .origin = .{ .row = padding / 2, .col = padding },
+                    .surface = try border.draw(modal_ctx),
+                });
+                break;
+            }
+        }
+
         return .{
             .size = ctx.max.size(),
             .widget = self.widget(),
@@ -518,16 +534,29 @@ pub const App = struct {
             },
             .join => {
                 const start = std.mem.indexOfScalar(u8, cmd, ' ') orelse return error.InvalidCommand;
+                const chan_name = cmd[start + 1 ..];
+                for (client.channels.items) |chan| {
+                    if (std.mem.eql(u8, chan.name, chan_name)) {
+                        client.app.selectBuffer(.{ .channel = chan });
+                        return;
+                    }
+                }
                 const msg = try std.fmt.bufPrint(
                     &buf,
                     "JOIN {s}\r\n",
                     .{
-                        cmd[start + 1 ..],
+                        chan_name,
                     },
                 );
+
+                // Check
                 // Ensure buffer exists
                 self.explicit_join = true;
                 return client.queueWrite(msg);
+            },
+            .list => {
+                client.list_modal.expecting_response = true;
+                return client.queueWrite("LIST\r\n");
             },
             .me => {
                 if (channel == null) return error.InvalidCommand;
