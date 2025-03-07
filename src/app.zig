@@ -230,6 +230,7 @@ pub const App = struct {
                 }
                 if (self.fg != null and self.bg != null) {
                     for (self.clients.items) |client| {
+                        client.text_field.style.bg = self.blendBg(10);
                         for (client.channels.items) |channel| {
                             channel.text_field.style.bg = self.blendBg(10);
                         }
@@ -304,6 +305,9 @@ pub const App = struct {
                 try ctx.queryColor(.fg);
                 try ctx.queryColor(.bg);
                 try ctx.queryColor(.{ .index = 3 });
+                if (self.clients.items.len > 0) {
+                    try ctx.requestFocus(self.clients.items[0].text_field.widget());
+                }
             },
             .tick => {
                 for (self.clients.items) |client| {
@@ -374,7 +378,7 @@ pub const App = struct {
 
     pub fn connect(self: *App, cfg: irc.Client.Config) !void {
         const client = try self.alloc.create(irc.Client);
-        client.* = try irc.Client.init(self.alloc, self, &self.write_queue, cfg);
+        try client.init(self.alloc, self, &self.write_queue, cfg);
         try self.clients.append(client);
     }
 
@@ -383,8 +387,8 @@ pub const App = struct {
             self.buffer_list.nextItem(ctx);
             if (self.selectedBuffer()) |buffer| {
                 switch (buffer) {
-                    .client => {
-                        ctx.requestFocus(self.widget()) catch {};
+                    .client => |client| {
+                        ctx.requestFocus(client.text_field.widget()) catch {};
                     },
                     .channel => |channel| {
                         ctx.requestFocus(channel.text_field.widget()) catch {};
@@ -399,8 +403,8 @@ pub const App = struct {
             self.buffer_list.prevItem(ctx);
             if (self.selectedBuffer()) |buffer| {
                 switch (buffer) {
-                    .client => {
-                        ctx.requestFocus(self.widget()) catch {};
+                    .client => |client| {
+                        ctx.requestFocus(client.text_field.widget()) catch {};
                     },
                     .channel => |channel| {
                         ctx.requestFocus(channel.text_field.widget()) catch {};
@@ -659,7 +663,7 @@ pub const App = struct {
                 for (self.clients.items) |client| {
                     if (client == target) {
                         if (self.ctx) |ctx| {
-                            ctx.requestFocus(self.widget()) catch {};
+                            ctx.requestFocus(client.text_field.widget()) catch {};
                         }
                         self.buffer_list.cursor = i;
                         self.buffer_list.ensureScroll();

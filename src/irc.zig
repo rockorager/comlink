@@ -1656,13 +1656,17 @@ pub const Client = struct {
     has_mouse: bool,
     retry_delay_s: u8,
 
+    text_field: vxfw.TextField,
+    completer_shown: bool,
+
     pub fn init(
+        self: *Client,
         alloc: std.mem.Allocator,
         app: *comlink.App,
         wq: *comlink.WriteQueue,
         cfg: Config,
-    ) !Client {
-        return .{
+    ) !void {
+        self.* = .{
             .alloc = alloc,
             .app = app,
             .client = undefined,
@@ -1678,7 +1682,29 @@ pub const Client = struct {
             .read_buf = std.ArrayList(u8).init(alloc),
             .has_mouse = false,
             .retry_delay_s = 0,
+            .text_field = .init(alloc, app.unicode),
+            .completer_shown = false,
         };
+        self.text_field.style = .{ .bg = self.app.blendBg(10) };
+        self.text_field.userdata = self;
+        self.text_field.onSubmit = Client.onSubmit;
+    }
+
+    fn onSubmit(ptr: ?*anyopaque, ctx: *vxfw.EventContext, input: []const u8) anyerror!void {
+        const self: *Client = @ptrCast(@alignCast(ptr orelse unreachable));
+
+        // Copy the input into a temporary buffer
+        var buf: [1024]u8 = undefined;
+        @memcpy(buf[0..input.len], input);
+        const local = buf[0..input.len];
+        // Free the text field. We do this here because the command may destroy our channel
+        self.text_field.clearAndFree();
+        self.completer_shown = false;
+
+        if (std.mem.startsWith(u8, local, "/")) {
+            try self.app.handleCommand(.{ .client = self }, local);
+        }
+        ctx.redraw = true;
     }
 
     /// Closes the connection
@@ -1779,10 +1805,65 @@ pub const Client = struct {
 
     fn typeErasedViewDraw(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
         const self: *Client = @ptrCast(@alignCast(ptr));
-        const text: vxfw.Text = .{ .text = "content" };
-        var surface = try text.draw(ctx);
-        surface.widget = self.view();
-        return surface;
+        const max = ctx.max.size();
+
+        var children = std.ArrayList(vxfw.SubSurface).init(ctx.arena);
+        {
+            // Draw the character limit. 14 is length of message overhead "PRIVMSG  :\r\n"
+            const max_limit = 510;
+            const limit = try std.fmt.allocPrint(
+                ctx.arena,
+                " {d}/{d}",
+                .{ self.text_field.buf.realLength(), max_limit },
+            );
+            const style: vaxis.Style = if (self.text_field.buf.realLength() > max_limit)
+                .{ .fg = .{ .index = 1 }, .reverse = true }
+            else
+                .{ .bg = self.app.blendBg(30) };
+            const limit_text: vxfw.Text = .{ .text = limit, .style = style };
+            const limit_ctx = ctx.withConstraints(.{ .width = @intCast(limit.len) }, ctx.max);
+            const limit_s = try limit_text.draw(limit_ctx);
+
+            try children.append(.{
+                .origin = .{ .col = max.width -| limit_s.size.width, .row = max.height - 1 },
+                .surface = limit_s,
+            });
+
+            const text_field_ctx = ctx.withConstraints(
+                ctx.min,
+                .{ .height = 1, .width = max.width -| limit_s.size.width },
+            );
+
+            // Draw the text field
+            try children.append(.{
+                .origin = .{ .col = 0, .row = max.height - 1 },
+                .surface = try self.text_field.draw(text_field_ctx),
+            });
+            // Write some placeholder text if we don't have anything in the text field
+            if (self.text_field.buf.realLength() == 0) {
+                const text = try std.fmt.allocPrint(ctx.arena, "Message {s}", .{self.serverName()});
+                var text_style = self.text_field.style;
+                text_style.italic = true;
+                text_style.dim = true;
+                var ghost_text_ctx = text_field_ctx;
+                ghost_text_ctx.max.width = text_field_ctx.max.width.? -| 2;
+                const ghost_text: vxfw.Text = .{ .text = text, .style = text_style };
+                try children.append(.{
+                    .origin = .{ .col = 2, .row = max.height - 1 },
+                    .surface = try ghost_text.draw(ghost_text_ctx),
+                });
+            }
+        }
+        return .{
+            .widget = self.view(),
+            .size = max,
+            .buffer = &.{},
+            .children = children.items,
+        };
+    }
+
+    pub fn serverName(self: *Client) []const u8 {
+        return self.config.name orelse self.config.server;
     }
 
     pub fn nameWidget(self: *Client, selected: bool) vxfw.Widget {
