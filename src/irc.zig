@@ -334,6 +334,7 @@ pub const Channel = struct {
 
     fn onChange(ptr: ?*anyopaque, _: *vxfw.EventContext, input: []const u8) anyerror!void {
         const self: *Channel = @ptrCast(@alignCast(ptr orelse unreachable));
+        if (!self.client.caps.@"message-tags") return;
         if (std.mem.startsWith(u8, input, "/")) {
             return;
         }
