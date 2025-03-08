@@ -2561,7 +2561,11 @@ pub const Client = struct {
 
         try self.print("NICK {s}\r\n", .{self.config.nick});
 
-        try self.print("USER {s} 0 * {s}\r\n", .{ self.config.user, self.config.real_name });
+        const real_name = if (self.config.real_name.len > 0)
+            self.config.real_name
+        else
+            self.config.nick;
+        try self.print("USER {s} 0 * :{s}\r\n", .{ self.config.user, real_name });
 
         var buf: [4096]u8 = undefined;
         var retries: u8 = 0;

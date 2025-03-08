@@ -102,6 +102,12 @@ local channel = {}
 ---@return string name name of the channel
 function channel.name(chan) end
 
+---Insert text at the cursor
+---
+---@param chan Channel this channel
+---@param text string text to insert
+function channel.insert_text(chan, text) end
+
 ---Mark a channel as read
 ---
 ---@param chan Channel // this channel
