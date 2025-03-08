@@ -33,6 +33,9 @@ const keepalive_interval: i32 = 5;
 /// Number of failed pings before we consider the connection failed
 const keepalive_retries: i32 = 3;
 
+// Gutter (left side where time is printed) width
+const gutter_width = 6;
+
 pub const Buffer = union(enum) {
     client: *Client,
     channel: *Channel,
@@ -71,6 +74,7 @@ pub const Command = enum {
     MARKREAD,
     NOTICE,
     PART,
+    PONG,
     PRIVMSG,
     TAGMSG,
 
@@ -108,6 +112,7 @@ pub const Command = enum {
         .{ "MARKREAD", .MARKREAD },
         .{ "NOTICE", .NOTICE },
         .{ "PART", .PART },
+        .{ "PONG", .PONG },
         .{ "PRIVMSG", .PRIVMSG },
         .{ "TAGMSG", .TAGMSG },
     });
@@ -168,9 +173,6 @@ pub const Channel = struct {
     completer_shown: bool = false,
     typing_last_active: u32 = 0,
     typing_last_sent: u32 = 0,
-
-    // Gutter (left side where time is printed) width
-    const gutter_width = 6;
 
     pub const Member = struct {
         user: *User,
@@ -1386,6 +1388,13 @@ pub const Message = struct {
         return msg;
     }
 
+    pub fn dupe(self: Message, alloc: std.mem.Allocator) Allocator.Error!Message {
+        return .{
+            .bytes = try alloc.dupe(u8, self.bytes),
+            .timestamp_s = self.timestamp_s,
+        };
+    }
+
     pub const ParamIterator = struct {
         params: ?[]const u8,
         index: usize = 0,
@@ -1673,6 +1682,23 @@ pub const Client = struct {
     completer_shown: bool,
 
     list_modal: ListModal,
+    messages: std.ArrayListUnmanaged(Message),
+    scroll: struct {
+        /// Line offset from the bottom message
+        offset: u16 = 0,
+        /// Message offset into the list of messages. We use this to lock the viewport if we have a
+        /// scroll. Otherwise, when offset == 0 this is effectively ignored (and should be 0)
+        msg_offset: ?usize = null,
+
+        /// Pending scroll we have to handle while drawing. This could be up or down. By convention
+        /// we say positive is a scroll up.
+        pending: i17 = 0,
+    } = .{},
+    can_scroll_up: bool = false,
+    message_view: struct {
+        mouse: ?vaxis.Mouse = null,
+        hovered_message: ?Message = null,
+    } = .{},
 
     pub fn init(
         self: *Client,
@@ -1700,6 +1726,7 @@ pub const Client = struct {
             .text_field = .init(alloc, app.unicode),
             .completer_shown = false,
             .list_modal = undefined,
+            .messages = .empty,
         };
         self.list_modal.init(alloc, self);
         self.text_field.style = .{ .bg = self.app.blendBg(10) };
@@ -1752,6 +1779,10 @@ pub const Client = struct {
         self.channels.deinit();
 
         self.list_modal.deinit(self.alloc);
+        for (self.messages.items) |msg| {
+            self.alloc.free(msg.bytes);
+        }
+        self.messages.deinit(self.alloc);
 
         var user_iter = self.users.valueIterator();
         while (user_iter.next()) |user| {
@@ -1827,6 +1858,18 @@ pub const Client = struct {
         const max = ctx.max.size();
 
         var children = std.ArrayList(vxfw.SubSurface).init(ctx.arena);
+        {
+            const message_view_ctx = ctx.withConstraints(ctx.min, .{
+                .height = max.height - 2,
+                .width = max.width,
+            });
+            const s = try self.drawMessageView(message_view_ctx);
+            try children.append(.{
+                .origin = .{ .col = 0, .row = 0 },
+                .surface = s,
+            });
+        }
+
         {
             // Draw the character limit. 14 is length of message overhead "PRIVMSG  :\r\n"
             const max_limit = 510;
@@ -1999,8 +2042,14 @@ pub const Client = struct {
         const msg = Message.init(line);
         const client = self;
         switch (msg.command()) {
-            .unknown => {},
+            .unknown => {
+                const msg2 = try msg.dupe(self.alloc);
+                try self.messages.append(self.alloc, msg2);
+            },
+            .PONG => {},
             .CAP => {
+                const msg2 = try msg.dupe(self.alloc);
+                try self.messages.append(self.alloc, msg2);
                 // syntax: <client> <ACK/NACK> :caps
                 var iter = msg.paramIterator();
                 _ = iter.next() orelse return; // client
@@ -2056,6 +2105,8 @@ pub const Client = struct {
                 }
             },
             .RPL_WELCOME => {
+                const msg2 = try msg.dupe(self.alloc);
+                try self.messages.append(self.alloc, msg2);
                 const now = try zeit.instant(.{});
                 var now_buf: [30]u8 = undefined;
                 const now_fmt = try now.time().bufPrint(&now_buf, .rfc3339);
@@ -2074,10 +2125,21 @@ pub const Client = struct {
                 // on_connect callback
                 try lua.onConnect(self.app.lua, client);
             },
-            .RPL_YOURHOST => {},
-            .RPL_CREATED => {},
-            .RPL_MYINFO => {},
+            .RPL_YOURHOST => {
+                const msg2 = try msg.dupe(self.alloc);
+                try self.messages.append(self.alloc, msg2);
+            },
+            .RPL_CREATED => {
+                const msg2 = try msg.dupe(self.alloc);
+                try self.messages.append(self.alloc, msg2);
+            },
+            .RPL_MYINFO => {
+                const msg2 = try msg.dupe(self.alloc);
+                try self.messages.append(self.alloc, msg2);
+            },
             .RPL_ISUPPORT => {
+                const msg2 = try msg.dupe(self.alloc);
+                try self.messages.append(self.alloc, msg2);
                 // syntax: <client> <token>[ <token>] :are supported
                 var iter = msg.paramIterator();
                 _ = iter.next() orelse return; // client
@@ -2095,7 +2157,10 @@ pub const Client = struct {
                     }
                 }
             },
-            .RPL_LOGGEDIN => {},
+            .RPL_LOGGEDIN => {
+                const msg2 = try msg.dupe(self.alloc);
+                try self.messages.append(self.alloc, msg2);
+            },
             .RPL_TOPIC => {
                 // syntax: <client> <channel> :<topic>
                 var iter = msg.paramIterator();
@@ -2110,6 +2175,8 @@ pub const Client = struct {
                 channel.topic = try self.alloc.dupe(u8, topic);
             },
             .RPL_TRYAGAIN => {
+                const msg2 = try msg.dupe(self.alloc);
+                try self.messages.append(self.alloc, msg2);
                 if (self.list_modal.expecting_response) {
                     self.list_modal.expecting_response = false;
                     try self.list_modal.finish(ctx);
@@ -2126,7 +2193,10 @@ pub const Client = struct {
                 try self.list_modal.addMessage(self.alloc, msg);
             },
             .RPL_LISTEND => try self.list_modal.finish(ctx),
-            .RPL_SASLSUCCESS => {},
+            .RPL_SASLSUCCESS => {
+                const msg2 = try msg.dupe(self.alloc);
+                try self.messages.append(self.alloc, msg2);
+            },
             .RPL_WHOREPLY => {
                 // syntax: <client> <channel> <username> <host> <server> <nick> <flags> :<hopcount> <real name>
                 var iter = msg.paramIterator();
@@ -2224,6 +2294,8 @@ pub const Client = struct {
                 ctx.redraw = true;
             },
             .BOUNCER => {
+                const msg2 = try msg.dupe(self.alloc);
+                try self.messages.append(self.alloc, msg2);
                 var iter = msg.paramIterator();
                 while (iter.next()) |param| {
                     if (mem.eql(u8, param, "NETWORK")) {
@@ -2780,6 +2852,322 @@ pub const Client = struct {
                 );
                 channel.history_requested = true;
             },
+        }
+    }
+
+    fn messageViewWidget(self: *Client) vxfw.Widget {
+        return .{
+            .userdata = self,
+            .eventHandler = Client.handleMessageViewEvent,
+            .drawFn = Client.typeErasedDrawMessageView,
+        };
+    }
+
+    fn handleMessageViewEvent(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
+        const self: *Client = @ptrCast(@alignCast(ptr));
+        switch (event) {
+            .mouse => |mouse| {
+                if (self.message_view.mouse) |last_mouse| {
+                    // We need to redraw if the column entered the gutter
+                    if (last_mouse.col >= gutter_width and mouse.col < gutter_width)
+                        ctx.redraw = true
+                            // Or if the column exited the gutter
+                    else if (last_mouse.col < gutter_width and mouse.col >= gutter_width)
+                        ctx.redraw = true
+                            // Or if the row changed
+                    else if (last_mouse.row != mouse.row)
+                        ctx.redraw = true
+                            // Or if we did a middle click, and now released it
+                    else if (last_mouse.button == .middle)
+                        ctx.redraw = true;
+                } else {
+                    // If we didn't have the mouse previously, we redraw
+                    ctx.redraw = true;
+                }
+
+                // Save this mouse state for when we draw
+                self.message_view.mouse = mouse;
+
+                // A middle press on a hovered message means we copy the content
+                if (mouse.type == .press and
+                    mouse.button == .middle and
+                    self.message_view.hovered_message != null)
+                {
+                    const msg = self.message_view.hovered_message orelse unreachable;
+                    try ctx.copyToClipboard(msg.bytes);
+                    return ctx.consumeAndRedraw();
+                }
+                if (mouse.button == .wheel_down) {
+                    self.scroll.pending -|= 1;
+                    ctx.consume_event = true;
+                    ctx.redraw = true;
+                }
+                if (mouse.button == .wheel_up) {
+                    self.scroll.pending +|= 1;
+                    ctx.consume_event = true;
+                    ctx.redraw = true;
+                }
+                if (self.scroll.pending != 0) {
+                    try self.doScroll(ctx);
+                }
+            },
+            .mouse_leave => {
+                self.message_view.mouse = null;
+                self.message_view.hovered_message = null;
+                ctx.redraw = true;
+            },
+            .tick => {
+                try self.doScroll(ctx);
+            },
+            else => {},
+        }
+    }
+
+    fn typeErasedDrawMessageView(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        const self: *Client = @ptrCast(@alignCast(ptr));
+        return self.drawMessageView(ctx);
+    }
+
+    fn drawMessageView(self: *Client, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
+        self.message_view.hovered_message = null;
+        const max = ctx.max.size();
+        if (max.width == 0 or max.height == 0 or self.messages.items.len == 0) {
+            return .{
+                .size = max,
+                .widget = self.messageViewWidget(),
+                .buffer = &.{},
+                .children = &.{},
+            };
+        }
+
+        var children = std.ArrayList(vxfw.SubSurface).init(ctx.arena);
+
+        // Row is the row we are printing on. We add the offset to achieve our scroll location
+        var row: i17 = max.height + self.scroll.offset;
+        // Message offset
+        const offset = self.scroll.msg_offset orelse self.messages.items.len;
+
+        const messages = self.messages.items[0..offset];
+        var iter = std.mem.reverseIterator(messages);
+
+        assert(messages.len > 0);
+        // Initialize sender and maybe_instant to the last message values
+        const last_msg = iter.next() orelse unreachable;
+        // Reset iter index
+        iter.index += 1;
+        var this_instant = last_msg.localTime(&self.app.tz);
+
+        while (iter.next()) |msg| {
+            // Break if we have gone past the top of the screen
+            if (row < 0) break;
+
+            // Get the server time for the *next* message. We'll use this to decide printing of
+            // username and time
+            const maybe_next_instant: ?zeit.Instant = blk: {
+                const next_msg = iter.next() orelse break :blk null;
+                // Fix the index of the iterator
+                iter.index += 1;
+                break :blk next_msg.localTime(&self.app.tz);
+            };
+
+            defer {
+                // After this loop, we want to save these values for the next iteration
+                if (maybe_next_instant) |next_instant| {
+                    this_instant = next_instant;
+                }
+            }
+
+            // Draw the message so we have it's wrapped height
+            const text: vxfw.Text = .{ .text = msg.bytes };
+            const child_ctx = ctx.withConstraints(
+                .{ .width = max.width -| gutter_width, .height = 1 },
+                .{ .width = max.width -| gutter_width, .height = null },
+            );
+            const surface = try text.draw(child_ctx);
+
+            // See if our message contains the mouse. We'll highlight it if it does
+            const message_has_mouse: bool = blk: {
+                const mouse = self.message_view.mouse orelse break :blk false;
+                break :blk mouse.col >= gutter_width and
+                    mouse.row < row and
+                    mouse.row >= row - surface.size.height;
+            };
+
+            if (message_has_mouse) {
+                const last_mouse = self.message_view.mouse orelse unreachable;
+                // If we had a middle click, we highlight yellow to indicate we copied the text
+                const bg: vaxis.Color = if (last_mouse.button == .middle and last_mouse.type == .press)
+                    .{ .index = 3 }
+                else
+                    .{ .index = 8 };
+                // Set the style for the entire message
+                for (surface.buffer) |*cell| {
+                    cell.style.bg = bg;
+                }
+                // Create a surface to highlight the entire area under the message
+                const hl_surface = try vxfw.Surface.init(
+                    ctx.arena,
+                    text.widget(),
+                    .{ .width = max.width -| gutter_width, .height = surface.size.height },
+                );
+                const base: vaxis.Cell = .{ .style = .{ .bg = bg } };
+                @memset(hl_surface.buffer, base);
+
+                try children.append(.{
+                    .origin = .{ .row = row - surface.size.height, .col = gutter_width },
+                    .surface = hl_surface,
+                });
+
+                self.message_view.hovered_message = msg;
+            }
+
+            // Adjust the row we print on for the wrapped height of this message
+            row -= surface.size.height;
+            try children.append(.{
+                .origin = .{ .row = row, .col = gutter_width },
+                .surface = surface,
+            });
+
+            var style: vaxis.Style = .{ .dim = true };
+            // The time text we will print
+            const buf: []const u8 = blk: {
+                const time = this_instant.time();
+                // Check our next time. If *this* message occurs on a different day, we want to
+                // print the date
+                if (maybe_next_instant) |next_instant| {
+                    const next_time = next_instant.time();
+                    if (time.day != next_time.day) {
+                        style = .{};
+                        break :blk try std.fmt.allocPrint(
+                            ctx.arena,
+                            "{d:0>2}/{d:0>2}",
+                            .{ @intFromEnum(time.month), time.day },
+                        );
+                    }
+                }
+
+                // if it is the first message, we also want to print the date
+                if (iter.index == 0) {
+                    style = .{};
+                    break :blk try std.fmt.allocPrint(
+                        ctx.arena,
+                        "{d:0>2}/{d:0>2}",
+                        .{ @intFromEnum(time.month), time.day },
+                    );
+                }
+
+                // Otherwise, we print clock time
+                break :blk try std.fmt.allocPrint(
+                    ctx.arena,
+                    "{d:0>2}:{d:0>2}",
+                    .{ time.hour, time.minute },
+                );
+            };
+
+            const time_text: vxfw.Text = .{
+                .text = buf,
+                .style = style,
+                .softwrap = false,
+            };
+            const time_ctx = ctx.withConstraints(
+                .{ .width = 0, .height = 1 },
+                .{ .width = max.width -| gutter_width, .height = null },
+            );
+            try children.append(.{
+                .origin = .{ .row = row, .col = 0 },
+                .surface = try time_text.draw(time_ctx),
+            });
+        }
+
+        // Set the can_scroll_up flag. this is true if we drew past the top of the screen
+        self.can_scroll_up = row <= 0;
+        if (row > 0) {
+            row -= 1;
+            // If we didn't draw past the top of the screen, we must have reached the end of
+            // history. Draw an indicator letting the user know this
+            const bot = "━";
+            var writer = try std.ArrayList(u8).initCapacity(ctx.arena, bot.len * max.width);
+            try writer.writer().writeBytesNTimes(bot, max.width);
+
+            const border: vxfw.Text = .{
+                .text = writer.items,
+                .style = .{ .fg = .{ .index = 8 } },
+                .softwrap = false,
+            };
+            const border_ctx = ctx.withConstraints(.{}, .{ .height = 1, .width = max.width });
+
+            const unread: vxfw.SubSurface = .{
+                .origin = .{ .col = 0, .row = row },
+                .surface = try border.draw(border_ctx),
+            };
+
+            try children.append(unread);
+            const no_more_history: vxfw.Text = .{
+                .text = " Perhaps the archives are incomplete ",
+                .style = .{ .fg = .{ .index = 8 } },
+                .softwrap = false,
+            };
+            const no_history_surf = try no_more_history.draw(border_ctx);
+            const new_sub: vxfw.SubSurface = .{
+                .origin = .{ .col = (max.width -| no_history_surf.size.width) / 2, .row = row },
+                .surface = no_history_surf,
+            };
+            try children.append(new_sub);
+        }
+        return .{
+            .size = max,
+            .widget = self.messageViewWidget(),
+            .buffer = &.{},
+            .children = children.items,
+        };
+    }
+
+    /// Consumes any pending scrolls and schedules another tick if needed
+    fn doScroll(self: *Client, ctx: *vxfw.EventContext) anyerror!void {
+        defer {
+            // At the end of this function, we anchor our msg_offset if we have any amount of
+            // scroll. This prevents new messages from automatically scrolling us
+            if (self.scroll.offset > 0 and self.scroll.msg_offset == null) {
+                self.scroll.msg_offset = @intCast(self.messages.items.len);
+            }
+            // If we have no offset, we reset our anchor
+            if (self.scroll.offset == 0) {
+                self.scroll.msg_offset = null;
+            }
+        }
+        const animation_tick: u32 = 30;
+        // No pending scroll. Return early
+        if (self.scroll.pending == 0) return;
+
+        // Scroll up
+        if (self.scroll.pending > 0) {
+            // Check if we can scroll up. If we can't, we are done
+            if (!self.can_scroll_up) {
+                self.scroll.pending = 0;
+                return;
+            }
+            // Consume 1 line, and schedule a tick
+            self.scroll.offset += 1;
+            self.scroll.pending -= 1;
+            ctx.redraw = true;
+            return ctx.tick(animation_tick, self.messageViewWidget());
+        }
+
+        // From here, we only scroll down. First, we check if we are at the bottom already. If we
+        // are, we have nothing to do
+        if (self.scroll.offset == 0) {
+            // Already at bottom. Nothing to do
+            self.scroll.pending = 0;
+            return;
+        }
+
+        // Scroll down
+        if (self.scroll.pending < 0) {
+            // Consume 1 line, and schedule a tick
+            self.scroll.offset -= 1;
+            self.scroll.pending += 1;
+            ctx.redraw = true;
+            return ctx.tick(animation_tick, self.messageViewWidget());
         }
     }
 };
