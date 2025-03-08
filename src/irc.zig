@@ -679,6 +679,8 @@ pub const Channel = struct {
             var buf: [3]*User = undefined;
             const typers = self.getTypers(&buf);
 
+            const typer_style: vaxis.Style = .{ .fg = self.client.app.blendBg(50) };
+
             switch (typers.len) {
                 0 => break :typing,
                 1 => {
@@ -687,7 +689,7 @@ pub const Channel = struct {
                         "{s} is typing...",
                         .{typers[0].nick},
                     );
-                    const typer: vxfw.Text = .{ .text = text, .style = .{ .dim = true } };
+                    const typer: vxfw.Text = .{ .text = text, .style = typer_style };
                     const typer_ctx = ctx.withConstraints(.{}, ctx.max);
                     try children.append(.{
                         .origin = .{ .col = 0, .row = max.height - 2 },
@@ -700,7 +702,7 @@ pub const Channel = struct {
                         "{s} and {s} are typing...",
                         .{ typers[0].nick, typers[1].nick },
                     );
-                    const typer: vxfw.Text = .{ .text = text, .style = .{ .dim = true } };
+                    const typer: vxfw.Text = .{ .text = text, .style = typer_style };
                     const typer_ctx = ctx.withConstraints(.{}, ctx.max);
                     try children.append(.{
                         .origin = .{ .col = 0, .row = max.height - 2 },
@@ -709,7 +711,7 @@ pub const Channel = struct {
                 },
                 else => {
                     const text = "Several people are typing...";
-                    const typer: vxfw.Text = .{ .text = text, .style = .{ .dim = true } };
+                    const typer: vxfw.Text = .{ .text = text, .style = typer_style };
                     const typer_ctx = ctx.withConstraints(.{}, ctx.max);
                     try children.append(.{
                         .origin = .{ .col = 0, .row = max.height - 2 },
