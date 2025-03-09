@@ -1016,20 +1016,36 @@ pub const Channel = struct {
                 .{ .width = max.width -| gutter_width, .height = null },
             );
             const surface = try text.draw(child_ctx);
+            // Adjust the row we print on for the wrapped height of this message
+            row -= surface.size.height;
             if (self.client.app.yellow != null and msg.containsPhrase(self.client.nickname())) {
                 const bg = self.client.app.blendYellow(30);
                 for (surface.buffer) |*cell| {
                     if (cell.style.bg != .default) continue;
                     cell.style.bg = bg;
                 }
+                const left_hl = try vxfw.Surface.init(
+                    ctx.arena,
+                    self.messageViewWidget(),
+                    .{ .height = surface.size.height, .width = 1 },
+                );
+                const left_hl_cell: vaxis.Cell = .{
+                    .char = .{ .grapheme = "▕", .width = 1 },
+                    .style = .{ .fg = .{ .index = 3 } },
+                };
+                @memset(left_hl.buffer, left_hl_cell);
+                try children.append(.{
+                    .origin = .{ .row = row, .col = gutter_width - 1 },
+                    .surface = left_hl,
+                });
             }
 
             // See if our message contains the mouse. We'll highlight it if it does
             const message_has_mouse: bool = blk: {
                 const mouse = self.message_view.mouse orelse break :blk false;
                 break :blk mouse.col >= gutter_width and
-                    mouse.row < row and
-                    mouse.row >= row - surface.size.height;
+                    mouse.row < row + surface.size.height and
+                    mouse.row >= row;
             };
 
             if (message_has_mouse) {
@@ -1053,15 +1069,13 @@ pub const Channel = struct {
                 @memset(hl_surface.buffer, base);
 
                 try children.append(.{
-                    .origin = .{ .row = row - surface.size.height, .col = gutter_width },
+                    .origin = .{ .row = row, .col = gutter_width },
                     .surface = hl_surface,
                 });
 
                 self.message_view.hovered_message = msg;
             }
 
-            // Adjust the row we print on for the wrapped height of this message
-            row -= surface.size.height;
             try children.append(.{
                 .origin = .{ .row = row, .col = gutter_width },
                 .surface = surface,
