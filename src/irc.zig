@@ -2094,7 +2094,7 @@ pub const Client = struct {
                     const sasl = try std.fmt.bufPrint(
                         &buf,
                         "{s}\x00{s}\x00{s}",
-                        .{ config.user, config.nick, config.password },
+                        .{ config.user, config.user, config.password },
                     );
 
                     // Create a buffer big enough for the base64 encoded string
