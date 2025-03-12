@@ -31,9 +31,8 @@ fn cleanUp(sig: c_int) callconv(.C) void {
         std.process.exit(1);
 }
 
-var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-
 pub fn main() !void {
+    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     const gpa, const is_debug = gpa: {
         break :gpa switch (builtin.mode) {
             .Debug, .ReleaseSafe => .{ debug_allocator.allocator(), true },
