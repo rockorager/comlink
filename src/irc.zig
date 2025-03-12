@@ -1772,6 +1772,7 @@ pub const Client = struct {
         if (self.config.tls) {
             self.client.close() catch {};
         }
+        std.posix.shutdown(self.stream.handle, .both) catch {};
         self.stream.close();
     }
 
