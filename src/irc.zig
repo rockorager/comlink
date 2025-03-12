@@ -533,17 +533,19 @@ pub const Channel = struct {
     pub fn markRead(self: *Channel) Allocator.Error!void {
         self.has_unread = false;
         self.has_unread_highlight = false;
-        const last_msg = self.messages.getLastOrNull() orelse return;
-        if (last_msg.timestamp_s > self.last_read) {
-            const time_tag = last_msg.getTag("time") orelse return;
-            try self.client.print(
-                "MARKREAD {s} timestamp={s}\r\n",
-                .{
-                    self.name,
-                    time_tag,
-                },
-            );
-        }
+        if (self.client.caps.@"draft/read-marker") {
+            const last_msg = self.messages.getLastOrNull() orelse return;
+            if (last_msg.timestamp_s > self.last_read) {
+                const time_tag = last_msg.getTag("time") orelse return;
+                try self.client.print(
+                    "MARKREAD {s} timestamp={s}\r\n",
+                    .{
+                        self.name,
+                        time_tag,
+                    },
+                );
+            }
+        } else self.last_read = @intCast(std.time.timestamp());
     }
 
     pub fn contentWidget(self: *Channel) vxfw.Widget {
