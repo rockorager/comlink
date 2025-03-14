@@ -1295,8 +1295,7 @@ pub const Channel = struct {
             self.scroll_to_last_read = false;
         }
 
-        if (self.client.app.config.markread_on_focus and
-            self.has_unread and
+        if (self.has_unread and
             self.client.app.has_focus and
             self.messageViewIsAtBottom())
         {

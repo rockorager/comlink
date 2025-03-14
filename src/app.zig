@@ -286,6 +286,10 @@ pub const App = struct {
             .focus_out => self.has_focus = false,
 
             .focus_in => {
+                if (self.config.markread_on_focus) {
+                    // TODO: implement this
+
+                }
                 self.has_focus = true;
                 ctx.redraw = true;
             },
