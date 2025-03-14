@@ -221,7 +221,7 @@ const Comlink = struct {
 
             const field_enum = std.meta.stringToEnum(comlink.Config.Fields(), field) orelse continue;
             switch (field_enum) {
-                .markread_on_focus => app.config.markread_on_focus = lua.toBoolean(1),
+                .markread_on_focus => app.config.markread_on_focus = lua.toBoolean(-1),
             }
         }
         return 0;

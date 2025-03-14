@@ -287,8 +287,14 @@ pub const App = struct {
 
             .focus_in => {
                 if (self.config.markread_on_focus) {
-                    // TODO: implement this
-
+                    if (self.selectedBuffer()) |buffer| {
+                        switch (buffer) {
+                            .client => {},
+                            .channel => |channel| {
+                                channel.last_read_indicator = channel.last_read;
+                            },
+                        }
+                    }
                 }
                 self.has_focus = true;
                 ctx.redraw = true;
