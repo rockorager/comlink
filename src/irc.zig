@@ -164,6 +164,8 @@ pub const Channel = struct {
         pending: i17 = 0,
     } = .{},
 
+    animation_end_ms: u64 = 0,
+
     message_view: struct {
         mouse: ?vaxis.Mouse = null,
         hovered_message: ?Message = null,
@@ -589,15 +591,18 @@ pub const Channel = struct {
                 }
                 if (key.matches(vaxis.Key.page_up, .{})) {
                     self.scroll.pending += self.client.app.last_height / 2;
+                    self.animation_end_ms = @intCast(std.time.milliTimestamp() + 200);
                     try self.doScroll(ctx);
                     return ctx.consumeAndRedraw();
                 }
                 if (key.matches(vaxis.Key.page_down, .{})) {
+                    self.animation_end_ms = @intCast(std.time.milliTimestamp() + 200);
                     self.scroll.pending -|= self.client.app.last_height / 2;
                     try self.doScroll(ctx);
                     return ctx.consumeAndRedraw();
                 }
                 if (key.matches(vaxis.Key.home, .{})) {
+                    self.animation_end_ms = @intCast(std.time.milliTimestamp() + 200);
                     self.scroll.pending -= self.scroll.offset;
                     self.scroll.msg_offset = null;
                     try self.doScroll(ctx);
@@ -868,9 +873,11 @@ pub const Channel = struct {
                 self.scroll.msg_offset = null;
             }
         }
-        const animation_tick: u32 = 30;
         // No pending scroll. Return early
         if (self.scroll.pending == 0) return;
+
+        const animation_tick: u32 = 8;
+        const now_ms: u64 = @intCast(std.time.milliTimestamp());
 
         // Scroll up
         if (self.scroll.pending > 0) {
@@ -879,9 +886,32 @@ pub const Channel = struct {
                 self.scroll.pending = 0;
                 return;
             }
+
+            // At this point, we always redraw
+            ctx.redraw = true;
+
+            // If we are past the end of the animation, or on the last tick, consume the rest of the
+            // pending scroll
+            if (self.animation_end_ms <= now_ms) {
+                self.scroll.offset += @intCast(self.scroll.pending);
+                self.scroll.pending = 0;
+                return;
+            }
+
+            // Calculate the amount to scroll this tick. We use 8ms ticks.
+            // Total time = end_ms - now_ms
+            // Lines / ms = self.scroll.pending / total time
+            // Lines this tick = 8 ms * lines / ms
+            // All together: (8 ms * self.scroll.pending ) / (end_ms - now_ms)
+            const delta_scroll = (@as(u64, animation_tick) * @as(u64, @intCast(self.scroll.pending))) /
+                (self.animation_end_ms - now_ms);
+
+            // Ensure we always scroll at least one line
+            const resolved_scroll = @max(1, delta_scroll);
+
             // Consume 1 line, and schedule a tick
-            self.scroll.offset += 1;
-            self.scroll.pending -= 1;
+            self.scroll.offset += @intCast(resolved_scroll);
+            self.scroll.pending -|= @intCast(resolved_scroll);
             ctx.redraw = true;
             return ctx.tick(animation_tick, self.messageViewWidget());
         }
@@ -896,9 +926,31 @@ pub const Channel = struct {
 
         // Scroll down
         if (self.scroll.pending < 0) {
-            // Consume 1 line, and schedule a tick
-            self.scroll.offset -= 1;
-            self.scroll.pending += 1;
+            const pending: u16 = @intCast(@abs(self.scroll.pending));
+
+            // At this point, we always redraw
+            ctx.redraw = true;
+
+            // If we are past the end of the animation, or on the last tick, consume the rest of the
+            // pending scroll
+            if (self.animation_end_ms <= now_ms) {
+                self.scroll.offset -|= pending;
+                self.scroll.pending = 0;
+                return;
+            }
+
+            // Calculate the amount to scroll this tick. We use 8ms ticks.
+            // Total time = end_ms - now_ms
+            // Lines / ms = self.scroll.pending / total time
+            // Lines this tick = 8 ms * lines / ms
+            // All together: (8 ms * self.scroll.pending ) / (end_ms - now_ms)
+            const delta_scroll = (@as(u64, animation_tick) * @as(u64, @intCast(pending))) /
+                (self.animation_end_ms - now_ms);
+
+            // Ensure we always scroll at least one line
+            const resolved_scroll = @max(1, delta_scroll);
+            self.scroll.offset -|= @intCast(resolved_scroll);
+            self.scroll.pending += @intCast(resolved_scroll);
             ctx.redraw = true;
             return ctx.tick(animation_tick, self.messageViewWidget());
         }
@@ -2727,7 +2779,7 @@ pub const Client = struct {
     pub fn connect(self: *Client) !void {
         if (self.config.tls) {
             const port: u16 = self.config.port orelse 6697;
-            self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, port);
+            self.stream = try tcpConnectToHost(self.alloc, self.config.server, port);
             self.client = try tls.client(self.stream, .{
                 .host = self.config.server,
                 .root_ca = .{ .bundle = self.app.bundle },
@@ -3830,6 +3882,23 @@ pub const ListModal = struct {
         };
     }
 };
+
+/// All memory allocated with `allocator` will be freed before this function returns.
+pub fn tcpConnectToHost(allocator: mem.Allocator, name: []const u8, port: u16) std.net.TcpConnectToHostError!std.net.Stream {
+    const list = try std.net.getAddressList(allocator, name, port);
+    defer list.deinit();
+
+    if (list.addrs.len == 0) return error.UnknownHostName;
+
+    for (list.addrs) |addr| {
+        const stream = std.net.tcpConnectToAddress(addr) catch |err| {
+            log.warn("error connecting to host: {}", .{err});
+            continue;
+        };
+        return stream;
+    }
+    return std.posix.ConnectError.ConnectionRefused;
+}
 
 test "caseFold" {
     try testing.expect(caseFold("a", "A"));
