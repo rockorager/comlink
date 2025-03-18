@@ -317,7 +317,10 @@ pub const Channel = struct {
         self.completer_shown = false;
 
         if (std.mem.startsWith(u8, local, "/")) {
-            try self.client.app.handleCommand(.{ .channel = self }, local);
+            self.client.app.handleCommand(.{ .channel = self }, local) catch {
+                log.warn("invalid command: {s}", .{input});
+                return;
+            };
         } else {
             try self.client.print("PRIVMSG {s} :{s}\r\n", .{ self.name, local });
         }
@@ -2687,14 +2690,30 @@ pub const Client = struct {
         }
     }
 
-    pub fn readThread(self: *Client) !void {
-        defer self.status.store(.disconnected, .unordered);
+    fn warn(self: *Client, comptime fmt: []const u8, args: anytype) void {
+        self.read_buf.appendSlice(":comlink WARN ") catch {};
+        self.read_buf.writer().print(fmt, args) catch {};
+        self.read_buf.appendSlice("\r\n") catch {};
+    }
 
+    pub fn readThread(self: *Client) void {
+        defer self.status.store(.disconnected, .release);
+
+        // We push this off to another function that can enforces it only fails for allocation
+        // errors
+        self._readThread() catch |err| {
+            switch (err) {
+                error.OutOfMemory => {},
+            }
+            log.err("out of memory", .{});
+        };
+    }
+
+    fn _readThread(self: *Client) Allocator.Error!void {
         self.connect() catch |err| {
-            log.warn("couldn't connect: {}", .{err});
+            self.warn("* CONNECTION_ERROR :Error while connecting to server: {}", .{err});
             return;
         };
-
         try self.queueWrite("CAP LS 302\r\n");
 
         const cap_names = std.meta.fieldNames(Capabilities);
@@ -2717,7 +2736,10 @@ pub const Client = struct {
                 // WouldBlock means our socket timeout expired
                 switch (err) {
                     error.WouldBlock => {},
-                    else => return err,
+                    else => {
+                        self.warn("* CONNECTION_ERROR :{}", .{err});
+                        return;
+                    },
                 }
 
                 if (retries == keepalive_retries) {
@@ -2727,7 +2749,10 @@ pub const Client = struct {
                 }
 
                 if (retries == 0) {
-                    try self.configureKeepalive(keepalive_interval);
+                    self.configureKeepalive(keepalive_interval) catch |err2| {
+                        self.warn("* INTERNAL_ERROR :Couldn't configure socket: {}", .{err2});
+                        return;
+                    };
                 }
                 retries += 1;
                 try self.queueWrite("PING comlink\r\n");
@@ -2738,7 +2763,10 @@ pub const Client = struct {
             // If we did a connection retry, we reset the state
             if (retries > 0) {
                 retries = 0;
-                try self.configureKeepalive(keepalive_idle);
+                self.configureKeepalive(keepalive_idle) catch |err2| {
+                    self.warn("* INTERNAL_ERROR :Couldn't configure socket: {}", .{err2});
+                    return;
+                };
             }
             self.read_buf_mutex.lock();
             defer self.read_buf_mutex.unlock();
