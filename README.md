@@ -52,6 +52,24 @@ comlink.connect(config)
 comlink.bind("ctrl+c", "quit")
 ```
 
+Storing passwords in configuration files is generally considered a poor
+security practice. The following example reads the password from an external
+password manager:
+
+```lua
+local comlink = require("comlink")
+
+local proc =
+  assert(io.popen("hiq -dFpassword proto=irc address=irc.example.com nickname=alex", "r"))
+local password = proc:read("*l")
+proc:close()
+
+local config = {
+	-- …other fields here…
+	password = password,
+}
+```
+
 ## Contributing
 
 Patches accepted on the [mailing list](https://lists.sr.ht/~rockorager/comlink)
