@@ -306,6 +306,12 @@ pub const Channel = struct {
     }
 
     fn onSubmit(ptr: ?*anyopaque, ctx: *vxfw.EventContext, input: []const u8) anyerror!void {
+        // Check the message is not just whitespace
+        for (input) |b| {
+            // Break on the first non-whitespace byte
+            if (!std.ascii.isWhitespace(b)) break;
+        } else return;
+
         const self: *Channel = @ptrCast(@alignCast(ptr orelse unreachable));
 
         // Copy the input into a temporary buffer
@@ -1806,6 +1812,12 @@ pub const Client = struct {
     }
 
     fn onSubmit(ptr: ?*anyopaque, ctx: *vxfw.EventContext, input: []const u8) anyerror!void {
+        // Check the message is not just whitespace
+        for (input) |b| {
+            // Break on the first non-whitespace byte
+            if (!std.ascii.isWhitespace(b)) break;
+        } else return;
+
         const self: *Client = @ptrCast(@alignCast(ptr orelse unreachable));
 
         // Copy the input into a temporary buffer
