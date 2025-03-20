@@ -1824,7 +1824,7 @@ pub const Client = struct {
 
     /// Closes the connection
     pub fn close(self: *Client) void {
-        if (self.status.load(.unordered) == .disconnected) return;
+        if (self.status.load(.acquire) == .disconnected) return;
         if (self.config.tls) {
             self.client.close() catch {};
         }
@@ -1884,7 +1884,7 @@ pub const Client = struct {
         const self: *Client = @ptrCast(@alignCast(ptr));
         switch (event) {
             .tick => {
-                const status = self.status.load(.unordered);
+                const status = self.status.load(.acquire);
                 switch (status) {
                     .disconnected => {
                         // Clean up a thread if we have one
@@ -1892,7 +1892,7 @@ pub const Client = struct {
                             thread.join();
                             self.thread = null;
                         }
-                        self.status.store(.connecting, .unordered);
+                        self.status.store(.connecting, .release);
                         self.thread = try std.Thread.spawn(.{}, Client.readThread, .{self});
                     },
                     .connecting => {},
@@ -2015,7 +2015,7 @@ pub const Client = struct {
         var style: vaxis.Style = .{};
         if (selected) style.reverse = true;
         if (self.has_mouse) style.bg = .{ .index = 8 };
-        if (self.status.load(.unordered) == .disconnected) style.fg = .{ .index = 8 };
+        if (self.status.load(.acquire) == .disconnected) style.fg = .{ .index = 8 };
 
         const name = self.config.name orelse self.config.server;
 
@@ -2793,7 +2793,7 @@ pub const Client = struct {
 
     pub fn write(self: *Client, buf: []const u8) !void {
         assert(std.mem.endsWith(u8, buf, "\r\n"));
-        if (self.status.load(.unordered) == .disconnected) {
+        if (self.status.load(.acquire) == .disconnected) {
             log.warn("disconnected: dropping write: {s}", .{buf[0 .. buf.len - 2]});
             return;
         }
@@ -2816,7 +2816,7 @@ pub const Client = struct {
             const port: u16 = self.config.port orelse 6667;
             self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, port);
         }
-        self.status.store(.connected, .unordered);
+        self.status.store(.connected, .release);
 
         try self.configureKeepalive(keepalive_idle);
     }
