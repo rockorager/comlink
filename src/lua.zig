@@ -315,15 +315,24 @@ const Comlink = struct {
         lua.argCheck(lua.isTable(1), 1, "expected a table");
 
         // [table]
-        var lua_type = lua.getField(1, "user"); // [table,string]
-        lua.argCheck(lua_type == .string, 1, "expected a string for field 'user'");
-        const user = lua.toString(-1) catch unreachable;
-        lua.pop(1); // [table]
-
-        lua_type = lua.getField(1, "nick"); // [table,string]
+        var lua_type = lua.getField(1, "nick"); // [table,string]
         lua.argCheck(lua_type == .string, 1, "expected a string for field 'nick'");
         const nick = lua.toString(-1) catch unreachable;
         lua.pop(1); // [table]
+
+        lua_type = lua.getField(1, "user"); // [table,string]
+        const user: []const u8 = switch (lua_type) {
+            .nil => blk: {
+                lua.pop(1); // [table]
+                break :blk nick;
+            },
+            .string => blk: {
+                const val = lua.toString(-1) catch "";
+                lua.pop(1); // [table]
+                break :blk val;
+            },
+            else => lua.raiseErrorStr("expected a string for field 'user'", .{}),
+        };
 
         lua_type = lua.getField(1, "password"); // [table, string]
         lua.argCheck(lua_type == .string, 1, "expected a string for field 'password'");
@@ -331,9 +340,18 @@ const Comlink = struct {
         lua.pop(1); // [table]
 
         lua_type = lua.getField(1, "real_name"); // [table, string]
-        lua.argCheck(lua_type == .string, 1, "expected a string for field 'real_name'");
-        const real_name = lua.toString(-1) catch unreachable;
-        lua.pop(1); // [table]
+        const real_name: []const u8 = switch (lua_type) {
+            .nil => blk: {
+                lua.pop(1); // [table]
+                break :blk nick;
+            },
+            .string => blk: {
+                const val = lua.toString(-1) catch "";
+                lua.pop(1); // [table]
+                break :blk val;
+            },
+            else => lua.raiseErrorStr("expected a string for field 'real_name'", .{}),
+        };
 
         lua_type = lua.getField(1, "server"); // [table, string]
         lua.argCheck(lua_type == .string, 1, "expected a string for field 'server'");

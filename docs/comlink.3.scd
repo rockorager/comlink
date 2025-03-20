@@ -39,16 +39,16 @@ This module provides application level API calls.
 	configuration. The table has the following required fields:
 
 	- *server*: string, the server URL
-	- *user*: string, username used in SASL
 	- *nick*: string, nickname to identify as
 	- *password*: string, password to use in SASL
-	- *real_name*: string, user's real name
 
 	The following optional fields are available:
 
 	- *port*: uint16 (default=6697 (tls) or 6667), port to use for
 	  connection
+	- *real_name*: string, user's real name
 	- *tls*: boolean (default=true), when true, use an encrypted connection
+	- *user*: string, username used in SASL
 
 *comlink.log*
 	Accepts a string and inserts a log statement into the comlink
