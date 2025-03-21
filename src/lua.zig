@@ -387,26 +387,25 @@ const Comlink = struct {
             else => lua.raiseErrorStr("expected a boolean for field 'tls'", .{}),
         };
 
-        // Ref the config table so it doesn't get garbage collected
-        _ = lua.ref(registry_index) catch lua.raiseErrorStr("couldn't ref config table", .{}); // []
-
         Client.initTable(lua); // [table]
         const table_ref = lua.ref(registry_index) catch {
             lua.raiseErrorStr("couldn't ref client table", .{});
         };
 
+        const app = getApp(lua);
+        const gpa = app.alloc;
+
         const cfg: irc.Client.Config = .{
-            .server = server,
-            .user = user,
-            .nick = nick,
-            .password = password,
-            .real_name = real_name,
+            .server = gpa.dupe(u8, server) catch lua.raiseErrorStr("out of memory", .{}),
+            .user = gpa.dupe(u8, user) catch lua.raiseErrorStr("out of memory", .{}),
+            .nick = gpa.dupe(u8, nick) catch lua.raiseErrorStr("out of memory", .{}),
+            .password = gpa.dupe(u8, password) catch lua.raiseErrorStr("out of memory", .{}),
+            .real_name = gpa.dupe(u8, real_name) catch lua.raiseErrorStr("out of memory", .{}),
             .tls = tls,
             .lua_table = table_ref,
             .port = port,
         };
 
-        const app = getApp(lua);
         app.connect(cfg) catch {
             lua.raiseErrorStr("couldn't connect", .{});
         };

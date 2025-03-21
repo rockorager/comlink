@@ -1699,6 +1699,30 @@ pub const Client = struct {
         name: ?[]const u8 = null,
         tls: bool = true,
         lua_table: i32,
+
+        /// Creates a copy of this config. Nullable strings are not copied
+        pub fn copy(self: Config, gpa: std.mem.Allocator) Allocator.Error!Config {
+            return .{
+                .user = try gpa.dupe(u8, self.user),
+                .nick = try gpa.dupe(u8, self.nick),
+                .password = try gpa.dupe(u8, self.password),
+                .real_name = try gpa.dupe(u8, self.real_name),
+                .server = try gpa.dupe(u8, self.server),
+                .port = self.port,
+                .lua_table = self.lua_table,
+            };
+        }
+
+        pub fn deinit(self: Config, gpa: std.mem.Allocator) void {
+            gpa.free(self.user);
+            gpa.free(self.nick);
+            gpa.free(self.password);
+            gpa.free(self.real_name);
+            gpa.free(self.server);
+            if (self.network_id) |v| gpa.free(v);
+            if (self.network_nick) |v| gpa.free(v);
+            if (self.name) |v| gpa.free(v);
+        }
     };
 
     pub const Capabilities = struct {
@@ -1849,12 +1873,8 @@ pub const Client = struct {
             thread.join();
             self.thread = null;
         }
-        // id gets allocated in the main thread. We need to deallocate it here if
-        // we have one
-        if (self.config.network_id) |id| self.alloc.free(id);
-        if (self.config.name) |name| self.alloc.free(name);
 
-        if (self.config.network_nick) |nick| self.alloc.free(nick);
+        self.config.deinit(self.alloc);
 
         for (self.channels.items) |channel| {
             channel.deinit(self.alloc);
@@ -2400,8 +2420,8 @@ pub const Client = struct {
                             }
                         }
 
-                        var cfg = client.config;
-                        cfg.network_id = try self.alloc.dupe(u8, id);
+                        var cfg = try client.config.copy(self.alloc);
+                        cfg.network_id = try self.app.alloc.dupe(u8, id);
 
                         var attr_iter = std.mem.splitScalar(u8, attr, ';');
                         while (attr_iter.next()) |kv| {
