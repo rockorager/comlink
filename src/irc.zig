@@ -1745,6 +1745,7 @@ pub const Client = struct {
     pub const ISupport = struct {
         whox: bool = false,
         prefix: []const u8 = "",
+        chathistory: ?u16 = null,
     };
 
     pub const Status = enum(u8) {
@@ -2258,6 +2259,10 @@ pub const Client = struct {
                             break :blk try self.alloc.dupe(u8, token[idx + 1 ..]);
                         };
                         client.supports.prefix = prefix;
+                    } else if (mem.startsWith(u8, token, "CHATHISTORY")) {
+                        const idx = mem.indexOfScalar(u8, token, '=') orelse continue;
+                        const limit_str = token[idx + 1 ..];
+                        client.supports.chathistory = std.fmt.parseUnsigned(u16, limit_str, 10) catch 50;
                     }
                 }
             },
@@ -2940,13 +2945,14 @@ pub const Client = struct {
     ) Allocator.Error!void {
         if (!self.caps.@"draft/chathistory") return;
         if (channel.history_requested) return;
+        const max = self.supports.chathistory orelse return;
 
         channel.history_requested = true;
 
         if (channel.messages.items.len == 0) {
             try self.print(
-                "CHATHISTORY LATEST {s} * 50\r\n",
-                .{channel.name},
+                "CHATHISTORY LATEST {s} * {d}\r\n",
+                .{ channel.name, @min(50, max) },
             );
             channel.history_requested = true;
             return;
@@ -2961,8 +2967,8 @@ pub const Client = struct {
                     return;
                 };
                 try self.print(
-                    "CHATHISTORY BEFORE {s} timestamp={s} 50\r\n",
-                    .{ channel.name, time },
+                    "CHATHISTORY BEFORE {s} timestamp={s} {d}\r\n",
+                    .{ channel.name, time, @min(50, max) },
                 );
                 channel.history_requested = true;
             },
@@ -2976,8 +2982,8 @@ pub const Client = struct {
                 try self.print(
                     // we request 500 because we have no
                     // idea how long we've been offline
-                    "CHATHISTORY AFTER {s} timestamp={s} 500\r\n",
-                    .{ channel.name, time },
+                    "CHATHISTORY AFTER {s} timestamp={s} {d}\r\n",
+                    .{ channel.name, time, @min(50, max) },
                 );
                 channel.history_requested = true;
             },
