@@ -75,3 +75,5 @@ local config = {
 Patches accepted on the [mailing list](https://lists.sr.ht/~rockorager/comlink)
 
 Pull requests accepted on [Github](https://github.com/rockorager/comlink)
+
+You may also join the `#comlink` IRC channel on [Libera.Chat](https://libera.chat/)!
