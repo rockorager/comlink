@@ -129,6 +129,7 @@ pub const App = struct {
             .bg = null,
             .yellow = null,
         };
+        errdefer self.deinit();
 
         self.lua = try Lua.init(self.alloc);
         self.write_thread = try std.Thread.spawn(.{}, writeLoop, .{ self.alloc, &self.write_queue });
