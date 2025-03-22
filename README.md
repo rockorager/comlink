@@ -30,8 +30,8 @@ zig build -Doptimize=ReleaseSafe --prefix ~/.local
 
 Configuration is loaded from `$HOME/.config/comlink/init.lua`
 
-Works best with `soju`. pico.sh runs a free instance of `soju` and has fantastic
-[documentation](https://pico.sh/irc) on how to get connected
+Works best with `soju`. [irctoday](https://irctoday.com) runs a paid instance of `soju`, and
+another paid alternative is [pico.sh](https://pico.sh/irc)
 
 ```lua
 local comlink = require("comlink")
