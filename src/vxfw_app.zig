@@ -196,7 +196,10 @@ pub fn run(self: *App, widget: vxfw.Widget, opts: Options) anyerror!void {
 
             assert(ctx.cmds.items.len == 0);
             if (!ctx.redraw) break :blk surface;
-            // If updating the mouse required a redraw, we do the layout again
+            // If updating mouse/focus state required a redraw, do one more
+            // layout for this frame. Clear the flag so it does not leak into
+            // the next frame and cause continuous redraws.
+            ctx.redraw = false;
             break :blk try self.doLayout(widget, &arena);
         };
 
