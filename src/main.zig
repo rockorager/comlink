@@ -78,7 +78,7 @@ pub fn main(process: std.process.Init) !void {
     try comlink_app.init(gpa, process.io, process.environ_map);
     defer comlink_app.deinit();
 
-    try app.run(comlink_app.widget(), .{});
+    try app.run(comlink_app.widget(), .{ .framerate = 30 });
 }
 
 fn argMatch(maybe_short: ?[]const u8, maybe_long: ?[]const u8, arg: [:0]const u8) bool {

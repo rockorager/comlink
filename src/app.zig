@@ -26,6 +26,8 @@ const WriteRequest = comlink.WriteRequest;
 
 const log = std.log.scoped(.app);
 
+const app_tick_ms: u32 = 100;
+
 const State = struct {
     buffers: struct {
         count: usize = 0,
@@ -313,7 +315,7 @@ pub const App = struct {
             .init => {
                 const title = try std.fmt.bufPrint(&self.title_buf, "comlink", .{});
                 try ctx.setTitle(title);
-                try ctx.tick(8, self.widget());
+                try ctx.tick(app_tick_ms, self.widget());
                 try ctx.queryColor(.fg);
                 try ctx.queryColor(.bg);
                 try ctx.queryColor(.{ .index = 3 });
@@ -340,7 +342,7 @@ pub const App = struct {
                     client.drainFifo(ctx);
                     client.checkTypingStatus(ctx);
                 }
-                try ctx.tick(8, self.widget());
+                try ctx.tick(app_tick_ms, self.widget());
             },
             else => {},
         }
