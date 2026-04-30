@@ -39,7 +39,7 @@ fn unixTimestamp() i64 {
     return 0;
 }
 
-fn milliTimestamp() i64 {
+pub fn milliTimestamp() i64 {
     var ts: std.c.timespec = undefined;
     if (std.c.clock_gettime(.REALTIME, &ts) == 0) {
         return @as(i64, @intCast(ts.sec)) * std.time.ms_per_s + @divFloor(ts.nsec, std.time.ns_per_ms);
@@ -1796,6 +1796,7 @@ pub const Client = struct {
 
     has_mouse: bool,
     retry_delay_s: u8,
+    retry_at_ms: i64,
 
     text_field: vxfw.TextField,
     completer_shown: bool,
@@ -1846,6 +1847,7 @@ pub const Client = struct {
             .read_buf = std.array_list.Managed(u8).init(alloc),
             .has_mouse = false,
             .retry_delay_s = 0,
+            .retry_at_ms = 0,
             .text_field = .init(alloc),
             .completer_shown = false,
             .list_modal = undefined,
@@ -1926,14 +1928,6 @@ pub const Client = struct {
         self.read_buf.deinit();
     }
 
-    fn retryWidget(self: *Client) vxfw.Widget {
-        return .{
-            .userdata = self,
-            .eventHandler = Client.retryTickHandler,
-            .drawFn = Client.typeErasedDrawNameSelected,
-        };
-    }
-
     pub fn retryTickHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
         const self: *Client = @ptrCast(@alignCast(ptr));
         switch (event) {
@@ -1953,13 +1947,15 @@ pub const Client = struct {
                     .connected => {
                         // Reset the delay
                         self.retry_delay_s = 0;
+                        self.retry_at_ms = 0;
                         return;
                     },
                 }
                 // Increment the retry and try again
+                _ = ctx;
                 self.retry_delay_s = @max(self.retry_delay_s <<| 1, 1);
+                self.retry_at_ms = milliTimestamp() + @as(i64, self.retry_delay_s) * std.time.ms_per_s;
                 log.debug("retry in {d} seconds", .{self.retry_delay_s});
-                try ctx.tick(@as(u32, self.retry_delay_s) * std.time.ms_per_s, self.retryWidget());
             },
             else => {},
         }

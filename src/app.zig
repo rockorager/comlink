@@ -322,12 +322,20 @@ pub const App = struct {
                 }
             },
             .tick => {
+                const now_ms = irc.milliTimestamp();
                 for (self.clients.items) |client| {
-                    if (client.status.load(.unordered) == .disconnected and
-                        client.retry_delay_s == 0)
-                    {
-                        ctx.redraw = true;
-                        try irc.Client.retryTickHandler(client, ctx, .tick);
+                    switch (client.status.load(.unordered)) {
+                        .disconnected => {
+                            if (now_ms >= client.retry_at_ms) {
+                                ctx.redraw = true;
+                                try irc.Client.retryTickHandler(client, ctx, .tick);
+                            }
+                        },
+                        .connected => {
+                            client.retry_delay_s = 0;
+                            client.retry_at_ms = 0;
+                        },
+                        .connecting => {},
                     }
                     client.drainFifo(ctx);
                     client.checkTypingStatus(ctx);
