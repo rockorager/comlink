@@ -14,40 +14,38 @@ pub const panic = vaxis.panic_handler;
 pub const version = options.version;
 
 /// Called after receiving a terminating signal
-fn cleanUp(sig: c_int) callconv(.C) void {
-    if (vaxis.tty.global_tty) |gty| {
+fn cleanUp(sig: std.posix.SIG) callconv(.c) void {
+    if (vaxis.tty.global_tty) |*gty| {
         const reset: []const u8 = vaxis.ctlseqs.csi_u_pop ++
             vaxis.ctlseqs.mouse_reset ++
             vaxis.ctlseqs.bp_reset ++
             vaxis.ctlseqs.rmcup;
 
-        gty.anyWriter().writeAll(reset) catch {};
+        const writer = gty.writer();
+        writer.writeAll(reset) catch {};
+        writer.flush() catch {};
 
         gty.deinit();
     }
-    if (sig < 255 and sig >= 0)
-        std.process.exit(@as(u8, @intCast(sig)))
+    const sig_int = @intFromEnum(sig);
+    if (sig_int < 255)
+        std.process.exit(@intCast(sig_int))
     else
         std.process.exit(1);
 }
 
-pub fn main() !void {
-    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-    const gpa, const is_debug = gpa: {
-        break :gpa switch (builtin.mode) {
-            .Debug, .ReleaseSafe => .{ debug_allocator.allocator(), true },
-            .ReleaseFast, .ReleaseSmall => .{ std.heap.smp_allocator, false },
-        };
-    };
-    defer if (is_debug) {
-        _ = debug_allocator.deinit();
-    };
+pub fn main(process: std.process.Init) !void {
+    const gpa = process.gpa;
 
-    var args = try std.process.argsWithAllocator(gpa);
+    var args = try std.process.Args.Iterator.initAllocator(process.minimal.args, gpa);
+    defer args.deinit();
     while (args.next()) |arg| {
         if (argMatch("-v", "--version", arg)) {
-            const stdout = std.io.getStdOut();
-            try stdout.writer().print("comlink {s}\n", .{version});
+            var stdout_buffer: [1024]u8 = undefined;
+            var stdout_writer = std.Io.File.stdout().writer(process.io, &stdout_buffer);
+            const stdout = &stdout_writer.interface;
+            try stdout.print("comlink {s}\n", .{version});
+            try stdout.flush();
             return;
         }
     }
@@ -72,11 +70,12 @@ pub fn main() !void {
     comlink.Command.user_commands = std.StringHashMap(i32).init(gpa);
     defer comlink.Command.user_commands.deinit();
 
-    var app = try vaxis.vxfw.App.init(gpa);
+    var tty_buffer: [1024]u8 = undefined;
+    var app = try vaxis.vxfw.App.init(process.io, gpa, process.environ_map, &tty_buffer);
     defer app.deinit();
 
     var comlink_app: comlink.App = undefined;
-    try comlink_app.init(gpa, &app.vx.unicode);
+    try comlink_app.init(gpa, process.io, process.environ_map);
     defer comlink_app.deinit();
 
     try app.run(comlink_app.widget(), .{});

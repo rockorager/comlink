@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
         b.default_step.dependOn(&install_step.step);
     }
 
-    const ziglua_dep = b.dependency("lua_wrapper", .{
+    const ziglua_dep = b.dependency("zlua", .{
         .target = target,
         .optimize = optimize,
         .lang = .lua54,
@@ -41,11 +41,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const exe = b.addExecutable(.{
-        .name = "comlink",
+    const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+    });
+    const exe = b.addExecutable(.{
+        .name = "comlink",
+        .root_module = exe_mod,
     });
     exe.pie = pie;
 
@@ -56,11 +59,11 @@ pub fn build(b: *std.Build) void {
     };
     opts.addOption([]const u8, "version", version_string);
 
-    exe.root_module.addOptions("build_options", opts);
-    exe.root_module.addImport("tls", tls_dep.module("tls"));
-    exe.root_module.addImport("ziglua", ziglua_dep.module("ziglua"));
-    exe.root_module.addImport("vaxis", vaxis_dep.module("vaxis"));
-    exe.root_module.addImport("zeit", zeit_dep.module("zeit"));
+    exe_mod.addOptions("build_options", opts);
+    exe_mod.addImport("tls", tls_dep.module("tls"));
+    exe_mod.addImport("ziglua", ziglua_dep.module("zlua"));
+    exe_mod.addImport("vaxis", vaxis_dep.module("vaxis"));
+    exe_mod.addImport("zeit", zeit_dep.module("zeit"));
 
     b.installArtifact(exe);
     b.installFile("docs/comlink.lua", "share/comlink/lua/comlink.lua");
@@ -77,15 +80,19 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    const exe_unit_tests = b.addTest(.{
+    const tests_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
-    exe_unit_tests.root_module.addImport("vaxis", vaxis_dep.module("vaxis"));
-    exe_unit_tests.root_module.addImport("tls", tls_dep.module("tls"));
-    exe_unit_tests.root_module.addImport("zeit", zeit_dep.module("zeit"));
-    exe_unit_tests.root_module.addImport("ziglua", ziglua_dep.module("ziglua"));
+    tests_mod.addOptions("build_options", opts);
+    tests_mod.addImport("vaxis", vaxis_dep.module("vaxis"));
+    tests_mod.addImport("tls", tls_dep.module("tls"));
+    tests_mod.addImport("zeit", zeit_dep.module("zeit"));
+    tests_mod.addImport("ziglua", ziglua_dep.module("zlua"));
+    const exe_unit_tests = b.addTest(.{
+        .root_module = tests_mod,
+    });
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
@@ -94,18 +101,21 @@ pub fn build(b: *std.Build) void {
 
     {
         // Add a check step for zls
-        const check_exe = b.addExecutable(.{
-            .name = "comlink",
+        const check_mod = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+        });
+        check_mod.addImport("vaxis", vaxis_dep.module("vaxis"));
+        check_mod.addImport("tls", tls_dep.module("tls"));
+        check_mod.addImport("zeit", zeit_dep.module("zeit"));
+        check_mod.addImport("ziglua", ziglua_dep.module("zlua"));
+        check_mod.addOptions("build_options", opts);
+        const check_exe = b.addExecutable(.{
+            .name = "comlink",
+            .root_module = check_mod,
             .use_llvm = target.result.cpu.arch != .x86_64,
         });
-        check_exe.root_module.addImport("vaxis", vaxis_dep.module("vaxis"));
-        check_exe.root_module.addImport("tls", tls_dep.module("tls"));
-        check_exe.root_module.addImport("zeit", zeit_dep.module("zeit"));
-        check_exe.root_module.addImport("ziglua", ziglua_dep.module("ziglua"));
-        check_exe.root_module.addOptions("build_options", opts);
 
         const check_step = b.step("check", "Check if comlink compiles");
         check_step.dependOn(&check_exe.step);
@@ -127,7 +137,7 @@ fn version(b: *std.Build) ![]const u8 {
         "describe",
         "--tags",
         "--abbrev=9",
-    }, &code, .Ignore) catch {
+    }, &code, .ignore) catch {
         return version_string;
     };
     if (!std.mem.startsWith(u8, git_describe_untrimmed, version_string)) {

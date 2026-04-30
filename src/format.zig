@@ -22,7 +22,7 @@ const LinkState = enum {
 };
 
 /// generate vaxis.Segments for the message content
-pub fn message(segments: *std.ArrayList(vaxis.Segment), user: *const irc.User, msg: irc.Message) !void {
+pub fn message(segments: *std.array_list.Managed(vaxis.Segment), user: *const irc.User, msg: irc.Message) !void {
     var iter = msg.paramIterator();
     // skip the first param, this is the receiver of the message
     _ = iter.next() orelse return error.InvalidMessage;
@@ -286,7 +286,7 @@ test "format.zig: no format" {
     const user: irc.User = .{ .nick = "rockorager" };
     const msg: irc.Message = .{ .bytes = "PRIVMSG #comlink :foo" };
 
-    var list = std.ArrayList(vaxis.Segment).init(std.testing.allocator);
+    var list = std.array_list.Managed(vaxis.Segment).init(std.testing.allocator);
     defer list.deinit();
     try message(&list, &user, msg);
     try std.testing.expectEqual(1, list.items.len);
@@ -298,7 +298,7 @@ test "format.zig: bold" {
     const user: irc.User = .{ .nick = "rockorager" };
     const msg: irc.Message = .{ .bytes = "PRIVMSG #comlink :\x02foo\x02" };
 
-    var list = std.ArrayList(vaxis.Segment).init(std.testing.allocator);
+    var list = std.array_list.Managed(vaxis.Segment).init(std.testing.allocator);
     defer list.deinit();
     try message(&list, &user, msg);
     try std.testing.expectEqual(1, list.items.len);
@@ -310,7 +310,7 @@ test "format.zig: italic" {
     const user: irc.User = .{ .nick = "rockorager" };
     const msg: irc.Message = .{ .bytes = "PRIVMSG #comlink :\x1dfoo\x1d" };
 
-    var list = std.ArrayList(vaxis.Segment).init(std.testing.allocator);
+    var list = std.array_list.Managed(vaxis.Segment).init(std.testing.allocator);
     defer list.deinit();
     try message(&list, &user, msg);
     try std.testing.expectEqual(1, list.items.len);
@@ -324,7 +324,7 @@ test "format.zig: strikethrough, reverse, underline" {
         .bytes = "PRIVMSG #comlink :\x16foo\x16\x1Dbar\x1D\x1Ebaz\x1E\x1Ffoo\x1F",
     };
 
-    var list = std.ArrayList(vaxis.Segment).init(std.testing.allocator);
+    var list = std.array_list.Managed(vaxis.Segment).init(std.testing.allocator);
     defer list.deinit();
     try message(&list, &user, msg);
     const expected: []const vaxis.Segment = &.{
@@ -345,7 +345,7 @@ test "format.zig: format without closer" {
         .bytes = "PRIVMSG #comlink :\x16foo\x16\x1Dbar\x1D\x1Ebaz\x1E\x1Ffoo",
     };
 
-    var list = std.ArrayList(vaxis.Segment).init(std.testing.allocator);
+    var list = std.array_list.Managed(vaxis.Segment).init(std.testing.allocator);
     defer list.deinit();
     try message(&list, &user, msg);
     const expected: []const vaxis.Segment = &.{
@@ -366,7 +366,7 @@ test "format.zig: hyperlink" {
         .bytes = "PRIVMSG #comlink :https://example.org",
     };
 
-    var list = std.ArrayList(vaxis.Segment).init(std.testing.allocator);
+    var list = std.array_list.Managed(vaxis.Segment).init(std.testing.allocator);
     defer list.deinit();
     try message(&list, &user, msg);
     const expected: []const vaxis.Segment = &.{
@@ -388,7 +388,7 @@ test "format.zig: more than hyperlink" {
         .bytes = "PRIVMSG #comlink :look https://example.org here",
     };
 
-    var list = std.ArrayList(vaxis.Segment).init(std.testing.allocator);
+    var list = std.array_list.Managed(vaxis.Segment).init(std.testing.allocator);
     defer list.deinit();
     try message(&list, &user, msg);
     const expected: []const vaxis.Segment = &.{

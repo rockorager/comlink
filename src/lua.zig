@@ -276,8 +276,7 @@ const Comlink = struct {
                 break :blk cmd;
             },
             .function => blk: {
-                const ref = lua.ref(registry_index) catch
-                    lua.raiseErrorStr("couldn't ref keybind function", .{});
+                const ref = lua.ref(registry_index);
                 const cmd: comlink.Command = .{ .lua_function = ref };
                 break :blk cmd;
             },
@@ -388,9 +387,7 @@ const Comlink = struct {
         };
 
         Client.initTable(lua); // [table]
-        const table_ref = lua.ref(registry_index) catch {
-            lua.raiseErrorStr("couldn't ref client table", .{});
-        };
+        const table_ref = lua.ref(registry_index);
 
         const app = getApp(lua);
         const gpa = app.alloc;
@@ -447,11 +444,11 @@ const Comlink = struct {
         assert(lua.getTop() == 2);
         lua.argCheck(lua.isString(1), 1, "expected a string"); // [string, function]
         lua.argCheck(lua.isFunction(2), 2, "expected a function"); // [string, function]
-        const ref = lua.ref(registry_index) catch lua.raiseErrorStr("couldn't ref function", .{}); // [string]
+        const ref = lua.ref(registry_index); // [string]
         const cmd = lua.toString(1) catch unreachable;
 
         // ref the string so we don't garbage collect it
-        _ = lua.ref(registry_index) catch lua.raiseErrorStr("couldn't ref command name", .{}); // []
+        _ = lua.ref(registry_index); // []
         comlink.Command.user_commands.put(cmd, ref) catch lua.raiseErrorStr("out of memory", .{});
         return 0;
     }

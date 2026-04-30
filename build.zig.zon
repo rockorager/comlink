@@ -2,26 +2,27 @@
     .name = .comlink,
     .fingerprint = 0xa8dac1987074e6a3,
     .version = "0.0.0",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .vaxis = .{
-            .url = "git+https://github.com/rockorager/libvaxis#a379a185fb5414c3f0545121deda73aef6adac15",
-            .hash = "vaxis-0.1.0-BWNV_IrzCABjEgB2wCfG6hGZ29_xfIy-_BCNtNfsrsTt",
+            .url = "git+https://github.com/rockorager/libvaxis#0c9d3cb786e8c73414cad84f04eaae2d987e92ef",
+            .hash = "vaxis-0.6.0-BWNV_MnUCQCAVGshfkSx9a91DRlIb4IyuFLnnzcmARHI",
         },
         .zeit = .{
-            .url = "git+https://github.com/rockorager/zeit#44bebf856693332b168d8ba2c45b9d1ec15511de",
-            .hash = "zeit-0.0.0-5I6bk_pZAgB03N1p1GmVOZ--gOFwwQSRKj1UXb5tnaKS",
+            .url = "git+https://github.com/rockorager/zeit#2a79678e05e4e82cd4efd4fd6b754dcf029c3a64",
+            .hash = "zeit-0.6.0-5I6bk7q6AgBdMJxze3D4l9ylQhkviQ_BX9FigDt13MFn",
         },
         .tls = .{
-            .url = "git+https://github.com/ianic/tls.zig#cbcb175b9e7b23356aafd005fdd20f3f6dd80a04",
-            .hash = "tls-0.1.0-ER2e0sz1BABm_MuU6VMiQJ152-Q-wLAtEYCmgloFmVzV",
+            .url = "git+https://github.com/ianic/tls.zig#561cd3e5a88ec430d2021e2da19b6bee667e020d",
+            .hash = "tls-0.1.0-ER2e0kOpBQCRFI5ZJTlpYIKYTkYM5eNvBBkBf9MZteut",
         },
         .zzdoc = .{
-            .url = "git+https://github.com/rockorager/zzdoc#57e86eb4e621bc4a96fbe0dd89ad0986db6d0483",
-            .hash = "zzdoc-0.0.0-tzT1PuPZAACr1jIJxjTrdOsLbfXS6idWFGfTq0gwxJiv",
+            .url = "git+https://github.com/rockorager/zzdoc#98cdf8ba5ae2d01b4da0793dd43dd2f6d6b1e217",
+            .hash = "zzdoc-0.0.0-tzT1PjPfAAD6wsVuNRwwCStXJC5la08OkS3u4ra7fHpM",
         },
-        .lua_wrapper = .{
-            .url = "git+https://github.com/natecraddock/ziglua#70cf5b7c3941923fdcdb5c9d308f7c49de504ad4",
-            .hash = "lua_wrapper-0.1.0-OyMC23XKBADKmeC0WOW1mgWw5bUgS5_HEqD2X6k9Jpm_",
+        .zlua = .{
+            .url = "git+https://github.com/natecraddock/ziglua#74cb4f86cd8008b1ee7a7c8fa2a29da58de7f1fa",
+            .hash = "zlua-0.1.0-hGRpC1B-BQAKAx0m9dmZZuwKZvaylK2CMTkvlEfPsFst",
         },
     },
     .paths = .{""},

@@ -19,7 +19,7 @@ pub const Completer = struct {
 
     word: []const u8,
     start_idx: usize,
-    options: std.ArrayList(vxfw.Text),
+    options: std.array_list.Managed(vxfw.Text),
     widest: ?usize,
     buf: [irc.maximum_message_size]u8 = undefined,
     kind: Kind = .nick,
@@ -28,7 +28,7 @@ pub const Completer = struct {
 
     pub fn init(gpa: std.mem.Allocator) Completer {
         return .{
-            .options = std.ArrayList(vxfw.Text).init(gpa),
+            .options = std.array_list.Managed(vxfw.Text).init(gpa),
             .start_idx = 0,
             .word = "",
             .widest = null,
@@ -131,7 +131,7 @@ pub const Completer = struct {
     pub fn findMatches(self: *Completer, chan: *irc.Channel) !void {
         if (self.options.items.len > 0) return;
         const alloc = self.options.allocator;
-        var members = std.ArrayList(irc.Channel.Member).init(alloc);
+        var members = std.array_list.Managed(irc.Channel.Member).init(alloc);
         defer members.deinit();
         for (chan.members.items) |member| {
             if (std.ascii.startsWithIgnoreCase(member.user.nick, self.word)) {

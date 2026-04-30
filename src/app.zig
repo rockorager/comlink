@@ -45,14 +45,15 @@ pub const App = struct {
     config: comlink.Config,
     explicit_join: bool,
     alloc: std.mem.Allocator,
+    io: std.Io,
     /// System certificate bundle
     bundle: std.crypto.Certificate.Bundle,
     /// List of all configured clients
-    clients: std.ArrayList(*irc.Client),
+    clients: std.array_list.Managed(*irc.Client),
     /// if we have already called deinit
     deinited: bool,
     /// Process environment
-    env: std.process.EnvMap,
+    env: *std.process.Environ.Map,
     /// Local timezone
     tz: zeit.TimeZone,
 
@@ -60,9 +61,9 @@ pub const App = struct {
 
     completer: ?Completer,
 
-    binds: std.ArrayList(Bind),
+    binds: std.array_list.Managed(Bind),
 
-    paste_buffer: std.ArrayList(u8),
+    paste_buffer: std.array_list.Managed(u8),
 
     lua: *Lua,
 
@@ -71,8 +72,6 @@ pub const App = struct {
 
     view: vxfw.SplitView,
     buffer_list: vxfw.ListView,
-    unicode: *const vaxis.Unicode,
-
     title_buf: [128]u8,
 
     // Only valid during an event handler
@@ -89,18 +88,22 @@ pub const App = struct {
     const default_rhs: vxfw.Text = .{ .text = "TODO: update this text" };
 
     /// initialize vaxis, lua state
-    pub fn init(self: *App, gpa: std.mem.Allocator, unicode: *const vaxis.Unicode) !void {
+    pub fn init(self: *App, gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map) !void {
         self.* = .{
             .alloc = gpa,
+            .io = io,
             .config = .{},
             .state = .{},
-            .clients = std.ArrayList(*irc.Client).init(gpa),
-            .env = try std.process.getEnvMap(gpa),
-            .binds = try std.ArrayList(Bind).initCapacity(gpa, 16),
-            .paste_buffer = std.ArrayList(u8).init(gpa),
-            .tz = try zeit.local(gpa, null),
+            .clients = std.array_list.Managed(*irc.Client).init(gpa),
+            .env = env,
+            .binds = try std.array_list.Managed(Bind).initCapacity(gpa, 16),
+            .paste_buffer = std.array_list.Managed(u8).init(gpa),
+            .tz = try zeit.local(gpa, io, .{
+                .tz = env.get("TZ"),
+                .tzdir = env.get("TZDIR"),
+            }),
             .lua = undefined,
-            .write_queue = .{},
+            .write_queue = .init(io),
             .write_thread = undefined,
             .view = .{
                 .width = self.state.buffers.width,
@@ -108,7 +111,7 @@ pub const App = struct {
                 .rhs = default_rhs.widget(),
             },
             .explicit_join = false,
-            .bundle = .{},
+            .bundle = .empty,
             .deinited = false,
             .completer = null,
             .buffer_list = .{
@@ -120,7 +123,6 @@ pub const App = struct {
                 },
                 .draw_cursor = false,
             },
-            .unicode = unicode,
             .title_buf = undefined,
             .ctx = null,
             .last_height = 0,
@@ -154,7 +156,7 @@ pub const App = struct {
         });
 
         // Get our system tls certs
-        try self.bundle.rescan(gpa);
+        try self.bundle.rescan(gpa, io, std.Io.Timestamp.now(io, .real));
     }
 
     /// close the application. This closes the TUI, disconnects clients, and cleans
@@ -163,7 +165,7 @@ pub const App = struct {
         if (self.deinited) return;
         self.deinited = true;
         // Push a join command to the write thread
-        self.write_queue.push(.join);
+        self.write_queue.push(.join) catch unreachable;
 
         // clean up clients
         {
@@ -188,7 +190,6 @@ pub const App = struct {
 
         // Join the write thread
         self.write_thread.join();
-        self.env.deinit();
         self.lua.deinit();
     }
 
@@ -348,7 +349,7 @@ pub const App = struct {
             }
         } else self.view.rhs = default_rhs.widget();
 
-        var children = std.ArrayList(vxfw.SubSurface).init(ctx.arena);
+        var children = std.array_list.Managed(vxfw.SubSurface).init(ctx.arena);
 
         // UI is a tree of splits
         // │         │                  │         │
@@ -739,14 +740,14 @@ pub const App = struct {
 fn writeLoop(alloc: std.mem.Allocator, queue: *comlink.WriteQueue) !void {
     log.debug("starting write thread", .{});
     while (true) {
-        const req = queue.pop();
+        const req = try queue.pop();
         switch (req) {
             .write => |w| {
                 try w.client.write(w.msg);
                 alloc.free(w.msg);
             },
             .join => {
-                while (queue.tryPop()) |r| {
+                while (try queue.tryPop()) |r| {
                     switch (r) {
                         .write => |w| alloc.free(w.msg),
                         else => {},

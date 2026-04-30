@@ -33,6 +33,20 @@ const keepalive_interval: i32 = 5;
 /// Number of failed pings before we consider the connection failed
 const keepalive_retries: i32 = 3;
 
+fn unixTimestamp() i64 {
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(.REALTIME, &ts) == 0) return @intCast(ts.sec);
+    return 0;
+}
+
+fn milliTimestamp() i64 {
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(.REALTIME, &ts) == 0) {
+        return @as(i64, @intCast(ts.sec)) * std.time.ms_per_s + @divFloor(ts.nsec, std.time.ns_per_ms);
+    }
+    return 0;
+}
+
 // Gutter (left side where time is printed) width
 const gutter_width = 6;
 
@@ -126,13 +140,13 @@ pub const Channel = struct {
     client: *Client,
     name: []const u8,
     topic: ?[]const u8 = null,
-    members: std.ArrayList(Member),
+    members: std.array_list.Managed(Member),
     in_flight: struct {
         who: bool = false,
         names: bool = false,
     } = .{},
 
-    messages: std.ArrayList(Message),
+    messages: std.array_list.Managed(Message),
     history_requested: bool = false,
     who_requested: bool = false,
     at_oldest: bool = false,
@@ -273,12 +287,11 @@ pub const Channel = struct {
         gpa: Allocator,
         client: *Client,
         name: []const u8,
-        unicode: *const vaxis.Unicode,
     ) Allocator.Error!void {
         self.* = .{
             .name = try gpa.dupe(u8, name),
-            .members = std.ArrayList(Channel.Member).init(gpa),
-            .messages = std.ArrayList(Message).init(gpa),
+            .members = std.array_list.Managed(Channel.Member).init(gpa),
+            .messages = std.array_list.Managed(Message).init(gpa),
             .client = client,
             .view = .{
                 .lhs = self.contentWidget(),
@@ -295,7 +308,7 @@ pub const Channel = struct {
                 },
                 .draw_cursor = false,
             },
-            .text_field = vxfw.TextField.init(gpa, unicode),
+            .text_field = vxfw.TextField.init(gpa),
             .completer = Completer.init(gpa),
         };
 
@@ -354,7 +367,7 @@ pub const Channel = struct {
             try self.client.print("@+typing=done TAGMSG {s}\r\n", .{self.name});
             return;
         }
-        const now: u32 = @intCast(std.time.timestamp());
+        const now: u32 = @intCast(unixTimestamp());
         // Send another typing message if it's been more than 3 seconds
         if (self.typing_last_sent + 3 < now) {
             try self.client.print("@+typing=active TAGMSG {s}\r\n", .{self.name});
@@ -556,7 +569,7 @@ pub const Channel = struct {
                     },
                 );
             }
-        } else self.last_read = @intCast(std.time.timestamp());
+        } else self.last_read = @intCast(unixTimestamp());
     }
 
     pub fn contentWidget(self: *Channel) vxfw.Widget {
@@ -600,18 +613,18 @@ pub const Channel = struct {
                 }
                 if (key.matches(vaxis.Key.page_up, .{})) {
                     self.scroll.pending += self.client.app.last_height / 2;
-                    self.animation_end_ms = @intCast(std.time.milliTimestamp() + 200);
+                    self.animation_end_ms = @intCast(milliTimestamp() + 200);
                     try self.doScroll(ctx);
                     return ctx.consumeAndRedraw();
                 }
                 if (key.matches(vaxis.Key.page_down, .{})) {
-                    self.animation_end_ms = @intCast(std.time.milliTimestamp() + 200);
+                    self.animation_end_ms = @intCast(milliTimestamp() + 200);
                     self.scroll.pending -|= self.client.app.last_height / 2;
                     try self.doScroll(ctx);
                     return ctx.consumeAndRedraw();
                 }
                 if (key.matches(vaxis.Key.home, .{})) {
-                    self.animation_end_ms = @intCast(std.time.milliTimestamp() + 200);
+                    self.animation_end_ms = @intCast(milliTimestamp() + 200);
                     self.scroll.pending -= self.scroll.offset;
                     self.scroll.msg_offset = null;
                     try self.doScroll(ctx);
@@ -632,7 +645,7 @@ pub const Channel = struct {
         }
 
         const max = ctx.max.size();
-        var children = std.ArrayList(vxfw.SubSurface).init(ctx.arena);
+        var children = std.array_list.Managed(vxfw.SubSurface).init(ctx.arena);
 
         {
             const spans = try formatMessage(ctx.arena, undefined, self.topic orelse "");
@@ -651,8 +664,8 @@ pub const Channel = struct {
 
             // Draw a border below the topic
             const bot = "─";
-            var writer = try std.ArrayList(u8).initCapacity(ctx.arena, bot.len * max.width);
-            try writer.writer().writeBytesNTimes(bot, max.width);
+            var writer = try std.array_list.Managed(u8).initCapacity(ctx.arena, bot.len * max.width);
+            for (0..max.width) |_| try writer.appendSlice(bot);
 
             const border: vxfw.Text = .{
                 .text = writer.items,
@@ -886,7 +899,7 @@ pub const Channel = struct {
         if (self.scroll.pending == 0) return;
 
         const animation_tick: u32 = 8;
-        const now_ms: u64 = @intCast(std.time.milliTimestamp());
+        const now_ms: u64 = @intCast(milliTimestamp());
 
         // Scroll up
         if (self.scroll.pending > 0) {
@@ -1001,7 +1014,7 @@ pub const Channel = struct {
             };
         }
 
-        var children = std.ArrayList(vxfw.SubSurface).init(ctx.arena);
+        var children = std.array_list.Managed(vxfw.SubSurface).init(ctx.arena);
 
         // Row is the row we are printing on. We add the offset to achieve our scroll location
         var row: i17 = max.height + self.scroll.offset;
@@ -1261,8 +1274,8 @@ pub const Channel = struct {
 
             if (this > self.last_read_indicator and next <= self.last_read_indicator) {
                 const bot = "━";
-                var writer = try std.ArrayList(u8).initCapacity(ctx.arena, bot.len * max.width);
-                try writer.writer().writeBytesNTimes(bot, max.width);
+                var writer = try std.array_list.Managed(u8).initCapacity(ctx.arena, bot.len * max.width);
+                for (0..max.width) |_| try writer.appendSlice(bot);
 
                 const border: vxfw.Text = .{
                     .text = writer.items,
@@ -1325,8 +1338,8 @@ pub const Channel = struct {
             // If we didn't draw past the top of the screen, we must have reached the end of
             // history. Draw an indicator letting the user know this
             const bot = "━";
-            var writer = try std.ArrayList(u8).initCapacity(ctx.arena, bot.len * max.width);
-            try writer.writer().writeBytesNTimes(bot, max.width);
+            var writer = try std.array_list.Managed(u8).initCapacity(ctx.arena, bot.len * max.width);
+            for (0..max.width) |_| try writer.appendSlice(bot);
 
             const border: vxfw.Text = .{
                 .text = writer.items,
@@ -1402,7 +1415,7 @@ pub const Channel = struct {
     }
 
     fn getTypers(self: *Channel, buf: []*User) []*User {
-        const now: u32 = @intCast(std.time.timestamp());
+        const now: u32 = @intCast(unixTimestamp());
         var i: usize = 0;
         for (self.members.items) |member| {
             if (i == buf.len) {
@@ -1419,7 +1432,7 @@ pub const Channel = struct {
     }
 
     fn typingCount(self: *Channel) usize {
-        const now: u32 = @intCast(std.time.timestamp());
+        const now: u32 = @intCast(unixTimestamp());
 
         var n: usize = 0;
         for (self.members.items) |member| {
@@ -1453,14 +1466,14 @@ pub const Message = struct {
     pub fn init(bytes: []const u8) Message {
         var msg: Message = .{ .bytes = bytes };
         if (msg.getTag("time")) |time_str| {
-            const inst = zeit.instant(.{ .source = .{ .iso8601 = time_str } }) catch |err| {
+            const inst = zeit.instant(std.Io.failing, .{ .source = .{ .iso8601 = time_str } }) catch |err| {
                 log.warn("couldn't parse time: '{s}', error: {}", .{ time_str, err });
-                msg.timestamp_s = @intCast(std.time.timestamp());
+                msg.timestamp_s = @intCast(unixTimestamp());
                 return msg;
             };
             msg.timestamp_s = @intCast(inst.unixTimestamp());
         } else {
-            msg.timestamp_s = @intCast(std.time.timestamp());
+            msg.timestamp_s = @intCast(unixTimestamp());
         }
         return msg;
     }
@@ -1663,7 +1676,7 @@ pub const Message = struct {
     }
 
     pub fn time(self: Message) zeit.Instant {
-        return zeit.instant(.{
+        return zeit.instant(std.Io.failing, .{
             .source = .{ .unix_timestamp = self.timestamp_s },
         }) catch unreachable;
     }
@@ -1756,11 +1769,15 @@ pub const Client = struct {
 
     alloc: std.mem.Allocator,
     app: *comlink.App,
-    client: tls.Connection(std.net.Stream),
-    stream: std.net.Stream,
+    client: tls.Connection,
+    stream: std.Io.net.Stream,
+    stream_reader: std.Io.net.Stream.Reader,
+    stream_writer: std.Io.net.Stream.Writer,
+    stream_read_buf: [tls.input_buffer_len]u8,
+    stream_write_buf: [tls.output_buffer_len]u8,
     config: Config,
 
-    channels: std.ArrayList(*Channel),
+    channels: std.array_list.Managed(*Channel),
     users: std.StringHashMap(*User),
 
     status: std.atomic.Value(Status),
@@ -1774,8 +1791,8 @@ pub const Client = struct {
     thread: ?std.Thread = null,
 
     redraw: std.atomic.Value(bool),
-    read_buf_mutex: std.Thread.Mutex,
-    read_buf: std.ArrayList(u8),
+    read_buf_mutex: std.Io.Mutex,
+    read_buf: std.array_list.Managed(u8),
 
     has_mouse: bool,
     retry_delay_s: u8,
@@ -1814,18 +1831,22 @@ pub const Client = struct {
             .app = app,
             .client = undefined,
             .stream = undefined,
+            .stream_reader = undefined,
+            .stream_writer = undefined,
+            .stream_read_buf = undefined,
+            .stream_write_buf = undefined,
             .config = cfg,
-            .channels = std.ArrayList(*Channel).init(alloc),
+            .channels = std.array_list.Managed(*Channel).init(alloc),
             .users = std.StringHashMap(*User).init(alloc),
             .batches = std.StringHashMap(*Channel).init(alloc),
             .write_queue = wq,
             .status = std.atomic.Value(Status).init(.disconnected),
             .redraw = std.atomic.Value(bool).init(false),
-            .read_buf_mutex = .{},
-            .read_buf = std.ArrayList(u8).init(alloc),
+            .read_buf_mutex = .init,
+            .read_buf = std.array_list.Managed(u8).init(alloc),
             .has_mouse = false,
             .retry_delay_s = 0,
-            .text_field = .init(alloc, app.unicode),
+            .text_field = .init(alloc),
             .completer_shown = false,
             .list_modal = undefined,
             .messages = .empty,
@@ -1865,8 +1886,8 @@ pub const Client = struct {
         if (self.config.tls) {
             self.client.close() catch {};
         }
-        std.posix.shutdown(self.stream.handle, .both) catch {};
-        self.stream.close();
+        self.stream.shutdown(self.app.io, .both) catch {};
+        self.stream.close(self.app.io);
     }
 
     pub fn deinit(self: *Client) void {
@@ -1962,7 +1983,7 @@ pub const Client = struct {
         const self: *Client = @ptrCast(@alignCast(ptr));
         const max = ctx.max.size();
 
-        var children = std.ArrayList(vxfw.SubSurface).init(ctx.arena);
+        var children = std.array_list.Managed(vxfw.SubSurface).init(ctx.arena);
         {
             const message_view_ctx = ctx.withConstraints(ctx.min, .{
                 .height = max.height - 2,
@@ -2111,8 +2132,8 @@ pub const Client = struct {
     }
 
     pub fn drainFifo(self: *Client, ctx: *vxfw.EventContext) void {
-        self.read_buf_mutex.lock();
-        defer self.read_buf_mutex.unlock();
+        self.read_buf_mutex.lockUncancelable(self.app.io);
+        defer self.read_buf_mutex.unlock(self.app.io);
         var i: usize = 0;
         while (std.mem.indexOfPos(u8, self.read_buf.items, i, "\r\n")) |idx| {
             defer i = idx + 2;
@@ -2133,7 +2154,7 @@ pub const Client = struct {
     pub fn checkTypingStatus(self: *Client, ctx: *vxfw.EventContext) void {
         // We only care about typing tags if we have the message-tags cap
         if (!self.caps.@"message-tags") return;
-        const now: u32 = @intCast(std.time.timestamp());
+        const now: u32 = @intCast(unixTimestamp());
         for (self.channels.items) |channel| {
             // If the last_active is set, and it is more than 6 seconds ago, we will redraw
             if (channel.typing_last_active != 0 and channel.typing_last_active + 6 < now) {
@@ -2212,7 +2233,7 @@ pub const Client = struct {
             .RPL_WELCOME => {
                 const msg2 = try msg.dupe(self.alloc);
                 try self.messages.append(self.alloc, msg2);
-                const now = try zeit.instant(.{});
+                const now = try zeit.instant(self.app.io, .{});
                 var now_buf: [30]u8 = undefined;
                 const now_fmt = try now.time().bufPrint(&now_buf, .rfc3339);
 
@@ -2514,7 +2535,7 @@ pub const Client = struct {
                 const target = iter.next() orelse return;
                 var channel = try client.getOrCreateChannel(target);
 
-                const trimmed_nick = std.mem.trimRight(u8, user.nick, "_");
+                const trimmed_nick = std.mem.trimEnd(u8, user.nick, "_");
                 // If it's our nick, we request chat history
                 if (mem.eql(u8, trimmed_nick, client.nickname())) {
                     try client.requestHistory(.after, channel);
@@ -2530,7 +2551,7 @@ pub const Client = struct {
                 const target = iter.next() orelse return;
                 const timestamp = iter.next() orelse return;
                 const equal = std.mem.indexOfScalar(u8, timestamp, '=') orelse return;
-                const last_read = zeit.instant(.{
+                const last_read = zeit.instant(std.Io.failing, .{
                     .source = .{
                         .iso8601 = timestamp[equal + 1 ..],
                     },
@@ -2665,7 +2686,7 @@ pub const Client = struct {
                         src.len;
                     break :blk src[0..l];
                 };
-                const sender_trimmed = std.mem.trimRight(u8, sender, "_");
+                const sender_trimmed = std.mem.trimEnd(u8, sender, "_");
                 if (std.mem.eql(u8, sender_trimmed, client.nickname())) {
                     // We never considuer ourselves as typing
                     return;
@@ -2722,14 +2743,22 @@ pub const Client = struct {
 
     pub fn read(self: *Client, buf: []u8) !usize {
         switch (self.config.tls) {
-            true => return self.client.read(buf),
-            false => return self.stream.read(buf),
+            true => return self.client.read(buf) catch |err| {
+                if (err == error.ReadFailed) if (self.stream_reader.err) |stream_err| return stream_err;
+                return err;
+            },
+            false => return self.stream_reader.interface.readSliceShort(buf) catch |err| {
+                if (err == error.ReadFailed) if (self.stream_reader.err) |stream_err| return stream_err;
+                return err;
+            },
         }
     }
 
     fn warn(self: *Client, comptime fmt: []const u8, args: anytype) void {
         self.read_buf.appendSlice(":comlink WARN ") catch {};
-        self.read_buf.writer().print(fmt, args) catch {};
+        const msg = std.fmt.allocPrint(self.alloc, fmt, args) catch return;
+        defer self.alloc.free(msg);
+        self.read_buf.appendSlice(msg) catch {};
         self.read_buf.appendSlice("\r\n") catch {};
     }
 
@@ -2772,7 +2801,7 @@ pub const Client = struct {
             const n = self.read(&buf) catch |err| {
                 // WouldBlock means our socket timeout expired
                 switch (err) {
-                    error.WouldBlock => {},
+                    error.Timeout => {},
                     else => {
                         self.warn("* CONNECTION_ERROR :{}", .{err});
                         return;
@@ -2805,8 +2834,8 @@ pub const Client = struct {
                     return;
                 };
             }
-            self.read_buf_mutex.lock();
-            defer self.read_buf_mutex.unlock();
+            self.read_buf_mutex.lockUncancelable(self.app.io);
+            defer self.read_buf_mutex.unlock(self.app.io);
             try self.read_buf.appendSlice(buf[0..n]);
         }
     }
@@ -2816,7 +2845,7 @@ pub const Client = struct {
         self.write_queue.push(.{ .write = .{
             .client = self,
             .msg = msg,
-        } });
+        } }) catch unreachable;
     }
 
     /// push a write request into the queue. The request should include the trailing
@@ -2825,7 +2854,7 @@ pub const Client = struct {
         self.write_queue.push(.{ .write = .{
             .client = self,
             .msg = try self.alloc.dupe(u8, msg),
-        } });
+        } }) catch unreachable;
     }
 
     pub fn write(self: *Client, buf: []const u8) !void {
@@ -2836,22 +2865,45 @@ pub const Client = struct {
         }
         log.debug("[->{s}] {s}", .{ self.config.name orelse self.config.server, buf[0 .. buf.len - 2] });
         switch (self.config.tls) {
-            true => try self.client.writeAll(buf),
-            false => try self.stream.writeAll(buf),
+            true => self.client.writeAll(buf) catch |err| {
+                if (err == error.WriteFailed) if (self.stream_writer.err) |stream_err| return stream_err;
+                return err;
+            },
+            false => {
+                self.stream_writer.interface.writeAll(buf) catch |err| {
+                    if (err == error.WriteFailed) if (self.stream_writer.err) |stream_err| return stream_err;
+                    return err;
+                };
+                self.stream_writer.interface.flush() catch |err| {
+                    if (err == error.WriteFailed) if (self.stream_writer.err) |stream_err| return stream_err;
+                    return err;
+                };
+            },
         }
     }
 
     pub fn connect(self: *Client) !void {
         if (self.config.tls) {
             const port: u16 = self.config.port orelse 6697;
-            self.stream = try tcpConnectToHost(self.alloc, self.config.server, port);
-            self.client = try tls.client(self.stream, .{
+            self.stream = try tcpConnectToHost(self.app.io, self.config.server, port);
+            self.stream_reader = self.stream.reader(self.app.io, &self.stream_read_buf);
+            self.stream_writer = self.stream.writer(self.app.io, &self.stream_write_buf);
+            const rng_source: std.Random.IoSource = .{ .io = self.app.io };
+            self.client = tls.client(&self.stream_reader.interface, &self.stream_writer.interface, .{
+                .rng = rng_source.interface(),
+                .now = std.Io.Timestamp.now(self.app.io, .real),
                 .host = self.config.server,
-                .root_ca = .{ .bundle = self.app.bundle },
-            });
+                .root_ca = self.app.bundle,
+            }) catch |err| {
+                if (self.stream_reader.err) |stream_err| return stream_err;
+                if (self.stream_writer.err) |stream_err| return stream_err;
+                return err;
+            };
         } else {
             const port: u16 = self.config.port orelse 6667;
-            self.stream = try std.net.tcpConnectToHost(self.alloc, self.config.server, port);
+            self.stream = try tcpConnectToHost(self.app.io, self.config.server, port);
+            self.stream_reader = self.stream.reader(self.app.io, &self.stream_read_buf);
+            self.stream_writer = self.stream.writer(self.app.io, &self.stream_write_buf);
         }
         self.status.store(.connected, .release);
 
@@ -2865,7 +2917,7 @@ pub const Client = struct {
         });
 
         try std.posix.setsockopt(
-            self.stream.handle,
+            self.stream.socket.handle,
             std.posix.SOL.SOCKET,
             std.posix.SO.RCVTIMEO,
             &timeout,
@@ -2877,7 +2929,7 @@ pub const Client = struct {
             if (caseFold(name, channel.name)) return channel;
         }
         const channel = try self.alloc.create(Channel);
-        try channel.init(self.alloc, self, name, self.app.unicode);
+        try channel.init(self.alloc, self, name);
         try self.channels.append(channel);
 
         std.sort.insertion(*Channel, self.channels.items, {}, Channel.compare);
@@ -3075,7 +3127,7 @@ pub const Client = struct {
             };
         }
 
-        var children = std.ArrayList(vxfw.SubSurface).init(ctx.arena);
+        var children = std.array_list.Managed(vxfw.SubSurface).init(ctx.arena);
 
         // Row is the row we are printing on. We add the offset to achieve our scroll location
         var row: i17 = max.height + self.scroll.offset;
@@ -3221,8 +3273,8 @@ pub const Client = struct {
             // If we didn't draw past the top of the screen, we must have reached the end of
             // history. Draw an indicator letting the user know this
             const bot = "━";
-            var writer = try std.ArrayList(u8).initCapacity(ctx.arena, bot.len * max.width);
-            try writer.writer().writeBytesNTimes(bot, max.width);
+            var writer = try std.array_list.Managed(u8).initCapacity(ctx.arena, bot.len * max.width);
+            for (0..max.width) |_| try writer.appendSlice(bot);
 
             const border: vxfw.Text = .{
                 .text = writer.items,
@@ -3380,7 +3432,7 @@ fn formatMessage(
         consume,
     };
 
-    var spans = std.ArrayList(vxfw.RichText.TextSpan).init(arena);
+    var spans = std.array_list.Managed(vxfw.RichText.TextSpan).init(arena);
 
     var start: usize = 0;
     var i: usize = 0;
@@ -3678,7 +3730,7 @@ pub const ListModal = struct {
     list_view: vxfw.ListView,
     text_field: vxfw.TextField,
 
-    filtered_items: std.ArrayList(Item),
+    filtered_items: std.array_list.Managed(Item),
 
     finished: bool,
     is_shown: bool,
@@ -3755,7 +3807,7 @@ pub const ListModal = struct {
     fn init(self: *ListModal, gpa: Allocator, client: *Client) void {
         self.* = .{
             .client = client,
-            .filtered_items = std.ArrayList(Item).init(gpa),
+            .filtered_items = std.array_list.Managed(Item).init(gpa),
             .items = .empty,
             .list_view = .{
                 .children = .{
@@ -3765,7 +3817,7 @@ pub const ListModal = struct {
                     },
                 },
             },
-            .text_field = .init(gpa, client.app.unicode),
+            .text_field = .init(gpa),
             .finished = true,
             .is_shown = false,
             .focus = .text_field,
@@ -3949,21 +4001,14 @@ pub const ListModal = struct {
     }
 };
 
-/// All memory allocated with `allocator` will be freed before this function returns.
-pub fn tcpConnectToHost(allocator: mem.Allocator, name: []const u8, port: u16) std.net.TcpConnectToHostError!std.net.Stream {
-    const list = try std.net.getAddressList(allocator, name, port);
-    defer list.deinit();
+/// Connect to a host name or IP address using Zig's Io networking API.
+pub fn tcpConnectToHost(io: std.Io, name: []const u8, port: u16) !std.Io.net.Stream {
+    if (std.Io.net.IpAddress.parse(name, port)) |addr| {
+        return addr.connect(io, .{ .mode = .stream });
+    } else |_| {}
 
-    if (list.addrs.len == 0) return error.UnknownHostName;
-
-    for (list.addrs) |addr| {
-        const stream = std.net.tcpConnectToAddress(addr) catch |err| {
-            log.warn("error connecting to host: {}", .{err});
-            continue;
-        };
-        return stream;
-    }
-    return std.posix.ConnectError.ConnectionRefused;
+    const host_name = try std.Io.net.HostName.init(name);
+    return host_name.connect(io, port, .{ .mode = .stream });
 }
 
 test "caseFold" {
