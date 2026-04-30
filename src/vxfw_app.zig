@@ -98,8 +98,10 @@ pub fn run(self: *App, widget: vxfw.Widget, opts: Options) anyerror!void {
     try focus_handler.path_to_focused.append(self.allocator, widget);
     defer focus_handler.deinit(self.allocator);
 
-    // Timestamp of our next frame
-    var next_frame = std.Io.Timestamp.now(self.io, .real);
+    // Maximum idle sleep when there are no timers. Applications that need
+    // periodic work should schedule ticks; we sleep until the next tick rather
+    // than waking at the render framerate.
+    const max_idle_sleep = tick;
 
     // Create our event context
     var ctx: vxfw.EventContext = .{
@@ -114,15 +116,20 @@ pub fn run(self: *App, widget: vxfw.Widget, opts: Options) anyerror!void {
     defer ctx.cmds.deinit(self.allocator);
 
     while (true) {
-        const now = std.Io.Timestamp.now(self.io, .real);
-        const duration = next_frame.durationTo(now);
-        if (duration.nanoseconds <= 0) {
-            // Deadline exceeded. Schedule the next frame
-            next_frame = now.addDuration(tick);
-        } else {
-            // Sleep until the deadline
-            try self.io.sleep(duration, .real);
-            next_frame = next_frame.addDuration(tick);
+        const idle_sleep: std.Io.Duration = blk: {
+            if (ctx.redraw) break :blk .zero;
+            if (!try loop.queue.isEmpty()) break :blk .zero;
+            if (self.timers.items.len > 0) {
+                const now = std.Io.Timestamp.now(self.io, .real);
+                const next_timer = self.timers.items[self.timers.items.len - 1];
+                const duration = now.durationTo(next_timer.deadline);
+                if (duration.nanoseconds > 0) break :blk duration;
+                break :blk .zero;
+            }
+            break :blk max_idle_sleep;
+        };
+        if (idle_sleep.nanoseconds > 0) {
+            try self.io.sleep(idle_sleep, .real);
         }
 
         try self.checkTimers(&ctx);
