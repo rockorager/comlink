@@ -35,15 +35,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const vaxis_mod = b.createModule(.{
-        .root_source_file = b.path("src/vaxis.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{.{
-            .name = "vaxis_upstream",
-            .module = vaxis_dep.module("vaxis"),
-        }},
-    });
 
     const zeit_dep = b.dependency("zeit", .{
         .target = target,
@@ -71,7 +62,7 @@ pub fn build(b: *std.Build) void {
     exe_mod.addOptions("build_options", opts);
     exe_mod.addImport("tls", tls_dep.module("tls"));
     exe_mod.addImport("ziglua", ziglua_dep.module("zlua"));
-    exe_mod.addImport("vaxis", vaxis_mod);
+    exe_mod.addImport("vaxis", vaxis_dep.module("vaxis"));
     exe_mod.addImport("zeit", zeit_dep.module("zeit"));
 
     b.installArtifact(exe);
@@ -95,7 +86,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     tests_mod.addOptions("build_options", opts);
-    tests_mod.addImport("vaxis", vaxis_mod);
+    tests_mod.addImport("vaxis", vaxis_dep.module("vaxis"));
     tests_mod.addImport("tls", tls_dep.module("tls"));
     tests_mod.addImport("zeit", zeit_dep.module("zeit"));
     tests_mod.addImport("ziglua", ziglua_dep.module("zlua"));
@@ -115,7 +106,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
-        check_mod.addImport("vaxis", vaxis_mod);
+        check_mod.addImport("vaxis", vaxis_dep.module("vaxis"));
         check_mod.addImport("tls", tls_dep.module("tls"));
         check_mod.addImport("zeit", zeit_dep.module("zeit"));
         check_mod.addImport("ziglua", ziglua_dep.module("zlua"));

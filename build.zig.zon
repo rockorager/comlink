@@ -5,8 +5,7 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .vaxis = .{
-            .url = "git+https://github.com/rockorager/libvaxis#0c9d3cb786e8c73414cad84f04eaae2d987e92ef",
-            .hash = "vaxis-0.6.0-BWNV_MnUCQCAVGshfkSx9a91DRlIb4IyuFLnnzcmARHI",
+            .path = "../libvaxis",
         },
         .zeit = .{
             .url = "git+https://github.com/rockorager/zeit#2a79678e05e4e82cd4efd4fd6b754dcf029c3a64",
