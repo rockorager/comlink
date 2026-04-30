@@ -58,7 +58,7 @@ pub fn main(process: std.process.Init) !void {
                 .handler = .{ .handler = cleanUp },
                 .mask = switch (builtin.os.tag) {
                     .macos => 0,
-                    else => std.posix.empty_sigset,
+                    else => std.posix.sigemptyset(),
                 },
                 .flags = 0,
             };
