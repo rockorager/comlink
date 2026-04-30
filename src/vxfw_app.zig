@@ -1,6 +1,6 @@
 // Local copy of vaxis.vxfw.App with timer fixes.
 // Remove this shim once upstream libvaxis re-adds future timers instead of
-// firing them immediately and waits for events or timer deadlines when idle.
+// firing them immediately and sleeps until the next frame deadline.
 const std = @import("std");
 const vaxis = @import("vaxis_upstream");
 const vxfw = vaxis.vxfw;
@@ -11,50 +11,6 @@ const Allocator = std.mem.Allocator;
 
 const EventLoop = vaxis.Loop(vxfw.Event);
 const Widget = vxfw.Widget;
-
-const WaitResult = union(enum) {
-    event: anyerror!vxfw.Event,
-    timeout: anyerror!void,
-};
-
-fn waitForEvent(loop: *EventLoop) anyerror!vxfw.Event {
-    return loop.nextEvent();
-}
-
-fn sleepFor(io: std.Io, duration: std.Io.Duration) anyerror!void {
-    return io.sleep(duration, .real);
-}
-
-fn eventFromWaitResult(result: WaitResult) anyerror!?vxfw.Event {
-    switch (result) {
-        .event => |event| return event catch |err| switch (err) {
-            error.Canceled => null,
-            else => |e| return e,
-        },
-        .timeout => |timeout| {
-            timeout catch |err| switch (err) {
-                error.Canceled => {},
-                else => |e| return e,
-            };
-            return null;
-        },
-    }
-}
-
-fn waitForEventOrTimeout(io: std.Io, loop: *EventLoop, duration: std.Io.Duration) anyerror!?vxfw.Event {
-    var storage: [2]WaitResult = undefined;
-    var select: std.Io.Select(WaitResult) = .init(io, &storage);
-    select.async(.event, waitForEvent, .{loop});
-    select.async(.timeout, sleepFor, .{ io, duration });
-
-    var event = try eventFromWaitResult(try select.await());
-    while (select.cancel()) |result| {
-        if (try eventFromWaitResult(result)) |queued_event| {
-            event = queued_event;
-        }
-    }
-    return event;
-}
 
 const App = @This();
 
@@ -142,7 +98,8 @@ pub fn run(self: *App, widget: vxfw.Widget, opts: Options) anyerror!void {
     try focus_handler.path_to_focused.append(self.allocator, widget);
     defer focus_handler.deinit(self.allocator);
 
-    _ = tick;
+    // Timestamp of our next frame.
+    var next_frame = std.Io.Timestamp.now(self.io, .real);
 
     // Create our event context
     var ctx: vxfw.EventContext = .{
@@ -157,20 +114,15 @@ pub fn run(self: *App, widget: vxfw.Widget, opts: Options) anyerror!void {
     defer ctx.cmds.deinit(self.allocator);
 
     while (true) {
-        if (!ctx.redraw and try loop.queue.isEmpty()) {
-            if (self.timers.items.len > 0) {
-                const now = std.Io.Timestamp.now(self.io, .real);
-                const next_timer = self.timers.items[self.timers.items.len - 1];
-                const duration = now.durationTo(next_timer.deadline);
-                if (duration.nanoseconds > 0) {
-                    if (try waitForEventOrTimeout(self.io, &loop, duration)) |event| {
-                        try self.handleLoopEvent(&mouse_handler, &focus_handler, &ctx, event);
-                    }
-                }
-            } else {
-                const event = try loop.nextEvent();
-                try self.handleLoopEvent(&mouse_handler, &focus_handler, &ctx, event);
-            }
+        const now = std.Io.Timestamp.now(self.io, .real);
+        const duration = now.durationTo(next_frame);
+        if (duration.nanoseconds <= 0) {
+            // Deadline exceeded. Schedule the next frame.
+            next_frame = now.addDuration(tick);
+        } else {
+            // Sleep until the deadline.
+            try self.io.sleep(duration, .real);
+            next_frame = next_frame.addDuration(tick);
         }
 
         try self.checkTimers(&ctx);
