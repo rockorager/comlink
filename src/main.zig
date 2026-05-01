@@ -2,12 +2,17 @@ const std = @import("std");
 const options = @import("build_options");
 const builtin = @import("builtin");
 const comlink = @import("comlink.zig");
+const logger = @import("logger.zig");
 const vaxis = @import("vaxis");
 const ziglua = @import("ziglua");
 
 const Lua = ziglua.Lua;
 
 const log = std.log.scoped(.main);
+
+pub const std_options: std.Options = .{
+    .logFn = logger.logFn,
+};
 
 pub const panic = vaxis.panic_handler;
 
@@ -49,6 +54,13 @@ pub fn main(process: std.process.Init) !void {
             return;
         }
     }
+
+    const log_path = try logger.init(gpa, process.io, process.environ_map);
+    defer {
+        logger.deinit();
+        gpa.free(log_path);
+    }
+    log.info("logging to {s}", .{log_path});
 
     // Handle termination signals
     switch (builtin.os.tag) {
@@ -94,4 +106,5 @@ fn argMatch(maybe_short: ?[]const u8, maybe_long: ?[]const u8, arg: [:0]const u8
 test {
     _ = @import("format.zig");
     _ = @import("irc.zig");
+    _ = @import("logger.zig");
 }
