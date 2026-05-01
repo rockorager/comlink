@@ -334,8 +334,10 @@ pub const App = struct {
                             }
                         },
                         .connected => {
-                            client.retry_delay_s = 0;
-                            client.retry_at_ms = 0;
+                            if (client.registered.load(.acquire)) {
+                                client.retry_delay_s = 0;
+                                client.retry_at_ms = 0;
+                            }
                         },
                         .connecting => {},
                     }
@@ -753,8 +755,11 @@ fn writeLoop(alloc: std.mem.Allocator, queue: *comlink.WriteQueue) !void {
         const req = try queue.pop();
         switch (req) {
             .write => |w| {
-                try w.client.write(w.msg);
-                alloc.free(w.msg);
+                defer alloc.free(w.msg);
+                w.client.write(w.msg) catch |err| {
+                    log.warn("[{s}] write failed: {}", .{ w.client.serverName(), err });
+                    w.client.close();
+                };
             },
             .join => {
                 while (try queue.tryPop()) |r| {

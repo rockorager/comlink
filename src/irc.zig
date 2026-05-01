@@ -144,6 +144,7 @@ pub const Channel = struct {
     in_flight: struct {
         who: bool = false,
         names: bool = false,
+        members_pending_clear: bool = false,
     } = .{},
 
     messages: std.array_list.Managed(Message),
@@ -517,6 +518,12 @@ pub const Channel = struct {
 
     pub fn sortMembers(self: *Channel) void {
         std.sort.insertion(Member, self.members.items, {}, Member.compare);
+    }
+
+    fn clearMembersIfRefreshing(self: *Channel) void {
+        if (!self.in_flight.members_pending_clear) return;
+        self.members.clearRetainingCapacity();
+        self.in_flight.members_pending_clear = false;
     }
 
     pub fn addMember(self: *Channel, user: *User, args: struct {
@@ -1775,12 +1782,15 @@ pub const Client = struct {
     stream_writer: std.Io.net.Stream.Writer,
     stream_read_buf: [tls.input_buffer_len]u8,
     stream_write_buf: [tls.output_buffer_len]u8,
+    stream_open: std.atomic.Value(bool),
+    tls_open: std.atomic.Value(bool),
     config: Config,
 
     channels: std.array_list.Managed(*Channel),
     users: std.StringHashMap(*User),
 
     status: std.atomic.Value(Status),
+    registered: std.atomic.Value(bool),
 
     caps: Capabilities = .{},
     supports: ISupport = .{},
@@ -1836,12 +1846,15 @@ pub const Client = struct {
             .stream_writer = undefined,
             .stream_read_buf = undefined,
             .stream_write_buf = undefined,
+            .stream_open = std.atomic.Value(bool).init(false),
+            .tls_open = std.atomic.Value(bool).init(false),
             .config = cfg,
             .channels = std.array_list.Managed(*Channel).init(alloc),
             .users = std.StringHashMap(*User).init(alloc),
             .batches = std.StringHashMap(*Channel).init(alloc),
             .write_queue = wq,
             .status = std.atomic.Value(Status).init(.disconnected),
+            .registered = std.atomic.Value(bool).init(false),
             .redraw = std.atomic.Value(bool).init(false),
             .read_buf_mutex = .init,
             .read_buf = std.array_list.Managed(u8).init(alloc),
@@ -1884,8 +1897,10 @@ pub const Client = struct {
 
     /// Closes the connection
     pub fn close(self: *Client) void {
-        if (self.status.load(.acquire) == .disconnected) return;
-        if (self.config.tls) {
+        const was_stream_open = self.stream_open.swap(false, .acq_rel);
+        const was_tls_open = self.tls_open.swap(false, .acq_rel);
+        if (!was_stream_open) return;
+        if (was_tls_open) {
             self.client.close() catch {};
         }
         self.stream.shutdown(self.app.io, .both) catch {};
@@ -1893,6 +1908,7 @@ pub const Client = struct {
     }
 
     pub fn deinit(self: *Client) void {
+        self.close();
         if (self.thread) |thread| {
             thread.join();
             self.thread = null;
@@ -1928,6 +1944,34 @@ pub const Client = struct {
         self.read_buf.deinit();
     }
 
+    fn resetReconnectState(self: *Client) void {
+        self.registered.store(false, .release);
+        self.caps = .{};
+        if (self.supports.prefix.len > 0) self.alloc.free(self.supports.prefix);
+        self.supports = .{};
+
+        for (self.channels.items) |channel| {
+            channel.in_flight = .{};
+            channel.history_requested = false;
+            channel.who_requested = false;
+            channel.typing_last_active = 0;
+            channel.typing_last_sent = 0;
+        }
+
+        self.discardPartialRead();
+    }
+
+    fn discardPartialRead(self: *Client) void {
+        self.read_buf_mutex.lockUncancelable(self.app.io);
+        defer self.read_buf_mutex.unlock(self.app.io);
+
+        const keep_len = if (std.mem.lastIndexOf(u8, self.read_buf.items, "\r\n")) |idx|
+            idx + 2
+        else
+            0;
+        self.read_buf.replaceRangeAssumeCapacity(keep_len, self.read_buf.items.len - keep_len, "");
+    }
+
     pub fn retryTickHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
         const self: *Client = @ptrCast(@alignCast(ptr));
         switch (event) {
@@ -1940,14 +1984,15 @@ pub const Client = struct {
                             thread.join();
                             self.thread = null;
                         }
+                        self.resetReconnectState();
                         self.status.store(.connecting, .release);
-                        self.thread = try std.Thread.spawn(.{}, Client.readThread, .{self});
+                        self.thread = std.Thread.spawn(.{}, Client.readThread, .{self}) catch |err| {
+                            self.status.store(.disconnected, .release);
+                            return err;
+                        };
                     },
                     .connecting => {},
                     .connected => {
-                        // Reset the delay
-                        self.retry_delay_s = 0;
-                        self.retry_at_ms = 0;
                         return;
                     },
                 }
@@ -2184,6 +2229,7 @@ pub const Client = struct {
                         if (mem.eql(u8, cap, "sasl"))
                             try client.queueWrite("AUTHENTICATE PLAIN\r\n");
                     } else if (mem.eql(u8, ack_or_nak, "NAK")) {
+                        client.del(cap);
                         log.debug("CAP not supported {s}", .{cap});
                     } else if (mem.eql(u8, ack_or_nak, "DEL")) {
                         client.del(cap);
@@ -2227,6 +2273,9 @@ pub const Client = struct {
                 }
             },
             .RPL_WELCOME => {
+                client.registered.store(true, .release);
+                client.retry_delay_s = 0;
+                client.retry_at_ms = 0;
                 const msg2 = try msg.dupe(self.alloc);
                 try self.messages.append(self.alloc, msg2);
                 const now = try zeit.instant(self.app.io, .{});
@@ -2275,6 +2324,7 @@ pub const Client = struct {
                                 break :blk try self.alloc.dupe(u8, "@+");
                             break :blk try self.alloc.dupe(u8, token[idx + 1 ..]);
                         };
+                        if (client.supports.prefix.len > 0) self.alloc.free(client.supports.prefix);
                         client.supports.prefix = prefix;
                     } else if (mem.startsWith(u8, token, "CHATHISTORY")) {
                         const idx = mem.indexOfScalar(u8, token, '=') orelse continue;
@@ -2338,6 +2388,7 @@ pub const Client = struct {
                 const user_ptr = try client.getOrCreateUser(nick);
                 if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
                 var channel = try client.getOrCreateChannel(channel_name);
+                channel.clearMembersIfRefreshing();
 
                 const prefix = for (flags) |c| {
                     if (std.mem.indexOfScalar(u8, client.supports.prefix, c)) |_| {
@@ -2364,6 +2415,7 @@ pub const Client = struct {
                 }
                 if (mem.indexOfScalar(u8, flags, 'G')) |_| user_ptr.away = true;
                 var channel = try client.getOrCreateChannel(channel_name);
+                channel.clearMembersIfRefreshing();
 
                 const prefix = for (flags) |c| {
                     if (std.mem.indexOfScalar(u8, client.supports.prefix, c)) |_| {
@@ -2380,6 +2432,10 @@ pub const Client = struct {
                 const channel_name = iter.next() orelse return; // channel
                 if (mem.eql(u8, channel_name, "*")) return;
                 var channel = try client.getOrCreateChannel(channel_name);
+                if (channel.in_flight.members_pending_clear) {
+                    channel.members.clearRetainingCapacity();
+                    channel.in_flight.members_pending_clear = false;
+                }
                 channel.in_flight.who = false;
                 ctx.redraw = true;
             },
@@ -2391,6 +2447,7 @@ pub const Client = struct {
                 const channel_name = iter.next() orelse return; // channel
                 const names = iter.next() orelse return;
                 var channel = try client.getOrCreateChannel(channel_name);
+                channel.clearMembersIfRefreshing();
                 var name_iter = std.mem.splitScalar(u8, names, ' ');
                 while (name_iter.next()) |name| {
                     const nick, const prefix = for (client.supports.prefix) |ch| {
@@ -2416,6 +2473,10 @@ pub const Client = struct {
                 _ = iter.next() orelse return; // client
                 const channel_name = iter.next() orelse return; // channel
                 var channel = try client.getOrCreateChannel(channel_name);
+                if (channel.in_flight.members_pending_clear) {
+                    channel.members.clearRetainingCapacity();
+                    channel.in_flight.members_pending_clear = false;
+                }
                 channel.in_flight.names = false;
                 ctx.redraw = true;
             },
@@ -2751,6 +2812,9 @@ pub const Client = struct {
     }
 
     fn warn(self: *Client, comptime fmt: []const u8, args: anytype) void {
+        self.read_buf_mutex.lockUncancelable(self.app.io);
+        defer self.read_buf_mutex.unlock(self.app.io);
+
         self.read_buf.appendSlice(":comlink WARN ") catch {};
         const msg = std.fmt.allocPrint(self.alloc, fmt, args) catch return;
         defer self.alloc.free(msg);
@@ -2760,6 +2824,7 @@ pub const Client = struct {
 
     pub fn readThread(self: *Client) void {
         defer self.status.store(.disconnected, .release);
+        defer self.close();
 
         // We push this off to another function that can enforces it only fails for allocation
         // errors
@@ -2855,8 +2920,9 @@ pub const Client = struct {
 
     pub fn write(self: *Client, buf: []const u8) !void {
         assert(std.mem.endsWith(u8, buf, "\r\n"));
-        if (self.status.load(.acquire) == .disconnected) {
-            log.warn("disconnected: dropping write: {s}", .{buf[0 .. buf.len - 2]});
+        const status = self.status.load(.acquire);
+        if (status != .connected or !self.stream_open.load(.acquire)) {
+            log.warn("dropping write while {}: {s}", .{ status, buf[0 .. buf.len - 2] });
             return;
         }
         log.debug("[->{s}] {s}", .{ self.config.name orelse self.config.server, buf[0 .. buf.len - 2] });
@@ -2879,9 +2945,11 @@ pub const Client = struct {
     }
 
     pub fn connect(self: *Client) !void {
+        errdefer self.close();
         if (self.config.tls) {
             const port: u16 = self.config.port orelse 6697;
             self.stream = try tcpConnectToHost(self.app.io, self.config.server, port);
+            self.stream_open.store(true, .release);
             self.stream_reader = self.stream.reader(self.app.io, &self.stream_read_buf);
             self.stream_writer = self.stream.writer(self.app.io, &self.stream_write_buf);
             const rng_source: std.Random.IoSource = .{ .io = self.app.io };
@@ -2895,15 +2963,21 @@ pub const Client = struct {
                 if (self.stream_writer.err) |stream_err| return stream_err;
                 return err;
             };
+            self.tls_open.store(true, .release);
+            if (!self.stream_open.load(.acquire)) {
+                _ = self.tls_open.swap(false, .acq_rel);
+                return error.ConnectionClosed;
+            }
         } else {
             const port: u16 = self.config.port orelse 6667;
             self.stream = try tcpConnectToHost(self.app.io, self.config.server, port);
+            self.stream_open.store(true, .release);
             self.stream_reader = self.stream.reader(self.app.io, &self.stream_read_buf);
             self.stream_writer = self.stream.writer(self.app.io, &self.stream_write_buf);
         }
-        self.status.store(.connected, .release);
-
+        if (!self.stream_open.load(.acquire)) return error.ConnectionClosed;
         try self.configureKeepalive(keepalive_idle);
+        self.status.store(.connected, .release);
     }
 
     pub fn configureKeepalive(self: *Client, seconds: i32) !void {
@@ -2954,16 +3028,23 @@ pub const Client = struct {
     }
 
     pub fn whox(self: *Client, channel: *Channel) !void {
-        channel.who_requested = true;
         if (channel.name.len > 0 and
             channel.name[0] != '#')
         {
+            channel.who_requested = true;
             const other = try self.getOrCreateUser(channel.name);
             const me = try self.getOrCreateUser(self.config.nick);
             try channel.addMember(other, .{});
             try channel.addMember(me, .{});
             return;
         }
+        if (self.status.load(.acquire) != .connected or
+            !self.stream_open.load(.acquire) or
+            !self.registered.load(.acquire))
+        {
+            return;
+        }
+        channel.who_requested = true;
         // Only use WHO if we have WHOX and away-notify. Without
         // WHOX, we can get rate limited on eg. libera. Without
         // away-notify, our list will become stale
@@ -2972,12 +3053,14 @@ pub const Client = struct {
             !channel.in_flight.who)
         {
             channel.in_flight.who = true;
+            channel.in_flight.members_pending_clear = true;
             try self.print(
                 "WHO {s} %cnfr\r\n",
                 .{channel.name},
             );
         } else {
             channel.in_flight.names = true;
+            channel.in_flight.members_pending_clear = true;
             try self.print(
                 "NAMES {s}\r\n",
                 .{channel.name},
