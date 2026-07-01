@@ -18,6 +18,51 @@ const assert = std.debug.assert;
 
 const log = std.log.scoped(.irc);
 
+const TimeoutStreamReader = struct {
+    io: std.Io,
+    file: std.Io.File,
+    interface: std.Io.Reader,
+    timeout: std.Io.Timeout = .none,
+    err: ?anyerror = null,
+
+    pub fn init(stream: std.Io.net.Stream, io: std.Io, buffer: []u8) TimeoutStreamReader {
+        return .{
+            .io = io,
+            .file = .{
+                .handle = stream.socket.handle,
+                .flags = .{ .nonblocking = false },
+            },
+            .interface = .{
+                .vtable = &.{ .stream = streamFn },
+                .buffer = buffer,
+                .seek = 0,
+                .end = 0,
+            },
+        };
+    }
+
+    fn streamFn(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
+        const self: *TimeoutStreamReader = @alignCast(@fieldParentPtr("interface", r));
+        const dest = limit.slice(try w.writableSliceGreedy(1));
+        var data: [1][]u8 = .{dest};
+        const result = self.io.operateTimeout(.{ .file_read_streaming = .{
+            .file = self.file,
+            .data = &data,
+        } }, self.timeout) catch |err| {
+            self.err = err;
+            return error.ReadFailed;
+        };
+        const n = result.file_read_streaming catch |err| {
+            self.err = err;
+            if (err == error.EndOfStream) return error.EndOfStream;
+            return error.ReadFailed;
+        };
+        self.err = null;
+        w.advance(n);
+        return n;
+    }
+};
+
 /// maximum size message we can write
 pub const maximum_message_size = 512;
 
@@ -1778,7 +1823,7 @@ pub const Client = struct {
     app: *comlink.App,
     client: tls.Connection,
     stream: std.Io.net.Stream,
-    stream_reader: std.Io.net.Stream.Reader,
+    stream_reader: TimeoutStreamReader,
     stream_writer: std.Io.net.Stream.Writer,
     stream_read_buf: [tls.input_buffer_len]u8,
     stream_write_buf: [tls.output_buffer_len]u8,
@@ -1899,6 +1944,8 @@ pub const Client = struct {
     pub fn close(self: *Client) void {
         const was_stream_open = self.stream_open.swap(false, .acq_rel);
         const was_tls_open = self.tls_open.swap(false, .acq_rel);
+        self.registered.store(false, .release);
+        self.status.store(.disconnected, .release);
         if (!was_stream_open) return;
         if (was_tls_open) {
             self.client.close() catch {};
@@ -2178,11 +2225,22 @@ pub const Client = struct {
         var i: usize = 0;
         while (std.mem.indexOfPos(u8, self.read_buf.items, i, "\r\n")) |idx| {
             defer i = idx + 2;
+            const line = self.read_buf.items[i..idx];
+            const live = self.status.load(.acquire) == .connected and
+                self.stream_open.load(.acquire);
+            const local = std.mem.startsWith(u8, line, ":comlink ");
+            if (!live and !local) {
+                log.debug("[discard stale <-{s}] {s}", .{
+                    self.config.name orelse self.config.server,
+                    line,
+                });
+                continue;
+            }
             log.debug("[<-{s}] {s}", .{
                 self.config.name orelse self.config.server,
-                self.read_buf.items[i..idx],
+                line,
             });
-            self.handleEvent(self.read_buf.items[i..idx], ctx) catch |err| {
+            self.handleEvent(line, ctx) catch |err| {
                 log.err("error: {}", .{err});
             };
         }
@@ -2273,7 +2331,12 @@ pub const Client = struct {
                 }
             },
             .RPL_WELCOME => {
-                client.registered.store(true, .release);
+                if (client.status.load(.acquire) != .connected or
+                    !client.stream_open.load(.acquire))
+                {
+                    return;
+                }
+                if (client.registered.swap(true, .acq_rel)) return;
                 client.retry_delay_s = 0;
                 client.retry_at_ms = 0;
                 const msg2 = try msg.dupe(self.alloc);
@@ -2811,6 +2874,15 @@ pub const Client = struct {
         }
     }
 
+    pub fn readWithTimeout(self: *Client, buf: []u8, timeout_s: i32) !usize {
+        self.stream_reader.timeout = .{ .duration = .{
+            .raw = .fromSeconds(timeout_s),
+            .clock = .awake,
+        } };
+        defer self.stream_reader.timeout = .none;
+        return self.read(buf);
+    }
+
     fn warn(self: *Client, comptime fmt: []const u8, args: anytype) void {
         self.read_buf_mutex.lockUncancelable(self.app.io);
         defer self.read_buf_mutex.unlock(self.app.io);
@@ -2859,8 +2931,9 @@ pub const Client = struct {
         var buf: [4096]u8 = undefined;
         var retries: u8 = 0;
         while (true) {
-            const n = self.read(&buf) catch |err| {
-                // WouldBlock means our socket timeout expired
+            const timeout_s = if (retries == 0) keepalive_idle else keepalive_interval;
+            const n = self.readWithTimeout(&buf, timeout_s) catch |err| {
+                // Timeout means our idle keepalive period expired
                 switch (err) {
                     error.Timeout => {},
                     else => {
@@ -2875,12 +2948,6 @@ pub const Client = struct {
                     return;
                 }
 
-                if (retries == 0) {
-                    self.configureKeepalive(keepalive_interval) catch |err2| {
-                        self.warn("* INTERNAL_ERROR :Couldn't configure socket: {}", .{err2});
-                        return;
-                    };
-                }
                 retries += 1;
                 try self.queueWrite("PING comlink\r\n");
                 continue;
@@ -2890,10 +2957,6 @@ pub const Client = struct {
             // If we did a connection retry, we reset the state
             if (retries > 0) {
                 retries = 0;
-                self.configureKeepalive(keepalive_idle) catch |err2| {
-                    self.warn("* INTERNAL_ERROR :Couldn't configure socket: {}", .{err2});
-                    return;
-                };
             }
             self.read_buf_mutex.lockUncancelable(self.app.io);
             defer self.read_buf_mutex.unlock(self.app.io);
@@ -2950,7 +3013,7 @@ pub const Client = struct {
             const port: u16 = self.config.port orelse 6697;
             self.stream = try tcpConnectToHost(self.app.io, self.config.server, port);
             self.stream_open.store(true, .release);
-            self.stream_reader = self.stream.reader(self.app.io, &self.stream_read_buf);
+            self.stream_reader = .init(self.stream, self.app.io, &self.stream_read_buf);
             self.stream_writer = self.stream.writer(self.app.io, &self.stream_write_buf);
             const rng_source: std.Random.IoSource = .{ .io = self.app.io };
             self.client = tls.client(&self.stream_reader.interface, &self.stream_writer.interface, .{
@@ -2972,26 +3035,11 @@ pub const Client = struct {
             const port: u16 = self.config.port orelse 6667;
             self.stream = try tcpConnectToHost(self.app.io, self.config.server, port);
             self.stream_open.store(true, .release);
-            self.stream_reader = self.stream.reader(self.app.io, &self.stream_read_buf);
+            self.stream_reader = .init(self.stream, self.app.io, &self.stream_read_buf);
             self.stream_writer = self.stream.writer(self.app.io, &self.stream_write_buf);
         }
         if (!self.stream_open.load(.acquire)) return error.ConnectionClosed;
-        try self.configureKeepalive(keepalive_idle);
         self.status.store(.connected, .release);
-    }
-
-    pub fn configureKeepalive(self: *Client, seconds: i32) !void {
-        const timeout = std.mem.toBytes(std.posix.timeval{
-            .sec = seconds,
-            .usec = 0,
-        });
-
-        try std.posix.setsockopt(
-            self.stream.socket.handle,
-            std.posix.SOL.SOCKET,
-            std.posix.SO.RCVTIMEO,
-            &timeout,
-        );
     }
 
     pub fn getOrCreateChannel(self: *Client, name: []const u8) Allocator.Error!*Channel {

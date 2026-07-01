@@ -326,6 +326,7 @@ pub const App = struct {
             .tick => {
                 const now_ms = irc.milliTimestamp();
                 for (self.clients.items) |client| {
+                    client.drainFifo(ctx);
                     switch (client.status.load(.unordered)) {
                         .disconnected => {
                             if (now_ms >= client.retry_at_ms) {
@@ -341,7 +342,6 @@ pub const App = struct {
                         },
                         .connecting => {},
                     }
-                    client.drainFifo(ctx);
                     client.checkTypingStatus(ctx);
                 }
                 try ctx.tick(app_tick_ms, self.widget());
