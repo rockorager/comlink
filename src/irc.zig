@@ -72,6 +72,9 @@ const max_raw_msg_size = 512 + 8191; // see modernircdocs
 /// Seconds of idle connection before we start pinging
 const keepalive_idle: i32 = 15;
 
+/// Maximum time allowed for the TLS handshake
+const handshake_timeout: i32 = 30;
+
 /// Seconds between pings
 const keepalive_interval: i32 = 5;
 
@@ -1828,7 +1831,6 @@ pub const Client = struct {
     stream_read_buf: [tls.input_buffer_len]u8,
     stream_write_buf: [tls.output_buffer_len]u8,
     stream_open: std.atomic.Value(bool),
-    tls_open: std.atomic.Value(bool),
     config: Config,
 
     channels: std.array_list.Managed(*Channel),
@@ -1892,7 +1894,6 @@ pub const Client = struct {
             .stream_read_buf = undefined,
             .stream_write_buf = undefined,
             .stream_open = std.atomic.Value(bool).init(false),
-            .tls_open = std.atomic.Value(bool).init(false),
             .config = cfg,
             .channels = std.array_list.Managed(*Channel).init(alloc),
             .users = std.StringHashMap(*User).init(alloc),
@@ -1943,13 +1944,8 @@ pub const Client = struct {
     /// Closes the connection
     pub fn close(self: *Client) void {
         const was_stream_open = self.stream_open.swap(false, .acq_rel);
-        const was_tls_open = self.tls_open.swap(false, .acq_rel);
         self.registered.store(false, .release);
-        self.status.store(.disconnected, .release);
         if (!was_stream_open) return;
-        if (was_tls_open) {
-            self.client.close() catch {};
-        }
         self.stream.shutdown(self.app.io, .both) catch {};
         self.stream.close(self.app.io);
     }
@@ -2033,6 +2029,7 @@ pub const Client = struct {
                         }
                         self.resetReconnectState();
                         self.status.store(.connecting, .release);
+                        log.info("[{s}] connecting", .{self.serverName()});
                         self.thread = std.Thread.spawn(.{}, Client.readThread, .{self}) catch |err| {
                             self.status.store(.disconnected, .release);
                             return err;
@@ -2337,6 +2334,7 @@ pub const Client = struct {
                     return;
                 }
                 if (client.registered.swap(true, .acq_rel)) return;
+                log.info("[{s}] registered", .{client.serverName()});
                 client.retry_delay_s = 0;
                 client.retry_at_ms = 0;
                 const msg2 = try msg.dupe(self.alloc);
@@ -2910,6 +2908,7 @@ pub const Client = struct {
 
     fn _readThread(self: *Client) Allocator.Error!void {
         self.connect() catch |err| {
+            log.warn("[{s}] connection failed: {}", .{ self.serverName(), err });
             self.warn("* CONNECTION_ERROR :Error while connecting to server: {}", .{err});
             return;
         };
@@ -2933,17 +2932,18 @@ pub const Client = struct {
         while (true) {
             const timeout_s = if (retries == 0) keepalive_idle else keepalive_interval;
             const n = self.readWithTimeout(&buf, timeout_s) catch |err| {
-                // Timeout means our idle keepalive period expired
+                // A timeout or transient would-block means the keepalive period expired
                 switch (err) {
-                    error.Timeout => {},
+                    error.Timeout, error.WouldBlock => {},
                     else => {
+                        log.warn("[{s}] connection lost: {}", .{ self.serverName(), err });
                         self.warn("* CONNECTION_ERROR :{}", .{err});
                         return;
                     },
                 }
 
                 if (retries == keepalive_retries) {
-                    log.debug("[{s}] connection closed", .{self.config.name orelse self.config.server});
+                    log.warn("[{s}] keepalive timed out", .{self.serverName()});
                     self.close();
                     return;
                 }
@@ -2952,7 +2952,10 @@ pub const Client = struct {
                 try self.queueWrite("PING comlink\r\n");
                 continue;
             };
-            if (n == 0) return;
+            if (n == 0) {
+                log.warn("[{s}] server closed the connection", .{self.serverName()});
+                return;
+            }
 
             // If we did a connection retry, we reset the state
             if (retries > 0) {
@@ -3015,6 +3018,11 @@ pub const Client = struct {
             self.stream_open.store(true, .release);
             self.stream_reader = .init(self.stream, self.app.io, &self.stream_read_buf);
             self.stream_writer = self.stream.writer(self.app.io, &self.stream_write_buf);
+            self.stream_reader.timeout = .{ .duration = .{
+                .raw = .fromSeconds(handshake_timeout),
+                .clock = .awake,
+            } };
+            defer self.stream_reader.timeout = .none;
             const rng_source: std.Random.IoSource = .{ .io = self.app.io };
             self.client = tls.client(&self.stream_reader.interface, &self.stream_writer.interface, .{
                 .rng = rng_source.interface(),
@@ -3026,9 +3034,7 @@ pub const Client = struct {
                 if (self.stream_writer.err) |stream_err| return stream_err;
                 return err;
             };
-            self.tls_open.store(true, .release);
             if (!self.stream_open.load(.acquire)) {
-                _ = self.tls_open.swap(false, .acq_rel);
                 return error.ConnectionClosed;
             }
         } else {

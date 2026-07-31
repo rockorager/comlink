@@ -758,7 +758,6 @@ fn writeLoop(alloc: std.mem.Allocator, queue: *comlink.WriteQueue) !void {
                 defer alloc.free(w.msg);
                 w.client.write(w.msg) catch |err| {
                     log.warn("[{s}] write failed: {}", .{ w.client.serverName(), err });
-                    w.client.close();
                 };
             },
             .join => {
