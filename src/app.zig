@@ -149,8 +149,16 @@ pub const App = struct {
             .command = .@"prev-channel",
         });
         try self.binds.append(.{
+            .key = .{ .codepoint = vaxis.Key.up, .mods = .{ .ctrl = true } },
+            .command = .@"prev-unread",
+        });
+        try self.binds.append(.{
             .key = .{ .codepoint = vaxis.Key.down, .mods = .{ .alt = true } },
             .command = .@"next-channel",
+        });
+        try self.binds.append(.{
+            .key = .{ .codepoint = vaxis.Key.down, .mods = .{ .ctrl = true } },
+            .command = .@"next-unread",
         });
         try self.binds.append(.{
             .key = .{ .codepoint = 'l', .mods = .{ .ctrl = true } },
@@ -261,6 +269,8 @@ pub const App = struct {
                             .quit => ctx.quit = true,
                             .@"next-channel" => self.nextChannel(),
                             .@"prev-channel" => self.prevChannel(),
+                            .@"next-unread" => self.nextUnread(),
+                            .@"prev-unread" => self.prevUnread(),
                             .redraw => try ctx.queueRefresh(),
                             .lua_function => |ref| try lua.execFn(self.lua, ref),
                             else => {},
@@ -454,6 +464,47 @@ pub const App = struct {
         }
     }
 
+    pub fn nextUnread(self: *App) void {
+        if (self.ctx) |_| {
+            const current = self.buffer_list.cursor;
+            var i: u32 = 0;
+            for (self.clients.items) |client| {
+                i += 1;
+                for (client.channels.items) |channel| {
+                    if (i > current and channel.has_unread) {
+                        self.selectBuffer(.{ .channel = channel });
+                        return;
+                    }
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    pub fn prevUnread(self: *App) void {
+        if (self.ctx) |_| {
+            const current = self.buffer_list.cursor;
+            var i: u32 = 0;
+            var last_unread: ?*irc.Channel = null;
+            for (self.clients.items) |client| {
+                i += 1;
+                for (client.channels.items) |channel| {
+                    if (i == current) {
+                        // We reached the current channel, jump to the previous
+                        // unread if it exists.
+                        if (last_unread) |to_jump| {
+                            self.selectBuffer(.{ .channel = to_jump });
+                        }
+                        return;
+                    } else if (channel.has_unread) {
+                        last_unread = channel;
+                    }
+                    i += 1;
+                }
+            }
+        }
+    }
+
     pub fn selectChannelName(self: *App, cl: *irc.Client, name: []const u8) void {
         var i: usize = 0;
         for (self.clients.items) |client| {
@@ -636,6 +687,8 @@ pub const App = struct {
             },
             .@"next-channel" => self.nextChannel(),
             .@"prev-channel" => self.prevChannel(),
+            .@"next-unread" => self.nextUnread(),
+            .@"prev-unread" => self.prevUnread(),
             .quit => {
                 if (self.ctx) |ctx| ctx.quit = true;
             },
