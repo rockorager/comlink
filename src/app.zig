@@ -487,10 +487,16 @@ pub const App = struct {
             var i: u32 = 0;
             var last_unread: ?*irc.Channel = null;
             for (self.clients.items) |client| {
+                if (i == current) {
+                    if (last_unread) |to_jump| {
+                        self.selectBuffer(.{ .channel = to_jump });
+                    }
+                    return;
+                }
                 i += 1;
                 for (client.channels.items) |channel| {
                     if (i == current) {
-                        // We reached the current channel, jump to the previous
+                        // We reached the current buffer, jump to the previous
                         // unread if it exists.
                         if (last_unread) |to_jump| {
                             self.selectBuffer(.{ .channel = to_jump });
